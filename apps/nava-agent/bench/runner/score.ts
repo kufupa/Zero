@@ -3,8 +3,8 @@ import {existsSync, readFileSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {join} from 'node:path';
-import {withCreateNativeFields, withQuoteStaffFields} from '../../src/proposal-fields.js';
 import {proposalDraft} from '../../src/schema.js';
+import {stagePublishedDraft} from '../../src/tool-registry.js';
 import type {CaseCard, GoldField, Workflow} from '../types.js';
 
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
@@ -48,6 +48,8 @@ export type CaseScore = {
   proposal: unknown;
   /** Raw proposal_publish input before normalization. */
   proposal_raw?: unknown;
+  /** Set when stagePublishedDraft rejected the draft (path) or parse failed. */
+  publish_invalid?: string | true;
   /** True when proposal listed more bookings than gold paths expect. */
   spray?: boolean;
   /** Set when the case threw before a proposal; all expected fields scored miss. */
@@ -89,13 +91,17 @@ export function dig(value: unknown, path: string): unknown {
   return cur;
 }
 
-/** Apply the same create/quote field scaffolding prod shows staff. */
-export function normalizePublishedProposal(raw: unknown): {proposal_raw: unknown; proposal: unknown} {
+/** Apply the same create/quote publish staging prod shows staff (empty partyReads = no bind). */
+export function normalizePublishedProposal(
+  raw: unknown,
+  partyReads: Array<{input: unknown; response: unknown}> = [],
+): {proposal_raw: unknown; proposal: unknown; publish_invalid?: string | true} {
   if (raw == null || typeof raw !== 'object') return {proposal_raw: raw, proposal: raw};
   const parsed = proposalDraft.safeParse(raw);
-  if (!parsed.success) return {proposal_raw: raw, proposal: raw};
-  const proposal = withQuoteStaffFields(withCreateNativeFields(parsed.data));
-  return {proposal_raw: raw, proposal};
+  if (!parsed.success) return {proposal_raw: raw, proposal: raw, publish_invalid: true};
+  const staged = stagePublishedDraft(parsed.data, partyReads);
+  if (staged.kind === 'invalid') return {proposal_raw: raw, proposal: raw, publish_invalid: staged.path};
+  return {proposal_raw: raw, proposal: staged.draft};
 }
 
 function normalize(value: unknown): string {
@@ -638,16 +644,19 @@ export function scoreCase(input: {
   toolCalls: Array<{name: string; input?: unknown; result?: {ok?: boolean; data?: unknown; error?: {code?: string} | null}}>;
   tokens: {input: number; output: number; cached_input: number};
   wall_ms: number;
-  /** When false, `proposal` is already normalized and raw is in proposal_raw. Default true. */
+  /** When false, `proposal` is already staged and raw is in proposal_raw. Default true. */
   normalize?: boolean;
   proposal_raw?: unknown;
+  partyReads?: Array<{input: unknown; response: unknown}>;
+  publish_invalid?: string | true;
 }): CaseScore {
   const {card, toolCalls, tokens, wall_ms} = input;
   const normalized = input.normalize === false
-    ? {proposal_raw: input.proposal_raw ?? input.proposal, proposal: input.proposal}
-    : normalizePublishedProposal(input.proposal);
+    ? {proposal_raw: input.proposal_raw ?? input.proposal, proposal: input.proposal, publish_invalid: input.publish_invalid}
+    : normalizePublishedProposal(input.proposal, input.partyReads ?? []);
   const proposal = normalized.proposal;
   const proposal_raw = normalized.proposal_raw;
+  const publish_invalid = normalized.publish_invalid;
   const fields: FieldScore[] = [];
   const workflow = card.workflow;
   const createAlign = workflow === 'create' ? alignCreateBookings(card, proposal) : null;
@@ -875,6 +884,7 @@ export function scoreCase(input: {
     twin_uncovered,
     proposal,
     proposal_raw,
+    ...(publish_invalid !== undefined ? {publish_invalid} : {}),
     spray,
   };
 }

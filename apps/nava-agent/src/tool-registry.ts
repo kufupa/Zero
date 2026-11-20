@@ -154,6 +154,31 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
   });
   return {...draft,bookings,actions,field_specs:fieldSpecs};
 }
+
+/** Pure create/quote party bind + field normalize (prod publish + bench share this). */
+export function stagePublishedDraft(
+  draft: ProposalDraft,
+  partyReads: Array<{input: unknown; response: unknown}>,
+): {kind: 'valid'; draft: ProposalDraft} | {kind: 'invalid'; path: string} {
+  let staffDraft = draft;
+  if (['create', 'quote'].includes(staffDraft.workflow)) {
+    if (staffDraft.workflow === 'create') {
+      staffDraft = {
+        ...staffDraft,
+        bookings: staffDraft.bookings.map(booking => ({
+          ...booking,
+          fields: {
+            ...booking.fields,
+            guest_profile_id: booking.fields.guest_profile_id ?? readProfileId(booking, partyReads),
+            profile_create_new: false,
+          },
+        })),
+      };
+    }
+    staffDraft = withReadParties(staffDraft, partyReads);
+  }
+  return normalizeProposalFields(staffDraft);
+}
 function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{native:unknown;incomplete:boolean} {
   const latest=new Map<string,{data:z.infer<typeof groupedCaptureSchema>;ok:boolean;input:unknown}>();
   let legacy:unknown=null,legacyOk=false;
@@ -264,18 +289,14 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         }
         const incomplete=draft.workflow==='quote' && merged.incomplete;
         let staffDraft=proposalDraft.parse({...draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})});
+        let partyReads: Array<{input: unknown; response: unknown}> = [];
         if(staffPrepareOnly() && ['create','quote'].includes(staffDraft.workflow)) {
-          const reads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
+          partyReads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
             FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
               AND c.kind='tool_call' AND c.payload->>'tool_use_id'=r.payload->>'tool_event_id'
             WHERE r.session_id=${session.id} AND r.kind='tool_result' AND r.payload->>'tool'='hms_search_parties'
               AND r.sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0)
             ORDER BY r.sequence`;
-          if(staffDraft.workflow==='create') staffDraft={...staffDraft,
-            bookings:staffDraft.bookings.map(booking=>({...booking,fields:{...booking.fields,
-              guest_profile_id:booking.fields.guest_profile_id ?? readProfileId(booking,reads),profile_create_new:false}})),
-          };
-          staffDraft=withReadParties(staffDraft,reads);
         }
         if(staffPrepareOnly() && draft.workflow==='filing' && draft.disposition==='propose') {
           const filing=await loadFilingModule();
@@ -289,7 +310,11 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         if(staffPrepareOnly() && session.mode==='live') {
           staffDraft=withTriageLookupFields(staffDraft);
         }
-        const normalized=normalizeProposalFields(staffDraft);
+        // Staff-prepare create/quote: party bind + normalize via shared pure fn. Else normalize only
+        // (avoid forcing profile_create_new outside staff-prepare).
+        const normalized=staffPrepareOnly()
+          ? stagePublishedDraft(staffDraft,partyReads)
+          : normalizeProposalFields(staffDraft);
         if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
         const current=normalized.draft;
         const id=uid('proposal');
