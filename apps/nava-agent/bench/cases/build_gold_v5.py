@@ -43,6 +43,7 @@ TIER2 = "tier2_defaults"
 TIER_HIST = "history_knowable"
 TIER_PARITY = "parity"
 TIER_ROUTE = "workflow_routing"
+TIER_DIAG = "diagnostic"
 
 # Known blind fixes from audit B (prefix → handler note).
 KNOWN_CANCEL_CONF = {
@@ -704,9 +705,21 @@ def email_quantity(blob: str) -> int | None:
 
 
 def email_board(blob: str) -> str | None:
-  if re.search(r"\bdinner,?\s*bed\s*(?:and|&)\s*breakfast\b|\bDBB\b", blob, re.I):
+  # DBB before BB so "dinner … breakfast" / half board do not collapse to BB.
+  if re.search(
+    r"\bdinner,?\s*(?:\+|and|&)?\s*(?:bed\s*(?:and|&)\s*breakfast|B(?:\s*(?:&|and)\s*)B)\b"
+    r"|\bdinner\s*\+\s*B\s*&\s*B\b"
+    r"|\bDBB\b"
+    r"|\bhalf\s+board\b",
+    blob,
+    re.I,
+  ):
     return "DBB"
-  if re.search(r"\bbed\s*(?:and|&)\s*breakfast\b|\bB(?:&|and)\s*B\b|\bBB\b", blob, re.I):
+  if re.search(
+    r"\bbed\s*(?:and|&)\s*breakfast\b|\bB(?:\s*(?:&|and)\s*)B\b|\bBB\b|\bbreakfast\b",
+    blob,
+    re.I,
+  ):
     return "BB"
   if re.search(r"\broom\s+only\b|\bRO\b", blob, re.I):
     return "RO"
@@ -764,19 +777,123 @@ def org_agency_from_hms(fields: dict) -> tuple[Any, Any]:
   return org, agency
 
 
+_GUEST_TITLES = frozenset({"mr", "mrs", "ms", "miss", "dr", "prof"})
+
+
+def split_guest_full_name(guest: str) -> tuple[str | None, str | None]:
+  """Parse HMS guestfullname / guestName forms: 'Last, Title First' or 'First Last'."""
+  g = guest.strip()
+  if not g:
+    return None, None
+  if "," in g:
+    last_part, rest = [x.strip() for x in g.split(",", 1)]
+    tokens = rest.split()
+    while tokens and tokens[0].lower().rstrip(".") in _GUEST_TITLES:
+      tokens = tokens[1:]
+    first = " ".join(tokens) if tokens else None
+    last = last_part or None
+    return first, last
+  parts = g.split()
+  if len(parts) >= 2:
+    return parts[0], " ".join(parts[1:])
+  if len(parts) == 1:
+    return None, parts[0]
+  return None, None
+
+
 def names_from_hms(fields: dict) -> tuple[str | None, str | None]:
   first = fields.get("firstname") or fields.get("first_name")
   last = fields.get("lastname") or fields.get("last_name")
   if first or last:
     return (str(first).strip() if first else None), (str(last).strip() if last else None)
-  guest = fields.get("guestname") or fields.get("guest_name")
-  if guest and isinstance(guest, str):
-    parts = guest.strip().split()
-    if len(parts) >= 2:
-      return parts[0], " ".join(parts[1:])
-    if len(parts) == 1:
-      return None, parts[0]
+  # Flatten lowercases keys: guestName→guestname, guestFullName→guestfullname.
+  for key in ("guestname", "guest_name", "guestfullname", "guest_full_name"):
+    guest = fields.get(key)
+    if guest and isinstance(guest, str) and guest.strip():
+      return split_guest_full_name(guest)
   return None, None
+
+
+def mail_has_headers(card: dict) -> bool:
+  for msg in iter_mail_msgs(card):
+    for key in ("from", "to", "cc"):
+      if msg.get(key):
+        return True
+  return False
+
+
+def distinctive_party_tokens(value: Any) -> list[str]:
+  raw = str(value or "").strip()
+  if not raw:
+    return []
+  parts = re.split(r"[\s,./&+\-_|]+", raw)
+  out: list[str] = []
+  for p in parts:
+    t = p.strip()
+    if len(t) < 3:
+      continue
+    if t.isdigit():
+      continue
+    out.append(t)
+  if len(raw) >= 3 and raw.lower() not in {x.lower() for x in out}:
+    out.append(raw)
+  return out
+
+
+def party_derivable(card: dict, party_value: Any) -> str:
+  """Tag party gold: email | header_stripped | history_only (compare.py splits)."""
+  blob = (mail_blob(card) or "").lower()
+  header_bits: list[str] = []
+  for msg in iter_mail_msgs(card):
+    for key in ("from", "to", "cc"):
+      v = msg.get(key)
+      if v:
+        header_bits.append(str(v))
+  header_blob = " ".join(header_bits).lower()
+  full = f"{blob}\n{header_blob}"
+  for tok in distinctive_party_tokens(party_value):
+    if tok.lower() in full:
+      return "email"
+  # Domain/brand labels from From/To/Cc (e.g. rennies.co.za → rennies).
+  for m in re.finditer(r"@([a-z0-9.-]+)", header_blob, re.I):
+    host = m.group(1).lower()
+    label = host.split(".")[0]
+    if len(label) >= 3 and label in str(party_value or "").lower().replace(" ", ""):
+      return "email"
+    if len(label) >= 3 and label in full and label in str(party_value or "").lower():
+      return "email"
+  if not mail_has_headers(card):
+    return "header_stripped"
+  return "history_only"
+
+
+def add_child_count(
+  b: "GoldBuilder",
+  path: str,
+  value: int,
+  *,
+  basis: str,
+  source: str,
+  hms_key: str | None = "children",
+  conflict: bool = False,
+) -> None:
+  """child_count==0 → diagnostic (not P0); nonzero stays expected P0; conflict → no_gold."""
+  if conflict:
+    b.add(path, "no_gold", value=value, basis=basis, source=source, hms_key=hms_key)
+    return
+  if value == 0:
+    b.add(
+      path,
+      "diagnostic",
+      value=0,
+      basis=basis,
+      source=source,
+      tier=TIER_DIAG,
+      priority="P2",
+      hms_key=hms_key,
+    )
+    return
+  b.add(path, "expected", value=value, basis=basis, source=source, hms_key=hms_key)
 
 
 def filing_doc_kind(doc_type: str | None, basis: str, att_id: str | None) -> str:
@@ -811,6 +928,7 @@ class GoldBuilder:
     before: Any = None,
     later_value: Any = None,
     hms_key: str | None = None,
+    derivable: str | None = None,
   ) -> None:
     if path in self.seen:
       return
@@ -833,6 +951,8 @@ class GoldBuilder:
       row["before"] = before
     if hms_key:
       row["hms_key"] = hms_key
+    if derivable:
+      row["derivable"] = derivable
     self.rows.append(row)
     if source == "heuristic" and basis == "email_hms_conflict":
       self.stats["create_email_hms_conflict"] += 1
@@ -964,14 +1084,14 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
       hms_key="confirmationnumber",
     )
 
-    # dates — HMS value kept on conflict, but source=heuristic (agent cannot know HMS)
+    # dates — conflict → no_gold (agent cannot know HMS over email)
     h_arr = parse_hms_date(fields.get("arrivaldate") or fields.get("arrival_date"))
     h_dep = parse_hms_date(fields.get("departuredate") or fields.get("departure_date"))
     if n == 0 and edates.get("arrival_date"):
       if h_arr and h_arr != edates["arrival_date"]:
         b.add(
           f"/bookings/{n}/fields/arrival_date",
-          "expected",
+          "no_gold",
           value=h_arr,
           basis="email_hms_conflict",
           source="heuristic",
@@ -1009,7 +1129,7 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
       if h_dep and h_dep != edates["departure_date"]:
         b.add(
           f"/bookings/{n}/fields/departure_date",
-          "expected",
+          "no_gold",
           value=h_dep,
           basis="email_hms_conflict",
           source="heuristic",
@@ -1049,7 +1169,7 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
     if first:
       b.add(
         f"/bookings/{n}/fields/first_name",
-        "expected",
+        "no_gold" if name_conflict else "expected",
         value=first,
         basis="email_hms_conflict" if name_conflict else "hms_firstname",
         source="heuristic" if name_conflict else "hms_truth",
@@ -1058,7 +1178,7 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
     if last:
       b.add(
         f"/bookings/{n}/fields/last_name",
-        "expected",
+        "no_gold" if name_conflict else "expected",
         value=last,
         basis="email_hms_conflict" if name_conflict else "hms_lastname",
         source="heuristic" if name_conflict else "hms_truth",
@@ -1074,7 +1194,7 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
       if h_adults is not None and h_adults != e_adults:
         b.add(
           f"/bookings/{n}/fields/adults",
-          "expected",
+          "no_gold",
           value=h_adults,
           basis="email_hms_conflict",
           source="heuristic",
@@ -1111,43 +1231,44 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
 
     if n == 0 and e_children is not None:
       if h_children is not None and h_children != e_children:
-        b.add(
+        add_child_count(
+          b,
           f"/bookings/{n}/fields/child_count",
-          "expected",
-          value=h_children,
+          h_children,
           basis="email_hms_conflict",
           source="heuristic",
           hms_key="children",
+          conflict=True,
         )
       elif h_children is not None:
-        b.add(
+        add_child_count(
+          b,
           f"/bookings/{n}/fields/child_count",
-          "expected",
-          value=h_children,
+          h_children,
           basis="hms_and_or_email_children",
           source="hms_truth",
           hms_key="children",
         )
       else:
-        b.add(
+        add_child_count(
+          b,
           f"/bookings/{n}/fields/child_count",
-          "expected",
-          value=e_children,
+          e_children,
           basis="email_explicit_children",
           source="email_explicit",
           hms_key="children",
         )
     elif h_children is not None:
-      b.add(
+      add_child_count(
+        b,
         f"/bookings/{n}/fields/child_count",
-        "expected",
-        value=h_children,
+        h_children,
         basis="hms_children",
         source="hms_truth",
         hms_key="children",
       )
 
-    # room_type: email explicit wins; else HMS as heuristic
+    # room_type: email explicit wins; else HMS email-silent → diagnostic tier
     if n == 0 and eroom:
       h_room = room_value_from_hms(fields)
       h_code = h_room.get("code") if isinstance(h_room, dict) else None
@@ -1180,6 +1301,7 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
           value=h_room,
           basis="hms_room_email_silent",
           source="heuristic",
+          tier=TIER_DIAG,
           hms_key="roomtype",
         )
 
@@ -1204,6 +1326,7 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
         basis="hms_company",
         source="hms_truth",
         hms_key="company",
+        derivable=party_derivable(card, org),
       )
     if agency:
       b.add(
@@ -1213,6 +1336,7 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
         basis="hms_ta1",
         source="hms_truth",
         hms_key="ta1",
+        derivable=party_derivable(card, agency),
       )
     if fields.get("guaranteetype"):
       b.add(
@@ -1465,10 +1589,10 @@ def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
     b.stats["amend_hms_only_demoted"] += 1
 
   if e_children is not None:
-    b.add(
+    add_child_count(
+      b,
       f"/bookings/{n}/fields/child_count",
-      "expected",
-      value=e_children,
+      e_children,
       basis="email_amend_children",
       source="email_explicit",
       hms_key="children",
@@ -1618,14 +1742,22 @@ def build_filing(card: dict, wf: str, b: GoldBuilder) -> None:
     )
 
 
+def quote_adults_per_room(e_adults: int, e_qty: int | None) -> int | None:
+  """Quote rooms/N/adults is per-room. None when only a group total is knowable."""
+  if e_qty is None or e_qty <= 0:
+    return None
+  if e_adults % e_qty != 0:
+    return None
+  return e_adults // e_qty
+
+
 def build_quote(card: dict, wf: str, b: GoldBuilder) -> None:
   blob = selected_blob(card) or mail_blob(card)
   edates = email_dates(blob)
   e_adults, _e_children = email_adults_children(blob)
   e_qty = email_quantity(blob)
   board = email_board(blob)
-  rate = email_rate_code(blob)
-  # property default is staff convention, not email — skip unless we want heuristic; brief: only when explicit
+  # rate_code gold dropped (v5.1) — catalogue code rarely explicit in email.
   if edates.get("arrival_date"):
     b.add(
       "/actions/0/details/groups/0/arrival_date",
@@ -1643,13 +1775,23 @@ def build_quote(card: dict, wf: str, b: GoldBuilder) -> None:
       source="email_explicit",
     )
   if e_adults is not None:
-    b.add(
-      "/actions/0/details/groups/0/rooms/0/adults",
-      "expected",
-      value=e_adults,
-      basis="email_explicit_adults",
-      source="email_explicit",
-    )
+    per_room = quote_adults_per_room(e_adults, e_qty)
+    if per_room is not None:
+      b.add(
+        "/actions/0/details/groups/0/rooms/0/adults",
+        "expected",
+        value=per_room,
+        basis="email_explicit_adults_per_room",
+        source="email_explicit",
+      )
+    else:
+      b.add(
+        "/actions/0/details/groups/0/rooms/0/adults",
+        "no_gold",
+        value=e_adults,
+        basis="quote_adults_not_per_room",
+        source="heuristic",
+      )
   if e_qty is not None:
     b.add(
       "/actions/0/details/groups/0/rooms/0/quantity",
@@ -1664,14 +1806,6 @@ def build_quote(card: dict, wf: str, b: GoldBuilder) -> None:
       "expected",
       value=board,
       basis="email_explicit_board",
-      source="email_explicit",
-    )
-  if rate:
-    b.add(
-      "/actions/0/details/groups/0/rooms/0/rate_code",
-      "expected",
-      value=rate,
-      basis="email_explicit_rate",
       source="email_explicit",
     )
 
@@ -1706,7 +1840,7 @@ def apply_known_case_fixes(card: dict, wf: str, b: GoldBuilder) -> None:
       b.seen.discard("/bookings/0/fields/arrival_date")
       b.add(
         "/bookings/0/fields/arrival_date",
-        "expected",
+        "no_gold",
         value=h_arr,
         basis="email_hms_conflict",
         source="heuristic",
@@ -2031,7 +2165,12 @@ def sanity(name: str, built: dict) -> dict:
   # known fixes check
   known = {}
   for pref, check in [
-    ("hf-2275", lambda g: any(x.get("path") == "/bookings/0/fields/arrival_date" and x.get("value") == "2026-11-02" for x in g)),
+    ("hf-2275", lambda g: any(
+      x.get("path") == "/bookings/0/fields/arrival_date"
+      and (x.get("value") or x.get("later_value")) == "2026-11-02"
+      and x.get("basis") == "email_hms_conflict"
+      for x in g
+    )),
     ("p4-amend-eba5", lambda g: any(x.get("path") == "/bookings/0/fields/departure_date" and x.get("value") == "2026-09-04" for x in g)),
     ("hf-8b09", lambda g: any(x.get("path") == "/bookings/0/reservation_id" and x.get("value") == "48122614-1" for x in g)),
     ("hv2r-068f", lambda g: any(x.get("path") == "/bookings/0/fields/room_type" and (x.get("value") or {}).get("code") == "STQN" for x in g)),

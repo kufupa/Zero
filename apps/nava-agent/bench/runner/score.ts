@@ -730,6 +730,20 @@ export function scoreCase(input: {
       });
       continue;
     }
+    // Diagnostic rows (e.g. child_count==0) stay out of P0 hit/miss; equalish blank↔0 untouched.
+    if (gold.expectation === 'diagnostic') {
+      fields.push({
+        path: gold.path,
+        expectation: 'diagnostic',
+        result: 'no_gold',
+        expected: gold.value,
+        basis: gold.basis,
+        tier,
+        priority,
+        source,
+      });
+      continue;
+    }
 
     // Filing with zero PDFs: type + attachment_id unknowable → no_gold.
     if (

@@ -14,6 +14,8 @@ export type GoldV4Entry = {
   gold_patches?: Array<{path: string; expectation: string; basis?: string; value?: unknown}>;
   /** gold-v5: full replacement gold array (provenance-tagged). */
   gold?: GoldField[];
+  /** gold-v5 filing: voucher | pop | none (top-level, not inside gold[]). */
+  doc_kind?: string;
 };
 
 export type GoldV4Map = Record<string, GoldV4Entry>;
@@ -89,7 +91,11 @@ export function applyGoldOverlay(
 
   // gold-v5: full gold array replaces case gold (provenance-tagged).
   if (version === 'v5' && Array.isArray(overlay.gold)) {
-    return {...next, gold: overlay.gold};
+    const withGold: CaseCard = {...next, gold: overlay.gold};
+    if (overlay.doc_kind != null) {
+      return {...withGold, doc_kind: overlay.doc_kind};
+    }
+    return withGold;
   }
 
   const patches = overlay.gold_patches ?? [];

@@ -1,9 +1,10 @@
 export type Workflow = 'quote' | 'create' | 'amend' | 'cancel' | 'filing' | 'triage';
 
 export type GoldField =
-  | {path:string; expectation:'expected'; value:unknown; basis:string; tier?:string; hms_key?:string; before?:unknown}
-  | {path:string; expectation:'not_expected'; basis:string; tier?:string; later_value?:unknown; hms_key?:string}
-  | {path:string; expectation:'no_gold'; basis:string; tier?:string; later_value?:unknown; hms_key?:string};
+  | {path:string; expectation:'expected'; value:unknown; basis:string; tier?:string; hms_key?:string; before?:unknown; derivable?:string; priority?:string; source?:string}
+  | {path:string; expectation:'not_expected'; basis:string; tier?:string; later_value?:unknown; hms_key?:string; priority?:string; source?:string}
+  | {path:string; expectation:'no_gold'; basis:string; tier?:string; later_value?:unknown; hms_key?:string; priority?:string; source?:string}
+  | {path:string; expectation:'diagnostic'; value?:unknown; basis:string; tier?:string; later_value?:unknown; hms_key?:string; priority?:string; source?:string};
 
 export type TwinError = {
   code:string;
