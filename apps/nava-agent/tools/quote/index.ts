@@ -51,7 +51,7 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
     }
     const searchIndex=searches.length;
     try {
-      const {fetchQuote}=await import('./native/tooling/hms-cloud/fetch-quote.mjs');
+      const {fetchQuote}=await import(new URL('../../../server-pilot/tooling/hms-cloud/fetch-quote.mjs', import.meta.url).href);
       const native=await fetchQuote({propertyCode:request.property_code,signal:context.signal,credentialLease:context.credentialLease,request:{schemaVersion:2,propertyCode:request.property_code,arrivalDate:batch.arrival_date,departureDate:batch.departure_date,
         rooms:batch.rooms.map((room,index)=>({id:batch.identities[index].native_id,quantity:room.quantity,adults:room.adults,children:room.children,childAges:room.child_ages,...(room.required?{required:room.required}:{}),...(room.preferred?{preferred:room.preferred}:{})})),
         search:{includeRestricted:request.search?.include_restricted ?? false,includeAlternatives:request.search?.include_alternatives ?? true,...(request.search?.sales_strategy?{salesStrategy:request.search.sales_strategy}:{})},
