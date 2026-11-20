@@ -322,25 +322,37 @@ export async function runBench(options: {casesDir?: string; concurrency?: number
   }
   const selected = cards.slice(0, options.limit ?? cards.length);
   const wallStarted = Date.now();
+  const retryable = (err: unknown) =>
+    /429|rate|throttl|5\d\d|timeout|ECONNRESET|fetch failed/i.test(err instanceof Error ? err.message : String(err));
   const scores = await mapPool(selected, concurrency, async card => {
-    try {
-      const score = await runCase(card);
-      await writeFile(join(outDir, `${card.case_id}.json`), JSON.stringify(score));
-      return score;
-    } catch (error) {
-      // Run error → every expected tier1 miss + routing wrong; scoreboard counts errors.
-      const failed = scoreCase({
-        card,
-        proposal: null,
-        toolCalls: [],
-        tokens: {input: 0, output: 0, cached_input: 0},
-        wall_ms: 0,
-      });
-      failed.run_error = error instanceof Error ? error.message : 'unknown';
-      failed.twin_uncovered = [`RUN_ERROR:${failed.run_error}`];
-      await writeFile(join(outDir, `${card.case_id}.json`), JSON.stringify(failed));
-      return failed;
+    let attempts = 0;
+    let lastErr: unknown;
+    while (attempts < 4) {
+      attempts += 1;
+      try {
+        const score = await runCase(card);
+        score.attempts = attempts;
+        await writeFile(join(outDir, `${card.case_id}.json`), JSON.stringify(score));
+        return score;
+      } catch (error) {
+        lastErr = error;
+        if (attempts >= 4 || !retryable(error)) break;
+        await new Promise(r => setTimeout(r, 15_000 * (2 ** (attempts - 1)) + Math.floor(Math.random() * 1000)));
+      }
     }
+    // Run error → every expected tier1 miss + routing wrong; scoreboard counts errors.
+    const failed = scoreCase({
+      card,
+      proposal: null,
+      toolCalls: [],
+      tokens: {input: 0, output: 0, cached_input: 0},
+      wall_ms: 0,
+    });
+    failed.run_error = lastErr instanceof Error ? lastErr.message : 'unknown';
+    failed.twin_uncovered = [`RUN_ERROR:${failed.run_error}`];
+    failed.attempts = attempts;
+    await writeFile(join(outDir, `${card.case_id}.json`), JSON.stringify(failed));
+    return failed;
   });
   const board = buildScoreboard(scores);
   board.totals.wall_ms = Date.now() - wallStarted;
