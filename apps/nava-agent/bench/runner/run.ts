@@ -267,22 +267,18 @@ export async function runCase(card: CaseCard, options: {concurrencyToken?: unkno
         else result = {ok: true, data: {skill_name: skill, path, version: pin.version, text}, error: null};
       } else if (name === 'proposal_publish') {
         proposal_raw = input;
+        // Mirror prod: invalid publish → error back to the agent (it can republish); only valid drafts are kept.
         const parsed = proposalDraft.safeParse(input);
-        if (!parsed.success) {
-          proposal = input;
-          publish_invalid = true;
+        const staged = parsed.success ? stagePublishedDraft(parsed.data, toolCalls
+          .filter(call => call.name === 'hms_search_parties')
+          .map(call => ({input: call.input, response: call.result}))) : null;
+        if (staged?.kind === 'valid') {
+          proposal = staged.draft;
+          result = {ok: true, data: {proposal_id: `bench-${card.case_id}`, revision: 1, phase: 'ready'}, error: null};
         } else {
-          const partyReads = toolCalls
-            .filter(call => call.name === 'hms_search_parties')
-            .map(call => ({input: call.input, response: call.result}));
-          const staged = stagePublishedDraft(parsed.data, partyReads);
-          if (staged.kind === 'valid') proposal = staged.draft;
-          else {
-            proposal = input;
-            publish_invalid = staged.path;
-          }
+          publish_invalid = staged?.kind === 'invalid' ? staged.path : true;
+          result = {ok: false, data: null, error: {code: 'INVALID_FIELD_PATH', message: `Field ${JSON.stringify(staged?.kind === 'invalid' ? staged.path : 'proposal')} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`, retryable: false, outcome: 'known'}};
         }
-        result = {ok: true, data: {proposal_id: `bench-${card.case_id}`, revision: 1, phase: 'ready'}, error: null};
       } else if (name.startsWith('hms_')) {
         result = await twin.dispatch(name, input) as typeof result;
       } else {
