@@ -155,14 +155,17 @@ def priority_for(path: str) -> str:
     "arrival_date", "departure_date", "first_name", "last_name", "guest_name",
     "reservation_id", "confirmation_number", "attachment_id", "adults",
     "child_count", "child_ages",
+    # Owner ruler 2026-11-20: create/amend party + quote board are P0.
+    "agency_name", "organization_name", "board",
   }:
     return "P0"
   if leaf_name in {
-    "room_type", "rate_plan", "rate_code", "agency_name", "organization_name",
-    "guarantee_type", "track", "source_of_business", "type", "cancellation_reason",
-    "board", "quantity",
+    "room_type", "rate_plan", "rate_code",
+    "track", "source_of_business", "type", "cancellation_reason",
+    "quantity",
   }:
     return "P1"
+  # guarantee_type → P2: decided after payment/POP, not from the email.
   return "P2"
 
 
@@ -763,12 +766,24 @@ def names_from_hms(fields: dict) -> tuple[str | None, str | None]:
   return None, None
 
 
+def filing_doc_kind(doc_type: str | None, basis: str, att_id: str | None) -> str:
+  """Gold-level filing doc_kind from type logic: voucher | pop | none."""
+  if basis == "no_guest_pdf_in_input" or not att_id:
+    return "none"
+  if doc_type == "payment_proof_submission":
+    return "pop"
+  if doc_type == "voucher_submission":
+    return "voucher"
+  return "none"
+
+
 class GoldBuilder:
   def __init__(self) -> None:
     self.rows: list[dict] = []
     self.seen: set[str] = set()
     self.notes: list[str] = []
     self.stats: Counter[str] = Counter()
+    self.doc_kind: str | None = None
 
   def add(
     self,
@@ -1537,6 +1552,7 @@ def build_cancel(card: dict, wf: str, b: GoldBuilder) -> None:
 def build_filing(card: dict, wf: str, b: GoldBuilder) -> None:
   conf = card.get("real_confirmation")
   att_id, doc_type, source, basis = pick_filing_attachment(card)
+  b.doc_kind = filing_doc_kind(doc_type, basis, att_id)
   if basis == "no_guest_pdf_in_input" or not att_id:
     b.add(
       "/actions/0/details/attachment_id",
@@ -1750,7 +1766,7 @@ def build_case(card: dict, routing: dict | None) -> dict:
 
   apply_known_case_fixes(card, wf, b)
 
-  return {
+  out: dict[str, Any] = {
     "workflow": wf,
     "old_workflow": (routing or {}).get("old_workflow") or old_wf,
     "changed": bool((routing or {}).get("changed")) if routing else (wf != old_wf),
@@ -1764,6 +1780,9 @@ def build_case(card: dict, routing: dict | None) -> dict:
     "gold_patches": [],
     "n_patches": 0,
   }
+  if wf == "filing":
+    out["doc_kind"] = b.doc_kind or "none"
+  return out
 
 
 def count_amend_booking_expected(overlay: dict) -> dict[str, int]:
