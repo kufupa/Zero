@@ -727,16 +727,17 @@ def rate_plan_to_board(rate_plan: Any) -> str | None:
 
 
 def email_board(blob: str) -> str | None:
-  # DBB before BB so dinner+breakfast / B&B / half board do not collapse to BB.
+  # RO before BB so "without breakfast" / room-only never collapses to BB.
   if re.search(
-    r"\bdinner\b.{0,40}\b(?:breakfast|B\s*(?:&|and)\s*B|BB)\b"
-    r"|\b(?:breakfast|B\s*(?:&|and)\s*B|BB)\b.{0,40}\bdinner\b"
-    r"|\bdinner,?\s*(?:\+|and|&)?\s*(?:bed\s*(?:and|&)\s*breakfast|B(?:\s*(?:&|and)\s*)B)\b"
-    r"|\bdinner\s*\+\s*B\s*&\s*B\b"
-    r"|\bDBB\b"
-    r"|\bhalf\s+board\b",
+    r"\bwithout\s+breakfast\b|\broom[-\s]only\b|\bRO\b|\bbed\s+only\b",
     blob,
-    re.I | re.S,
+    re.I,
+  ):
+    return "RO"
+  # DBB: dinner + breakfast/B&B anywhere (e.g. "dinner R250 + bed and breakfast").
+  if re.search(r"\bDBB\b|\bhalf\s+board\b", blob, re.I) or (
+    re.search(r"\bdinner\b", blob, re.I)
+    and re.search(r"\bbreakfast\b|\bB\s*&\s*B\b|\bBB\b", blob, re.I)
   ):
     return "DBB"
   if re.search(
@@ -745,8 +746,6 @@ def email_board(blob: str) -> str | None:
     re.I,
   ):
     return "BB"
-  if re.search(r"\broom[- ]only\b|\bRO\b|\bwithout\s+breakfast\b|\bbed\s+only\b", blob, re.I):
-    return "RO"
   return None
 
 
@@ -846,6 +845,16 @@ def mail_has_headers(card: dict) -> bool:
   return False
 
 
+# Mirror apps/nava-agent/src/party-matching.ts PARTY_STOPWORDS (+ cc).
+PARTY_STOPWORDS = frozenset({
+  "travel", "travels", "tours", "tour", "agency", "agent", "agents", "company",
+  "group", "services", "service", "solutions", "holdings", "pty", "ltd", "limited",
+  "south", "africa", "african", "hotel", "hotels", "booking", "bookings",
+  "local", "district", "metropolitan", "municipality", "municipal", "department",
+  "national", "provincial", "office", "the", "and", "for", "of", "sa", "cc",
+})
+
+
 def distinctive_party_tokens(value: Any) -> list[str]:
   raw = str(value or "").strip()
   if not raw:
@@ -858,8 +867,10 @@ def distinctive_party_tokens(value: Any) -> list[str]:
       continue
     if t.isdigit():
       continue
+    if t.lower() in PARTY_STOPWORDS:
+      continue
     out.append(t)
-  if len(raw) >= 3 and raw.lower() not in {x.lower() for x in out}:
+  if len(raw) >= 3 and raw.lower() not in {x.lower() for x in out} and raw.lower() not in PARTY_STOPWORDS:
     out.append(raw)
   return out
 
@@ -1319,13 +1330,15 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
     else:
       h_room = room_value_from_hms(fields)
       if h_room:
+        # Silent room: diagnostic (not scored). score.ts only skips expectation=diagnostic.
         b.add(
           f"/bookings/{n}/fields/room_type",
-          "expected",
+          "diagnostic",
           value=h_room,
           basis="hms_room_email_silent",
           source="heuristic",
           tier=TIER_DIAG,
+          priority="P2",
           hms_key="roomtype",
         )
 
