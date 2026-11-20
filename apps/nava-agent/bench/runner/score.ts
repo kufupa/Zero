@@ -165,6 +165,23 @@ const BOARD_MEAL_PAIRS: Array<[string, string]> = [
   ['BARRO', 'room_only'],
 ];
 
+/** HRCEN rate_plan → board. Mirrors build_gold_v5.rate_plan_to_board. */
+export function ratePlanToBoard(ratePlan: unknown): 'DBB' | 'BB' | 'RO' | null {
+  let code: unknown = ratePlan;
+  if (ratePlan && typeof ratePlan === 'object' && !Array.isArray(ratePlan)) {
+    const row = ratePlan as Record<string, unknown>;
+    code = row.code ?? row.rate_plan ?? row.rateplan;
+  }
+  if (code == null || code === '') return null;
+  const c = String(code).trim().toUpperCase();
+  if (c === 'HSE' || c === 'BARB2B') return null;
+  if (/DBB?$/i.test(c)) return 'DBB';
+  if (/RO$/i.test(c) || c === 'DAY') return 'RO';
+  if (c === 'BAR' || c === 'EDU' || /^BDIRB[1-5]$/i.test(c)) return 'BB';
+  if (/B$/i.test(c) && !/DB$/i.test(c)) return 'BB';
+  return null;
+}
+
 function acronym(value: string): string {
   return value.split(/[^a-z0-9]+/i).filter(Boolean).map(part => part[0] ?? '').join('').toLowerCase();
 }
@@ -609,6 +626,16 @@ function createQuantityActual(proposal: unknown, digPath: string, actual: unknow
   return bookings.filter(b => catalogueEquivMatch(roomType, bookingFields(b).room_type) || equalish(roomType, bookingFields(b).room_type)).length;
 }
 
+/** CREATE board: explicit fields.board else derive from rate_plan; blank → miss. */
+function createBoardActual(proposal: unknown, digPath: string, actual: unknown): unknown {
+  if (!/\/bookings\/\d+\/fields\/board$/.test(digPath)) return actual;
+  if (actual != null && actual !== '') return actual;
+  const m = /^\/bookings\/(\d+)\//.exec(digPath);
+  const bookings = dig(proposal, '/bookings');
+  if (!m || !Array.isArray(bookings) || !bookings[Number(m[1])]) return actual;
+  return ratePlanToBoard(bookingFields(bookings[Number(m[1])]).rate_plan);
+}
+
 const workflowTools: Record<Workflow, string[]> = {
   create: ['mail_read_thread', 'skill_read', 'hms_search_parties', 'hms_read_catalogue', 'hms_quote', 'hms_prepare', 'proposal_publish'],
   amend: ['mail_read_thread', 'skill_read', 'hms_search_reservations', 'hms_read_reservation', 'hms_prepare', 'proposal_publish'],
@@ -791,7 +818,10 @@ export function scoreCase(input: {
     }
 
     let actual = digPath == null ? undefined : dig(proposal, digPath);
-    if (workflow === 'create' && digPath) actual = createQuantityActual(proposal, digPath, actual);
+    if (workflow === 'create' && digPath) {
+      actual = createQuantityActual(proposal, digPath, actual);
+      actual = createBoardActual(proposal, digPath, actual);
+    }
     const idPath = gold.path.endsWith('reservation_id') || gold.path.endsWith('confirmation_number');
     const partyPath = /organization_name$|agency_name$/.test(gold.path) || idPath;
     const guestPath = /\/fields\/(first_name|last_name)$/.test(gold.path);
