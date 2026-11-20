@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+import {readFile} from 'node:fs/promises';
 import {parseArgs} from 'node:util';
 import {resolveCasesDir} from './cases-sets.js';
 import {runBench} from './runner/run.js';
@@ -13,10 +14,17 @@ const {values, positionals} = parseArgs({
     limit: {type: 'string'},
     out: {type: 'string'},
     'cases-dir': {type: 'string'},
+    'case-ids': {type: 'string'},
     gold: {type: 'string', default: 'v4'},
     rescore: {type: 'boolean', default: false},
   },
 });
+
+async function loadCaseIds(path: string | undefined): Promise<string[] | undefined> {
+  if (!path) return undefined;
+  const text = await readFile(path, 'utf8');
+  return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+}
 
 function summarize(board: Scoreboard) {
   const t1 = {hit: 0, miss: 0};
@@ -58,9 +66,11 @@ function summarize(board: Scoreboard) {
   };
 }
 
+const caseIds = await loadCaseIds(values['case-ids']);
+
 if (values.rescore || positionals[0] === 'rescore') {
   const runDir = positionals[0] === 'rescore' ? positionals[1] : positionals[0];
-  if (!runDir) throw new Error('Usage: bench/cli.ts [--rescore] rescore <runDir> [--gold v4|v5] [--out dir]');
+  if (!runDir) throw new Error('Usage: bench/cli.ts [--rescore] rescore <runDir> [--gold v4|v5] [--out dir] [--case-ids file]');
   const goldRaw = (values.gold ?? 'v4').toLowerCase();
   if (goldRaw !== 'v4' && goldRaw !== 'v5') throw new Error(`--gold must be v4|v5, got ${values.gold}`);
   const casesDir = values['cases-dir'] ?? inferCasesDir(runDir);
@@ -69,6 +79,7 @@ if (values.rescore || positionals[0] === 'rescore') {
     casesDir,
     outDir: values.out,
     gold: goldRaw as GoldVersion,
+    caseIds,
   });
   console.log(JSON.stringify({
     mode: 'rescore',
@@ -96,6 +107,7 @@ if (values.rescore || positionals[0] === 'rescore') {
     limit: Number.isFinite(limit) ? limit : undefined,
     outDir: values.out,
     casesDir: resolved.casesDir,
+    caseIds,
   });
 
   console.log(JSON.stringify({

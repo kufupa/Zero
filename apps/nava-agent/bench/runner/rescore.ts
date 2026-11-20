@@ -4,6 +4,8 @@ import {readdir, readFile, writeFile, mkdir} from 'node:fs/promises';
 import {basename, join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {parseArgs} from 'node:util';
+import {proposalDraft} from '../../src/schema.js';
+import {stagePublishedDraft} from '../../src/tool-registry.js';
 import type {CaseCard} from '../types.js';
 import {attachRuler, buildScoreboard, scoreCase, type CaseScore} from './score.js';
 import {
@@ -14,6 +16,73 @@ import {
   type GoldSetName,
   type GoldV4Map,
 } from './gold-overlay.js';
+
+type PartyRead = {input: unknown; response: unknown};
+type QualityCall = {
+  name: string;
+  ok: boolean;
+  input?: string;
+  hits?: number;
+  top?: Array<{displayName?: unknown; name?: unknown; id?: unknown}>;
+};
+
+/** Rebuild party reads from live toolCalls or persisted tool_quality inputs/top. */
+function partyReadsFromPrior(
+  toolCalls: Array<{name: string; input?: unknown; result?: unknown}>,
+  qualityCalls: QualityCall[] | undefined,
+): PartyRead[] {
+  const fromLive = toolCalls
+    .filter(call => call.name === 'hms_search_parties')
+    .map(call => ({input: call.input, response: call.result}));
+  if (fromLive.some(row => row.input != null && row.response != null)) return fromLive;
+
+  const out: PartyRead[] = [];
+  for (const call of qualityCalls ?? []) {
+    if (call.name !== 'hms_search_parties') continue;
+    let input: unknown;
+    try { input = JSON.parse(call.input ?? ''); } catch { continue; }
+    if (input == null || input === '') continue;
+    const body = input as {query?: unknown; field?: unknown; kind?: unknown};
+    const top = call.top ?? [];
+    const candidates = top.map(row => {
+      const name = String(row.name ?? row.displayName ?? '');
+      const parts = name.trim().split(/\s+/);
+      return {
+        nativeId: String(row.id ?? ''),
+        name,
+        firstName: parts[0] ?? '',
+        lastName: parts.slice(1).join(' ') || (parts[0] ?? ''),
+        displayName: row.displayName ?? name,
+      };
+    });
+    const query = typeof body.query === 'string' ? body.query : '';
+    const native: Record<string, unknown> = {
+      outcome: candidates.length ? 'matches' : 'no_match',
+      criteria: body.field === 'profile_id'
+        ? {field: 'profileId', query}
+        : {query},
+      coverage: {possiblyTruncated: false},
+      candidates,
+    };
+    out.push({
+      input,
+      response: {ok: call.ok !== false, data: {native, selection: candidates.length === 1 ? candidates[0] : 'none', ambiguity: null}, error: null},
+    });
+  }
+  return out;
+}
+
+function stageRawProposal(
+  raw: unknown,
+  partyReads: PartyRead[],
+): {proposal: unknown; proposal_raw: unknown; publish_invalid?: string | true} {
+  if (raw == null || typeof raw !== 'object') return {proposal: raw, proposal_raw: raw};
+  const parsed = proposalDraft.safeParse(raw);
+  if (!parsed.success) return {proposal: raw, proposal_raw: raw, publish_invalid: true};
+  const staged = stagePublishedDraft(parsed.data, partyReads);
+  if (staged.kind === 'invalid') return {proposal: raw, proposal_raw: raw, publish_invalid: staged.path};
+  return {proposal: staged.draft, proposal_raw: raw};
+}
 
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
@@ -87,7 +156,8 @@ export async function rescoreRun(options: {
     const prior = JSON.parse(await readFile(join(options.runDir, name), 'utf8')) as CaseScore & {
       proposal?: unknown;
       proposal_raw?: unknown;
-      tool_quality?: {calls?: Array<{name: string; ok: boolean}>};
+      tool_quality?: {calls?: QualityCall[]};
+      toolCalls?: Array<{name: string; input?: unknown; result?: unknown}>;
     };
     // Skip non-case artifacts accidentally dropped in the run dir.
     if (!prior.case_id && !('proposal' in prior) && !('fields' in prior)) continue;
@@ -102,19 +172,23 @@ export async function rescoreRun(options: {
     if (goldMap) card = applyGoldV4(card, goldMap[caseId]);
     const toolCalls = (prior.tool_quality?.calls ?? []).map(call => ({
       name: call.name,
-      input: (() => { try { return JSON.parse((call as {input?: string}).input ?? ''); } catch { return undefined; } })(),
+      input: (() => { try { return JSON.parse(call.input ?? ''); } catch { return undefined; } })(),
       result: {ok: call.ok},
     }));
-    // Prefer full tool calls if present on prior score files
-    const priorAny = prior as CaseScore & {toolCalls?: typeof toolCalls};
+    const liveCalls = prior.toolCalls ?? toolCalls;
+    const partyReads = partyReadsFromPrior(liveCalls, prior.tool_quality?.calls);
     // Prefer raw proposal from prior runs; fall back to stored proposal (pre-L1 runs only saved raw).
     const rawProposal = prior.proposal_raw ?? prior.proposal ?? null;
+    const staged = stageRawProposal(rawProposal, partyReads);
     const score = scoreCase({
       card,
-      proposal: rawProposal,
-      toolCalls: priorAny.toolCalls ?? toolCalls,
+      proposal: staged.proposal,
+      proposal_raw: staged.proposal_raw,
+      toolCalls: liveCalls,
       tokens: prior.tokens ?? {input: 0, output: 0, cached_input: 0},
       wall_ms: prior.wall_ms ?? 0,
+      normalize: false,
+      publish_invalid: staged.publish_invalid,
     });
     // Preserve cost/tokens from original Luna run
     score.tokens = prior.tokens ?? score.tokens;
@@ -146,7 +220,7 @@ export async function rescoreRun(options: {
     gold_overlay: goldMap ? `gold-${goldVersion}` : 'off',
     gold_sha256: board.ruler?.gold_sha256 ?? null,
     scorer_sha: board.ruler?.scorer_sha ?? null,
-    note: 'L1 honest scorer offline rescore. Case set frozen at rescore start.',
+    note: 'L9 stagePublishedDraft offline rescore. Case set frozen at rescore start.',
   }, null, 2));
   await writeFile(join(outDir, 'scoreboard.json'), JSON.stringify(board, null, 2));
   await writeFile(join(outDir, 'scoreboard-dev.json'), JSON.stringify(board, null, 2));
@@ -205,6 +279,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       gold: {type: 'string', default: 'v4'},
       'cases-dir': {type: 'string'},
       out: {type: 'string'},
+      'case-ids': {type: 'string'},
     },
     allowPositionals: true,
   });
@@ -212,12 +287,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (goldRaw !== 'v4' && goldRaw !== 'v5') {
     throw new Error(`--gold must be v4|v5, got ${values.gold}`);
   }
+  const caseIds = values['case-ids']
+    ? (await readFile(values['case-ids'], 'utf8')).split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+    : undefined;
   const runDir = positionals[0] ?? join(DATA_ROOT, 'runs/run-2026-11-19T08-35-06-901Z');
   const {outDir, board, n, goldFile} = await rescoreRun({
     runDir,
     casesDir: values['cases-dir'],
     outDir: values.out,
     gold: goldRaw,
+    caseIds,
   });
   process.stdout.write(JSON.stringify({
     outDir, n, gold: goldRaw, goldFile,

@@ -8,6 +8,8 @@ import {tools as baselineTools} from '../../src/schema.js';
 import {schemas as triageSchemas} from '../../tools/triage/schema.js';
 import {quoteSchema} from '../../tools/quote/schema.js';
 import {skillReadDefinition} from '../../tools/skills/schema.js';
+import {proposalDraft} from '../../src/schema.js';
+import {stagePublishedDraft} from '../../src/tool-registry.js';
 import {createTwin} from '../twin/index.js';
 import type {CaseCard} from '../types.js';
 import {attachRuler, buildScoreboard, scoreCase, type CaseScore, type Scoreboard} from './score.js';
@@ -212,7 +214,9 @@ export async function runCase(card: CaseCard, options: {concurrencyToken?: unkno
     version: 0,
   };
   let proposal: unknown = null;
-  const toolCalls: Array<{name: string; input?: unknown; result?: {ok?: boolean; error?: {code?: string} | null}}> = [];
+  let proposal_raw: unknown = null;
+  let publish_invalid: string | true | undefined;
+  const toolCalls: Array<{name: string; input?: unknown; result?: {ok?: boolean; data?: unknown; error?: {code?: string} | null}}> = [];
   let tokens = {input: 0, output: 0, cached_input: 0};
   const stopReasons = new Map<number, string | null>();
   const started = Date.now();
@@ -262,8 +266,19 @@ export async function runCase(card: CaseCard, options: {concurrencyToken?: unkno
         if (!text) result = {ok: false, data: null, error: {code: 'SKILL_REFERENCE_UNAVAILABLE', message: 'Skill reference unavailable in pinned tree.', retryable: false, outcome: 'known'}};
         else result = {ok: true, data: {skill_name: skill, path, version: pin.version, text}, error: null};
       } else if (name === 'proposal_publish') {
-        proposal = input;
-        result = {ok: true, data: {proposal_id: `bench-${card.case_id}`, revision: 1, phase: 'ready'}, error: null};
+        proposal_raw = input;
+        // Mirror prod: invalid publish → error back to the agent (it can republish); only valid drafts are kept.
+        const parsed = proposalDraft.safeParse(input);
+        const staged = parsed.success ? stagePublishedDraft(parsed.data, toolCalls
+          .filter(call => call.name === 'hms_search_parties')
+          .map(call => ({input: call.input, response: call.result}))) : null;
+        if (staged?.kind === 'valid') {
+          proposal = staged.draft;
+          result = {ok: true, data: {proposal_id: `bench-${card.case_id}`, revision: 1, phase: 'ready'}, error: null};
+        } else {
+          publish_invalid = staged?.kind === 'invalid' ? staged.path : true;
+          result = {ok: false, data: null, error: {code: 'INVALID_FIELD_PATH', message: `Field ${JSON.stringify(staged?.kind === 'invalid' ? staged.path : 'proposal')} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`, retryable: false, outcome: 'known'}};
+        }
       } else if (name.startsWith('hms_')) {
         result = await twin.dispatch(name, input) as typeof result;
       } else {
@@ -288,8 +303,17 @@ export async function runCase(card: CaseCard, options: {concurrencyToken?: unkno
   const opaqueId = createHash('sha1').update(card.case_id).digest('hex').slice(0, 10);
   const nudge = `Bench case ${opaqueId}. as_of=${card.as_of}. Property HRCEN. Read mail_read_thread first, then skills/tools, then proposal_publish.`;
   await runtime.startTurn(card.case_id, {sessionId: card.case_id, content: nudge});
-  // scoreCase normalizes via withCreateNativeFields / withQuoteStaffFields and keeps proposal_raw.
-  return scoreCase({card, proposal, toolCalls, tokens, wall_ms: Date.now() - started});
+  // Already staged via stagePublishedDraft; skip score.ts re-normalize.
+  return scoreCase({
+    card,
+    proposal,
+    proposal_raw: proposal_raw ?? proposal,
+    toolCalls,
+    tokens,
+    wall_ms: Date.now() - started,
+    normalize: false,
+    publish_invalid,
+  });
 }
 
 async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
@@ -306,20 +330,33 @@ async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T, inde
   return out;
 }
 
-export async function runBench(options: {casesDir?: string; concurrency?: number; limit?: number; outDir?: string} = {}) {
+export async function runBench(options: {
+  casesDir?: string;
+  concurrency?: number;
+  limit?: number;
+  outDir?: string;
+  caseIds?: string[];
+} = {}) {
   const casesDir = options.casesDir ?? join(DATA_ROOT, 'cases/v1');
   const outDir = options.outDir ?? join(DATA_ROOT, 'runs', `run-${new Date().toISOString().replace(/[:.]/g, '-')}`);
   const concurrency = options.concurrency ?? 20;
   await mkdir(outDir, {recursive: true});
-  const entries = (await readdir(casesDir, {withFileTypes: true})).filter(e => e.isDirectory());
+  // Stable order so --limit is deterministic across hosts.
+  const entries = (await readdir(casesDir, {withFileTypes: true}))
+    .filter(e => e.isDirectory())
+    .sort((a, b) => a.name.localeCompare(b.name));
   const goldV4 = await loadGoldV4(casesDir);
+  const allow = options.caseIds ? new Set(options.caseIds) : null;
   const cards: CaseCard[] = [];
   for (const entry of entries) {
+    if (allow && !allow.has(entry.name)) continue;
     try {
       const raw = JSON.parse(await readFile(join(casesDir, entry.name, 'case.json'), 'utf8')) as CaseCard;
+      if (allow && !allow.has(raw.case_id)) continue;
       cards.push(goldV4 ? applyGoldV4(raw, goldV4[raw.case_id]) : raw);
     } catch { /* skip */ }
   }
+  cards.sort((a, b) => a.case_id.localeCompare(b.case_id));
   const selected = cards.slice(0, options.limit ?? cards.length);
   const wallStarted = Date.now();
   const retryable = (err: unknown) =>
