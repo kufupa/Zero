@@ -160,11 +160,19 @@ export const AMEND_SUPPORTED_FIELD_KEYS = new Set([
   'first_name', 'last_name', 'booker_name', 'booker_contact', 'reservation_note', 'note',
 ]);
 
+/** Native HMS confirmation: digits with optional stay suffix. Agency/booking refs fail this. */
+const HMS_CONFIRMATION = /^\d{1,30}(?:-\d{1,10})?$/;
+
 export function withAmendSupportedFields(draft: ProposalDraft): ProposalDraft {
   if (draft.workflow !== 'amend') return draft;
   const warnings = [...draft.warnings];
   const bookings = draft.bookings.map(booking => {
     const fields = {...booking.fields};
+    let reservation_id = booking.reservation_id;
+    if (reservation_id != null && !HMS_CONFIRMATION.test(reservation_id)) {
+      warnings.push(`Dropped non-HMS amend reservation_id; agency/booking refs are not confirmations.`);
+      reservation_id = null;
+    }
     for (const key of Object.keys(fields)) {
       if (AMEND_SUPPORTED_FIELD_KEYS.has(key)) continue;
       if (key === 'room_mix' || /room/i.test(key)) {
@@ -174,7 +182,7 @@ export function withAmendSupportedFields(draft: ProposalDraft): ProposalDraft {
       }
       delete fields[key];
     }
-    return {...booking, fields};
+    return {...booking, reservation_id, fields};
   });
   const field_specs = draft.field_specs.filter(spec => {
     const path = spec.path.startsWith('/') ? spec.path : `/${spec.path}`;

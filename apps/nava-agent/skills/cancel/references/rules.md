@@ -1,6 +1,6 @@
 # Cancellation scope and fees
 
-For an identifiable current cancellation that staff can select, publish an editable `propose` action. Link one `cancel` action to one booking. Use the verified HMS confirmation, or `reservation_id: null` with editable guest/date hints for staff selection.
+For an identifiable current cancellation that staff can select, publish an editable `propose` action. Link one `cancel` action to one booking. Keep a visible mail or HMS confirmation on `reservation_id`; use null only when no token exists, with editable guest/date hints for staff selection. On already-Cancelled / `skip`, still keep that confirmation.
 
 Set `action.details.requested_scope` from the mail: `whole_stay` for the named booking as a whole, `specific_room` for a clearly named room or part, and `unspecified` when unclear. Add editable field specs for `/actions/0/details/requested_scope`, `/actions/0/details/cancellation_reason`, `/actions/0/details/cancellation_note`, and known guest/date hints. Copy an explicit guest reason to `cancellation_note`; leave `cancellation_reason` blank until staff selects an exact current HMS option. `Test Reservations` is Labtest-only. The native cancel tool prepares whole-stay requests only; warn staff when they must handle another scope directly in HMS.
 
