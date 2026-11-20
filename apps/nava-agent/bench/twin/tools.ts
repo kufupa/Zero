@@ -127,70 +127,46 @@ function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEn
   const kind = String(input.kind ?? 'guest');
   const field = String(input.field ?? 'last_name');
   const rawQuery = String(input.query ?? '').trim();
-  const queries = rawQuery ? partySearchQueries(rawQuery, kind).map(q => q.toLowerCase()) : [''];
-  const candidates: Array<Record<string, unknown>> = [];
-  if (kind === 'guest') {
-    for (const profile of world.profiles) {
-      const first = String(profile.firstName ?? profile.first_name ?? '').toLowerCase();
-      const last = String(profile.lastName ?? profile.last_name ?? '').toLowerCase();
-      const email = String(profile.email ?? '').toLowerCase();
-      const id = String(profile.nativeId ?? profile.profile_id ?? profile.guestid ?? '');
-      const hay =
-        field === 'first_name' ? first :
-        field === 'email' ? email :
-        field === 'profile_id' ? id.toLowerCase() :
-        last;
-      const hit = queries.some(q => !q || hay.includes(q) || `${last} ${first}`.includes(q));
-      if (hit) {
-        const displayName =
-          `${profile.firstName ?? profile.first_name ?? ''} ${profile.lastName ?? profile.last_name ?? ''}`.trim() || null;
-        candidates.push({
-          nativeId: id || `twin-guest-${candidates.length + 1}`,
-          firstName: profile.firstName ?? profile.first_name ?? null,
-          lastName: profile.lastName ?? profile.last_name ?? null,
-          displayName,
-          name: displayName,
-        });
+  // Mirror prod: try partySearchQueries terms in order, stop at the first term with hits (no OR, no fake cap).
+  const queries = rawQuery ? partySearchQueries(rawQuery, kind) : [''];
+  let candidates: Array<Record<string, unknown>> = [];
+  let matchedTerm = rawQuery;
+  for (const term of queries) {
+    const q = term.toLowerCase();
+    const batch: Array<Record<string, unknown>> = [];
+    if (kind === 'guest') {
+      for (const profile of world.profiles) {
+        const first = String(profile.firstName ?? profile.first_name ?? '').toLowerCase();
+        const last = String(profile.lastName ?? profile.last_name ?? '').toLowerCase();
+        const email = String(profile.email ?? '').toLowerCase();
+        const id = String(profile.nativeId ?? profile.profile_id ?? profile.guestid ?? '');
+        const hay = field === 'first_name' ? first : field === 'email' ? email : field === 'profile_id' ? id.toLowerCase() : last;
+        if (!q || hay.includes(q) || `${last} ${first}`.includes(q)) {
+          const displayName = `${profile.firstName ?? profile.first_name ?? ''} ${profile.lastName ?? profile.last_name ?? ''}`.trim() || null;
+          batch.push({nativeId: id || `twin-guest-${batch.length + 1}`, firstName: profile.firstName ?? profile.first_name ?? null, lastName: profile.lastName ?? profile.last_name ?? null, displayName, name: displayName});
+        }
       }
-      if (candidates.length >= 25) break;
+    } else {
+      for (const row of partyRecords(world, kind)) {
+        const id = String(row.nativeId ?? row.code ?? row.id ?? '');
+        const name = String(row.meaning ?? row.name ?? row.label ?? '');
+        const nameLower = name.toLowerCase();
+        const code = String(row.code ?? '').toLowerCase();
+        const hay = field === 'profile_id' ? id.toLowerCase() : `${nameLower} ${code}`;
+        if (!q || hay.includes(q) || (nameLower.length >= 3 && q.includes(nameLower)) || (code && q === code) || tokenOverlap(nameLower, q)) {
+          batch.push({nativeId: id || `twin-${kind}-${batch.length + 1}`, code: row.code ?? null, displayName: name || null, name: name || null, kind});
+        }
+      }
     }
-  } else {
-    for (const row of partyRecords(world, kind)) {
-      const id = String(row.nativeId ?? row.code ?? row.id ?? '');
-      const name = String(row.meaning ?? row.name ?? row.label ?? '');
-      const nameLower = name.toLowerCase();
-      const code = String(row.code ?? '').toLowerCase();
-      const hay = field === 'profile_id' ? id.toLowerCase() : `${nameLower} ${code}`;
-      const hit = queries.some(q =>
-        !q ||
-        hay.includes(q) ||
-        (nameLower.length >= 3 && q.includes(nameLower)) ||
-        (code && q === code) ||
-        tokenOverlap(nameLower, q),
-      );
-      if (!hit) continue;
-      candidates.push({
-        nativeId: id || `twin-${kind}-${candidates.length + 1}`,
-        code: row.code ?? null,
-        displayName: row.meaning ?? row.name ?? row.label ?? null,
-        name: row.meaning ?? row.name ?? row.label ?? null,
-        kind,
-      });
-      if (candidates.length >= 25) break;
-    }
+    if (batch.length) { candidates = batch; matchedTerm = term; break; }
   }
-  // Match prod triage/index.ts:385 — auto-select only org/agency when exactly one untruncated hit.
-  const truncated = candidates.length >= 25;
-  const single =
-    ['organization', 'agency'].includes(kind) && !truncated && candidates.length === 1
-      ? candidates[0]
-      : null;
+  const single = ['organization', 'agency'].includes(kind) && candidates.length === 1 ? candidates[0] : null;
   return ok({
     native: {
       outcome: candidates.length ? 'matches' : 'no_match',
-      criteria: {query: rawQuery}, // prod shape; tool-registry partyRead needs it to bind
+      criteria: {query: matchedTerm || rawQuery}, // prod shape; tool-registry partyRead needs it to bind
       candidates,
-      coverage: {possiblyTruncated: truncated, source: 'twin'},
+      coverage: {possiblyTruncated: false, source: 'twin'},
     },
     selection: single ?? 'none',
     ambiguity: single ? null : 'Multiple or incomplete candidates require staff selection.',
