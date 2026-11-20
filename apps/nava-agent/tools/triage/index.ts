@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { schemas } from './schema.js';
 import { proposalDraft, type ProposalDraft } from '../../src/schema.js';
-import { partySearchQueries } from '../../src/party-matching.js';
+import postgres from 'postgres';
+import { extractSenderHost, partyQueriesWithLearned, resolvePartySelection, type LearnedSenderHit } from '../../src/party-matching.js';
 
 export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
 export type ToolResult = { ok: boolean; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } | null };
@@ -382,15 +383,36 @@ const partyFields: Record<string, Record<string, string>> = {
   guest: { last_name: 'lastName', first_name: 'firstName', email: 'email', phone: 'phoneNumber', profile_id: 'profileId' },
   organization: { name: 'name' }, agency: { name: 'name' }, ar_account: { name: 'name' },
 };
+
+let partySql: ReturnType<typeof postgres> | null | undefined;
+/** Read-only party_sender_map via PARTY_SENDER_DATABASE_URL ?? lease URL. Never writes. */
+async function lookupSenderParty(property: string, host: string, kind: 'agency' | 'organization'): Promise<LearnedSenderHit | null> {
+  if (partySql === undefined) {
+    const url = process.env.PARTY_SENDER_DATABASE_URL ?? process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
+    try { partySql = url ? postgres(url, { max: 2 }) : null; } catch { partySql = null; }
+  }
+  if (!partySql) return null;
+  try {
+    const [row] = await partySql<{ name: string; native_id: string | null; support: number }[]>`
+      SELECT name, native_id, support FROM party_sender_map
+      WHERE property_code = ${property} AND (host = ${host} OR ${host} LIKE '%.' || host)
+        AND kind = ${kind === 'agency' ? 'agency' : 'company'} AND support >= 2
+      ORDER BY length(host) DESC LIMIT 1`;
+    return row?.name ? { host, kind, name: row.name, nativeId: row.native_id ?? null, support: Number(row.support) || 0 } : null;
+  } catch { return null; }
+}
+
 export async function searchParties(input: unknown, context: ToolContext): Promise<ToolResult> {
-  if (!obj(input) || !keys(input, ['property_code', 'kind', 'field', 'query']) || !str(input.property_code) || !str(input.kind) || !str(input.field) || !str(input.query) || !Object.hasOwn(partyFields, input.kind) || !Object.hasOwn(partyFields[input.kind], input.field)) return fail('INVALID_INPUT', 'Property, supported party kind, field and query are required.');
+  if (!obj(input) || !keys(input, ['property_code', 'kind', 'field', 'query', 'sender_host']) || !str(input.property_code) || !str(input.kind) || !str(input.field) || !str(input.query) || !Object.hasOwn(partyFields, input.kind) || !Object.hasOwn(partyFields[input.kind], input.field) || (input.sender_host !== undefined && !str(input.sender_host))) return fail('INVALID_INPUT', 'Property, supported party kind, field and query are required.');
   const property = input.property_code, kind = input.kind, field = partyFields[kind][input.field], query = input.query;
   return execute(context, async () => {
+    const host = extractSenderHost(input.sender_host, query);
+    const learned = host && (kind === 'agency' || kind === 'organization') ? await lookupSenderParty(property, host, kind) : null;
     const { withCloudLookupReadSession } = await native('hms-lookup-read-session.mjs');
     const result: Record<string, unknown> = await withCloudLookupReadSession(
       async ({ runTool }: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) => {
         let found: Record<string, unknown> = {};
-        for (const term of partySearchQueries(query, kind)) {
+        for (const term of partyQueriesWithLearned(query, kind, learned?.name)) {
           found = await runTool(kind === 'guest' ? { tool: 'searchGuestProfiles', field, query: term } :
             { tool: kind === 'organization' ? 'searchOrganization' : kind === 'agency' ? 'searchPrimaryBookingAgency' : 'searchArAccount', query: term });
           if (found.outcome !== 'no_match' || !obj(found.coverage) || found.coverage.possiblyTruncated !== false) break;
@@ -400,9 +422,15 @@ export async function searchParties(input: unknown, context: ToolContext): Promi
       { propertyCode: property, signal: context.signal, credentialLease: context.credentialLease },
     );
     if (!['matches', 'no_match', 'ambiguous', 'resolved', 'incomplete'].includes(String(result.outcome))) return fail(String(result.issue || 'PARTY_SEARCH_FAILED'), 'Native party search failed.', true);
-    const candidates = Array.isArray(result.candidates) ? result.candidates : [];
-    const single = ['organization', 'agency'].includes(kind) && result.outcome === 'matches' && obj(result.coverage) && result.coverage.possiblyTruncated === false && candidates.length === 1 ? candidates[0] : null;
-    return ok({ native: result, selection: single ?? 'none', ambiguity: single ? null : 'Multiple or incomplete candidates require staff selection.' });
+    const candidates = (Array.isArray(result.candidates) ? result.candidates : []).filter(obj);
+    const truncated = !(obj(result.coverage) && result.coverage.possiblyTruncated === false) || !['matches', 'no_match'].includes(String(result.outcome));
+    const resolved = resolvePartySelection(kind, candidates, truncated, learned);
+    return ok({
+      native: result,
+      selection: resolved.selection,
+      ambiguity: resolved.ambiguity,
+      ...(learned ? { sender_history: { host: learned.host, kind: learned.kind, name: learned.name, nativeId: learned.nativeId, support: learned.support } } : {}),
+    });
   });
 }
 

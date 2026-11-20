@@ -36,3 +36,29 @@ export function partySearchQueries(name:string, kind:string):string[] {
 export function samePartyName(left:string,right:string,kind:string):boolean {
   return partySearchQueries(left,kind).some(item=>normalizePartyName(item)===normalizePartyName(right));
 }
+
+export type LearnedSenderHit = { host: string; kind: 'agency' | 'organization'; name: string; nativeId: string | null; support: number };
+
+/** Prefer sender_host; else email/domain query. Skip freemail + owned-hotel hosts. */
+export function extractSenderHost(senderHost: unknown, query: string): string | null {
+  const src = typeof senderHost === 'string' && senderHost.trim() ? senderHost
+    : /@/.test(query) || (!/\s/.test(query.trim()) && /\.[a-z]{2,}$/i.test(query.trim())) ? query : '';
+  const host = src.trim().toLowerCase().replace(/\.+$/, '').split('@').pop() ?? '';
+  return !host || /(^|\.)(gmail|googlemail|yahoo|hotmail|outlook|icloud|live|msn|me\.com|aol|protonmail|proton\.me|mail\.com|gmx\.|yandex|mweb\.co\.za|telkomsa\.net|webmail\.co\.za|legacyhotels?)/.test(host) ? null : host;
+}
+
+export function partyQueriesWithLearned(query: string, kind: string, learned?: string | null): string[] {
+  const base = partySearchQueries(query, kind);
+  return !learned?.trim() ? base : [learned.trim(), ...base.filter(q => normalizePartyName(q) !== normalizePartyName(learned))];
+}
+
+export function resolvePartySelection(kind: string, candidates: Array<Record<string, unknown>>, truncated: boolean, learned?: LearnedSenderHit | null) {
+  const ok = ['organization', 'agency'].includes(kind) && !truncated;
+  if (ok && candidates.length === 1) return { selection: candidates[0]!, ambiguity: null as string | null };
+  if (ok && candidates.length > 1 && learned) {
+    const hit = candidates.filter(c => (learned.nativeId && String(c.nativeId ?? c.native_id ?? '') === learned.nativeId)
+      || normalizePartyName(String(c.displayName ?? c.name ?? '')) === normalizePartyName(learned.name));
+    if (hit.length === 1) return { selection: hit[0]!, ambiguity: null };
+  }
+  return { selection: 'none' as const, ambiguity: 'Multiple or incomplete candidates require staff selection.' };
+}
