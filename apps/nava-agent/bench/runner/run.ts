@@ -274,6 +274,7 @@ export async function runCase(card: CaseCard, options: {concurrencyToken?: unkno
           .map(call => ({input: call.input, response: call.result}))) : null;
         if (staged?.kind === 'valid') {
           proposal = staged.draft;
+          publish_invalid = undefined;
           result = {ok: true, data: {proposal_id: `bench-${card.case_id}`, revision: 1, phase: 'ready'}, error: null};
         } else {
           publish_invalid = staged?.kind === 'invalid' ? staged.path : true;
