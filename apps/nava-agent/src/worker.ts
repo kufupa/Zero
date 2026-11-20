@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
-import { access, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -107,9 +107,7 @@ export function createNativeAdmission():NativeAdmission {
     let admitted=false;
     const run=()=>semaphore.run(bounded,async()=>{
       admitted=true;timing?.('local_wait',performance.now()-started);
-      const bundledQuote=fileURLToPath(new URL('../tools/quote/native/tooling/hms-cloud/cloud-session.mjs',import.meta.url));
-      let nativePath=process.env.NAVA_HMS_SESSION_MODULE ?? fileURLToPath(new URL('../../server-pilot/tooling/hms-cloud/cloud-session.mjs',import.meta.url));
-      if(scope==='quote') { try { await access(bundledQuote);nativePath=bundledQuote; } catch { /* quote uses the shared native module */ } }
+      const nativePath=process.env.NAVA_HMS_SESSION_MODULE ?? fileURLToPath(new URL('../../server-pilot/tooling/hms-cloud/cloud-session.mjs',import.meta.url));
       const cloud=await import(pathToFileURL(nativePath).href);
       if(typeof cloud.withCloudCredentialLease!=='function') throw new Error('NATIVE_ADMISSION_UNAVAILABLE');
       const completed:{value:T}[]=[];
@@ -492,7 +490,7 @@ if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url))
     if(cause instanceof Error && cause.constructor.name==='TargetClosedError2'
       && cause.message==='Target page, context or browser has been closed'
       && stack.includes('at Connection.close (') && stack.includes('at Browser2.close (')
-      && stack.includes('/tools/quote/native/tooling/hms-cloud/cloud-session.mjs:')) {
+      && stack.includes('/tooling/hms-cloud/cloud-session.mjs:')) {
       if(!reportedQuoteClosures.has(cause)) {
         reportedQuoteClosures.add(cause);
         console.warn(JSON.stringify({event:'quote_browser_close_rejection',error:cause.constructor.name}));
