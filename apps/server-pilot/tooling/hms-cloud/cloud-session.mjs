@@ -353,7 +353,7 @@ function validateSecret(property, raw, transportId) {
 }
 
 async function loadCloudSecret({ secretArn, signal }) {
-  const client = new SecretsManagerClient({ region: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'af-south-1' });
+  const client = new SecretsManagerClient({ region: process.env.NAVA_HMS_AWS_REGION ?? 'af-south-1' });
   try {
     const result = await client.send(new GetSecretValueCommand({ SecretId: secretArn, VersionStage: 'AWSCURRENT' }), { abortSignal: signal });
     if (!result.SecretString) throw new Error('empty');
@@ -365,7 +365,7 @@ async function loadCloudSecret({ secretArn, signal }) {
 }
 
 async function loadCloudEvidenceKey({ secretArn, keyVersion, signal }) {
-  const client = new SecretsManagerClient({ region: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'af-south-1' });
+  const client = new SecretsManagerClient({ region: process.env.NAVA_HMS_AWS_REGION ?? 'af-south-1' });
   let result;
   try {
     result = await client.send(new GetSecretValueCommand({ SecretId: secretArn, VersionStage: 'AWSCURRENT' }), { abortSignal: signal });
