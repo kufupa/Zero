@@ -102,7 +102,7 @@ export async function rescoreRun(options: {
     if (goldMap) card = applyGoldV4(card, goldMap[caseId]);
     const toolCalls = (prior.tool_quality?.calls ?? []).map(call => ({
       name: call.name,
-      input: undefined,
+      input: (() => { try { return JSON.parse((call as {input?: string}).input ?? ''); } catch { return undefined; } })(),
       result: {ok: call.ok},
     }));
     // Prefer full tool calls if present on prior score files
@@ -121,6 +121,7 @@ export async function rescoreRun(options: {
     score.cost_usd = prior.cost_usd ?? score.cost_usd;
     score.wall_ms = prior.wall_ms ?? score.wall_ms;
     score.twin_uncovered = prior.twin_uncovered ?? score.twin_uncovered;
+    if (prior.tool_quality?.calls?.length) score.tool_quality.calls = prior.tool_quality.calls; // keep L8 input/hits/top
     await writeFile(join(outDir, `${caseId}.json`), JSON.stringify(score));
     scores.push(score);
     scoredIds.push(caseId);
