@@ -22,7 +22,13 @@ export type FieldScore = {
 };
 
 export type ToolQuality = {
-  calls: Array<{name: string; ok: boolean}>;
+  calls: Array<{
+    name: string;
+    ok: boolean;
+    input?: string;
+    hits?: number;
+    top?: Array<{displayName?: unknown; name?: unknown; id?: unknown}>;
+  }>;
   right_tool: number;
   wasted_calls: number;
   key_arg_hits: number;
@@ -46,6 +52,8 @@ export type CaseScore = {
   spray?: boolean;
   /** Set when the case threw before a proposal; all expected fields scored miss. */
   run_error?: string;
+  /** Attempts used (incl. retries on Azure 429/5xx/timeout). */
+  attempts?: number;
 };
 
 export type GoldMeta = GoldField & {
@@ -841,7 +849,21 @@ export function scoreCase(input: {
     workflow: card.workflow,
     fields,
     tool_quality: {
-      calls: toolCalls.map(call => ({name: call.name, ok: call.result?.ok !== false})),
+      calls: toolCalls.map(call => {
+        const input = JSON.stringify(call.input ?? '').slice(0, 400);
+        const row: ToolQuality['calls'][number] = {name: call.name, ok: call.result?.ok !== false, input};
+        if (call.name === 'hms_search_parties' || call.name === 'hms_search_reservations') {
+          const data = (call.result?.data ?? {}) as {candidates?: Array<Record<string, unknown>>};
+          const cands = Array.isArray(data.candidates) ? data.candidates : [];
+          row.hits = cands.length;
+          row.top = cands.slice(0, 5).map(c => ({
+            displayName: c.displayName ?? c.name ?? null,
+            name: c.name ?? null,
+            id: c.nativeId ?? c.reservation_id ?? c.id ?? null,
+          }));
+        }
+        return row;
+      }),
       right_tool: right,
       wasted_calls: wasted,
       key_arg_hits: keyHits,

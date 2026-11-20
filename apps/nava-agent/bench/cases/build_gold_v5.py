@@ -73,6 +73,19 @@ POP_RE = re.compile(
   r"\b(?:proof\s+of\s+payment|\bpop\b|payment\s+proof|remittance|eft\s+proof|payment\s+notification)\b",
   re.I,
 )
+# Filename-only extras (CamelCase/underscore PDFs); keep out of text-blob match.
+POP_FN_RE = re.compile(
+  r"\b(?:proof\s+of\s+payment|\bpop\b|payment\s+proof|remittance|eft\s+proof|payment\s+notification|"
+  r"payment\s+confirmation|eft|deposit\s+slip|bank\s+transfer)\b",
+  re.I,
+)
+
+
+def normalize_filename(fn: str) -> str:
+  """Split CamelCase / separators so POP_FN_RE can match ProofOfPaymentNotification.pdf etc."""
+  s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", fn)
+  s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", s)
+  return re.sub(r"[_\-.]+", " ", s).lower()
 VOUCHER_RE = re.compile(
   r"(?:\bvouch(?:er|ers)?\b|\bvch[_-]|booking\s+voucher)",
   re.I,
@@ -861,7 +874,7 @@ def pick_filing_attachment(card: dict) -> tuple[str | None, str, str, str]:
     fn = str(p.get("filename") or "")
     tx = str(p.get("text") or "")[:2000]
     blob = f"{fn}\n{tx}"
-    if POP_RE.search(fn):
+    if POP_FN_RE.search(normalize_filename(fn)):
       return 100, "payment_proof_submission", "email_explicit"
     if POP_RE.search(blob):
       return 90, "payment_proof_submission", "heuristic"
