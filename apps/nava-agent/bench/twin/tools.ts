@@ -188,6 +188,7 @@ function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEn
   return ok({
     native: {
       outcome: candidates.length ? 'matches' : 'no_match',
+      criteria: {query: rawQuery}, // prod shape; tool-registry partyRead needs it to bind
       candidates,
       coverage: {possiblyTruncated: truncated, source: 'twin'},
     },
