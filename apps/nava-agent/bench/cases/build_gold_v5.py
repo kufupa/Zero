@@ -704,15 +704,40 @@ def email_quantity(blob: str) -> int | None:
   return None
 
 
+def rate_plan_to_board(rate_plan: Any) -> str | None:
+  """HRCEN rate_plan code → board (DBB|BB|RO). Spec GEMINI-SPEC-E2E3 (b)1."""
+  if isinstance(rate_plan, dict):
+    code = rate_plan.get("code") or rate_plan.get("rate_plan") or rate_plan.get("rateplan")
+  else:
+    code = rate_plan
+  if code is None or code == "":
+    return None
+  c = str(code).strip().upper()
+  if c in {"HSE", "BARB2B"}:
+    return None
+  if re.search(r"DBB?$", c, re.I):
+    return "DBB"
+  if re.search(r"RO$", c, re.I) or c == "DAY":
+    return "RO"
+  if c in {"BAR", "EDU"} or re.match(r"^BDIRB[1-5]$", c, re.I):
+    return "BB"
+  if re.search(r"B$", c, re.I) and not re.search(r"DB$", c, re.I):
+    return "BB"
+  return None
+
+
 def email_board(blob: str) -> str | None:
-  # DBB before BB so "dinner … breakfast" / half board do not collapse to BB.
+  # RO before BB so "without breakfast" / room-only never collapses to BB.
   if re.search(
-    r"\bdinner,?\s*(?:\+|and|&)?\s*(?:bed\s*(?:and|&)\s*breakfast|B(?:\s*(?:&|and)\s*)B)\b"
-    r"|\bdinner\s*\+\s*B\s*&\s*B\b"
-    r"|\bDBB\b"
-    r"|\bhalf\s+board\b",
+    r"\bwithout\s+breakfast\b|\broom[-\s]only\b|\bRO\b|\bbed\s+only\b",
     blob,
     re.I,
+  ):
+    return "RO"
+  # DBB: dinner + breakfast/B&B anywhere (e.g. "dinner R250 + bed and breakfast").
+  if re.search(r"\bDBB\b|\bhalf\s+board\b", blob, re.I) or (
+    re.search(r"\bdinner\b", blob, re.I)
+    and re.search(r"\bbreakfast\b|\bB\s*&\s*B\b|\bBB\b", blob, re.I)
   ):
     return "DBB"
   if re.search(
@@ -721,8 +746,6 @@ def email_board(blob: str) -> str | None:
     re.I,
   ):
     return "BB"
-  if re.search(r"\broom\s+only\b|\bRO\b", blob, re.I):
-    return "RO"
   return None
 
 
@@ -822,6 +845,16 @@ def mail_has_headers(card: dict) -> bool:
   return False
 
 
+# Mirror apps/nava-agent/src/party-matching.ts PARTY_STOPWORDS (+ cc).
+PARTY_STOPWORDS = frozenset({
+  "travel", "travels", "tours", "tour", "agency", "agent", "agents", "company",
+  "group", "services", "service", "solutions", "holdings", "pty", "ltd", "limited",
+  "south", "africa", "african", "hotel", "hotels", "booking", "bookings",
+  "local", "district", "metropolitan", "municipality", "municipal", "department",
+  "national", "provincial", "office", "the", "and", "for", "of", "sa", "cc",
+})
+
+
 def distinctive_party_tokens(value: Any) -> list[str]:
   raw = str(value or "").strip()
   if not raw:
@@ -834,8 +867,10 @@ def distinctive_party_tokens(value: Any) -> list[str]:
       continue
     if t.isdigit():
       continue
+    if t.lower() in PARTY_STOPWORDS:
+      continue
     out.append(t)
-  if len(raw) >= 3 and raw.lower() not in {x.lower() for x in out}:
+  if len(raw) >= 3 and raw.lower() not in {x.lower() for x in out} and raw.lower() not in PARTY_STOPWORDS:
     out.append(raw)
   return out
 
@@ -1295,13 +1330,15 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
     else:
       h_room = room_value_from_hms(fields)
       if h_room:
+        # Silent room: diagnostic (not scored). score.ts only skips expectation=diagnostic.
         b.add(
           f"/bookings/{n}/fields/room_type",
-          "expected",
+          "diagnostic",
           value=h_room,
           basis="hms_room_email_silent",
           source="heuristic",
           tier=TIER_DIAG,
+          priority="P2",
           hms_key="roomtype",
         )
 
@@ -1317,6 +1354,27 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
         tier=TIER1,
         hms_key="rateplan",
       )
+    # board P0 from HMS rate_plan; email meal conflict → no_gold
+    hms_board = rate_plan_to_board(h_rate)
+    if hms_board:
+      e_board = email_board(blob)
+      if e_board and e_board != hms_board:
+        b.add(
+          f"/bookings/{n}/fields/board",
+          "no_gold",
+          value=hms_board,
+          basis="email_hms_board_conflict",
+          source="heuristic",
+        )
+        b.notes.append(f"board email={e_board} hms={hms_board} conflict")
+      else:
+        b.add(
+          f"/bookings/{n}/fields/board",
+          "expected",
+          value=hms_board,
+          basis="email_and_hms_board" if e_board else "hms_rate_plan_board",
+          source="email_explicit" if e_board else "hms_truth",
+        )
     org, agency = org_agency_from_hms(fields)
     if org:
       b.add(
