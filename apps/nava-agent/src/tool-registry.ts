@@ -100,11 +100,17 @@ function readProfileId(booking:Booking,values:unknown[]):string|null {
   }
   return ids.size===1 ? [...ids][0] : null;
 }
+const partyCandidate=z.object({nativeId:z.string().min(1),name:z.string().min(1).optional(),displayName:z.string().min(1).optional()});
+function partyDisplayName(row:{nativeId:string;name?:string;displayName?:string}|null|undefined):{nativeId:string;name:string}|null {
+  if(!row) return null;
+  const name=row.name??row.displayName;
+  return name ? {nativeId:row.nativeId,name} : null;
+}
 const partyRead=z.object({
   input:z.object({kind:z.enum(['agency','organization']),field:z.literal('name'),query:z.string(),property_code:z.string()}),
   response:z.object({ok:z.literal(true),data:z.object({native:z.object({
     outcome:z.literal('matches'),criteria:z.object({query:z.string()}),coverage:z.object({possiblyTruncated:z.literal(false)}),
-    candidates:z.array(z.object({nativeId:z.string().min(1),name:z.string().min(1)})),
+    candidates:z.array(partyCandidate),
   })})}),
 });
 function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],kind:'agency'|'organization'):{nativeId:string;name:string}|null {
@@ -115,9 +121,23 @@ function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],
     if(!read.success || read.data.input.kind!==kind || read.data.input.property_code!==propertyCode) continue;
     const {input,response}=read.data, native=response.data.native;
     if(!samePartyName(input.query,native.criteria.query,kind) || native.candidates.length!==1) continue;
-    const candidate=native.candidates[0];
+    const candidate=partyDisplayName(native.candidates[0]);
+    if(!candidate) continue;
     if(!samePartyName(name,input.query,kind) && !samePartyName(name,candidate.name,kind)) continue;
     choices.set(candidate.nativeId,candidate);
+  }
+  return choices.size===1 ? [...choices.values()][0] : null;
+}
+function readPartyById(propertyCode:string|null,nativeId:unknown,values:unknown[],kind:'agency'|'organization'):{nativeId:string;name:string}|null {
+  if(typeof nativeId!=='string' || !nativeId.trim()) return null;
+  const choices=new Map<string,{nativeId:string;name:string}>();
+  for(const value of values) {
+    const read=partyRead.safeParse(value);
+    if(!read.success || read.data.input.kind!==kind || read.data.input.property_code!==propertyCode) continue;
+    for(const row of read.data.response.data.native.candidates) {
+      const candidate=partyDisplayName(row);
+      if(candidate?.nativeId===nativeId) choices.set(candidate.nativeId,candidate);
+    }
   }
   return choices.size===1 ? [...choices.values()][0] : null;
 }
@@ -129,12 +149,14 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
   function bind(original:Record<string,unknown>,propertyCode:string|null,root:string):Record<string,unknown> {
     const fields={...original};
     for(const kind of ['agency','organization'] as const) {
-      if(fields[`${kind}_id`] != null && fields[`${kind}_id`]!=='') continue;
-      const choice=readPartyChoice(propertyCode,fields[`${kind}_name`],values,kind);
+      const existingId=fields[`${kind}_id`];
+      const choice=readPartyChoice(propertyCode,fields[`${kind}_name`],values,kind)
+        ?? readPartyById(propertyCode,existingId,values,kind);
       if(!choice) continue;
+      if(existingId != null && existingId!=='' && existingId!==choice.nativeId) continue;
       fields[`${kind}_id`]=choice.nativeId;
-      // Keep sourced entity-literal name when present; only fill from HMS when blank.
-      if(fields[`${kind}_name`] == null || fields[`${kind}_name`]==='') fields[`${kind}_name`]=choice.name;
+      // Gold/HMS truth uses party displayName; keep editable ID and overwrite email literals.
+      fields[`${kind}_name`]=choice.name;
       for(const [suffix,label] of [['id',kind==='agency'?'Booking agency ID':'Company ID'],['name',kind==='agency'?'Booking agency':'Company']] as const) {
         const path=`${root}/${kind}_${suffix}`;
         const spec=fieldSpecs.findIndex(field=>field.path===path || field.path===path.slice(1));
