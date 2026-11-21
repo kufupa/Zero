@@ -221,6 +221,17 @@ function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{nati
   }
   return {native:{quote_order:quoteOrder.filter(id=>Object.hasOwn(quotes,id)),quotes,searches,display_rows:displayRows},incomplete};
 }
+async function selectedMail(sessionId:string) {
+  const [row]=await sql`SELECT t.source,t.source_thread_id,t.mailbox_id,m.source_message_id AS selected_message_id,
+    t.property_code,t.mode,m.received_at::text AS selected_received_at,m.payload->'from'->>'email' AS sender_email,
+    s.config->>'input_cutoff' AS input_cutoff,s.config->>'replay_id' AS replay_id
+    FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id
+    LEFT JOIN nava_agent.agent_event e ON e.session_id=s.id AND e.id=s.config->>'worker_delivery_id' AND e.kind='mail_pending'
+    JOIN nava_agent.mail_message m ON m.thread_id=t.id AND m.source_message_id=COALESCE(e.payload->>'message_id',t.selected_message_id)
+    WHERE s.id=${sessionId}`;
+  return row;
+}
+
 async function baselineDispatch(sessionId:string,name:string,input:unknown,toolEvent:string,emit:RegistryDeps['emit'],fence?:LeaseFence,signal?:AbortSignal) {
   const [session]=await sql`SELECT s.*,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.id=${sessionId} OR s.managed_session_id=${sessionId}`;
   if (!session) return failure('SESSION_NOT_FOUND','Session is not registered.');
@@ -239,11 +250,12 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
       }
     } else if(name==='mail_read_thread') {
       schemas.mail_read_thread.parse(input);
-      const thread=await sql`SELECT source,source_thread_id,mailbox_id,selected_message_id,property_code,mode FROM nava_agent.mail_thread WHERE id=${session.thread_id}`;
-      const messages=await sql`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${session.thread_id} ORDER BY received_at,id`;
+      const {sender_email: _sender, input_cutoff: _cutoff, replay_id: _replay, ...thread}=await selectedMail(session.id) ?? {};
+      const messages=await sql`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${session.thread_id}
+        AND received_at <= ${thread.selected_received_at ?? null}::timestamptz ORDER BY received_at,id`;
       const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
       const sourceInput=source?.payload;
-      response=result({...thread[0],messages:messages.map(m=>m.payload),...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {})});
+      response=result({...thread,messages:messages.map(m=>m.payload),...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {})});
     } else if (name==='hms_quote') {
       const q=schemas.hms_quote.parse(input);
       if(session.mode==='historical') response=failure('HISTORICAL_HMS_UNAVAILABLE','Historical sessions cannot access live HMS.');
@@ -542,7 +554,10 @@ export class ToolRegistry {
         const load=async(toolInput:unknown)=>this.nativeResult(()=>this.deps.native.withRead(request.data.property_code,context.signal,async lease=>{
           if(!await verifySource()) return failureObject('STAFF_SOURCE_CHANGED','The selected live source is unavailable.');
           lease.signal.throwIfAborted();
-          return pack.run(toolInput,{...context,credentialLease:lease,signal:lease.signal});
+          const selected=name==='hms_search_parties'?await selectedMail(context.sessionId):null;
+          return pack.run(toolInput,{...context,credentialLease:lease,signal:lease.signal,
+            senderEmail:selected?.sender_email ?? undefined,
+            asOf:selected?.input_cutoff ?? (selected?.replay_id ? selected.selected_received_at : undefined)});
         },name==='hms_quote'?'quote':undefined,(phase,ms)=>(timings[phase]??=[]).push(Math.round(ms)),
         ['hms_quote','hms_search_reservations','hms_search_parties'].includes(name)?'short':undefined,'prefill'));
         if(name==='hms_read_catalogue') {

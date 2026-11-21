@@ -7,7 +7,7 @@ import { proposalDraft, type ProposalDraft } from '../../src/schema.js';
 import postgres from 'postgres';
 import { extractSenderHost, partyQueriesWithLearned, resolvePartySelection, type LearnedSenderHit } from '../../src/party-matching.js';
 
-export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
+export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; asOf?: string; senderEmail?: string; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
 export type ToolResult = { ok: boolean; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } | null };
 const fail = (code: string, message: string, retryable = false): ToolResult => ({ ok: false, data: null, error: { code, message, retryable, outcome: 'known' } });
 const ok = (data: unknown): ToolResult => ({ ok: true, data, error: null });
@@ -386,7 +386,9 @@ const partyFields: Record<string, Record<string, string>> = {
 
 let partySql: ReturnType<typeof postgres> | null | undefined;
 /** Read-only party_sender_map via PARTY_SENDER_DATABASE_URL ?? lease URL. Never writes. */
-async function lookupSenderParty(property: string, host: string, kind: 'agency' | 'organization'): Promise<LearnedSenderHit | null> {
+async function lookupSenderParty(property: string, host: string, kind: 'agency' | 'organization', asOf?: string): Promise<LearnedSenderHit | null> {
+  // This table stores current aggregates without timestamps; it has no as-of view.
+  if (asOf !== undefined) return null;
   if (partySql === undefined) {
     const url = process.env.PARTY_SENDER_DATABASE_URL ?? process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
     try { partySql = url ? postgres(url, { max: 2 }) : null; } catch { partySql = null; }
@@ -406,8 +408,9 @@ export async function searchParties(input: unknown, context: ToolContext): Promi
   if (!obj(input) || !keys(input, ['property_code', 'kind', 'field', 'query', 'sender_host']) || !str(input.property_code) || !str(input.kind) || !str(input.field) || !str(input.query) || !Object.hasOwn(partyFields, input.kind) || !Object.hasOwn(partyFields[input.kind], input.field) || (input.sender_host !== undefined && !str(input.sender_host))) return fail('INVALID_INPUT', 'Property, supported party kind, field and query are required.');
   const property = input.property_code, kind = input.kind, field = partyFields[kind][input.field], query = input.query;
   return execute(context, async () => {
-    const host = extractSenderHost(input.sender_host, query);
-    const learned = host && (kind === 'agency' || kind === 'organization') ? await lookupSenderParty(property, host, kind) : null;
+    const host = extractSenderHost(input.sender_host, '')
+      ?? extractSenderHost(context.senderEmail, query);
+    const learned = host && (kind === 'agency' || kind === 'organization') ? await lookupSenderParty(property, host, kind, context.asOf ?? (context.mode === 'historical' ? '' : undefined)) : null;
     const { withCloudLookupReadSession } = await native('hms-lookup-read-session.mjs');
     const result: Record<string, unknown> = await withCloudLookupReadSession(
       async ({ runTool }: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) => {

@@ -239,13 +239,15 @@ export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; dr
     const bookings=draft.bookings.map((booking,index)=>{
       if(booking.property_code!=='HRCEN') return booking;
       const fields={...booking.fields};
-      for(const [key,value] of [['rate_plan','BAR'],['guarantee_type','NGI'],['track','BAR'],['source_of_business','EMA']] as const) {
+      const rate=String(fields.rate_plan ?? '');
+      const track=rate.startsWith('NGOV')?'GOV':rate.startsWith('NCOR')?'COR':
+        !fields.agency_id && !fields.agency_name && !fields.organization_id && !fields.organization_name && ['BAR','BARRO'].includes(rate)?'BAR':null;
+      for(const [key,value] of [['guarantee_type',fields.agency_id?'GTDAGT':fields.agency_name?null:'DEPREQ'],['track',track],['source_of_business','EMA']] as const) {
         const current=fields[key];
-        if(current!=null && (typeof current!=='string' || current.trim())) continue;
+        if(value===null || (current!=null && (typeof current!=='string' || current.trim()))) continue;
         const path=`/bookings/${index}/fields/${key}`;
         const spec=fieldSpecs.findIndex(field=>field.path===path);
-        if(spec>=0 && fieldSpecs[spec].provenance==='staff') continue;
-        if(key==='rate_plan' && spec>=0 && fieldSpecs[spec].provenance!=='default' && fieldSpecs[spec].evidence.length) continue;
+        if(spec>=0 && (fieldSpecs[spec].provenance==='staff' || fieldSpecs[spec].evidence.length || fieldSpecs[spec].error)) continue;
         fields[key]=value;
         if(spec>=0) fieldSpecs[spec]={...fieldSpecs[spec],provenance:'default',error:null,evidence:[]};
       }

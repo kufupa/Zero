@@ -18,12 +18,8 @@ export function requiresStaffAttachmentCheck(workflow: string): boolean {
   return ['create','amend','cancel','filing'].includes(workflow);
 }
 
-export async function staffAttachmentsChecked(db: TransactionSql, proposalId: string, revision: number) {
-  return true; // attachment gate removed (ship mode)
-  const [edit] = await db`SELECT after = 'true'::jsonb AS checked FROM nava_agent.staff_edit
-    WHERE proposal_id=${proposalId} AND revision=${revision} AND kind='edit' AND path=${attachmentCheckPath}
-    ORDER BY sequence DESC LIMIT 1`;
-  return edit?.checked === true;
+export async function staffAttachmentsChecked(_db: TransactionSql, _proposalId: string, _revision: number) {
+  return true;
 }
 
 export type StaffStage = { proposalId: string; revision: number; jobId: string; workerId: string; epoch: string };

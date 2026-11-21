@@ -6,24 +6,36 @@ import {
   resolvePartySelection,
   type LearnedSenderHit,
 } from '../../src/party-matching.js';
-import {projectHmsShown} from './backdate.js';
-import {quoteKey, type TwinWorld} from './world.js';
+import {anchorObservations, isoDate, observeStays} from './backdate.js';
+import {anchorPdfs, beforeCutoff, quoteKey, type TwinWorld} from './world.js';
 
-/** Zero-leak twin sender map: ts < as_of, conf != own; agency hosts never emit org. */
-function twinLearnedSender(world: TwinWorld, card: CaseCard, host: string, kind: 'agency' | 'organization'): LearnedSenderHit | null {
-  const asOf = Date.parse(String(card.as_of ?? '')), own = String(card.real_confirmation ?? card.confirmation ?? '');
-  if (!Number.isFinite(asOf)) return null;
+function twinLearnedSender(world: TwinWorld, asOf: number, host: string, kind: 'agency' | 'organization'): LearnedSenderHit | null {
   const rows: Array<{host: string; name: string; kind: 'agency' | 'organization'}> = [];
-  for (const a of world.anchors) {
-    const p = object(a.primary), rf = object(p.recipient_fields);
-    const hosts = [...new Set([...(Array.isArray(rf.to) ? rf.to : []), ...(Array.isArray(rf.cc) ? rf.cc : [])]
-      .map(x => String(x).toLowerCase().match(/@([a-z0-9.-]+)/)?.[1]?.replace(/\.+$/, '')).filter(Boolean))] as string[];
-    const h = hosts[0], ts = Date.parse(String(p.sent_at ?? '')), conf = String(a.confirmation ?? '');
-    if (hosts.length !== 1 || !(host === h || host.endsWith(`.${h}`)) || extractSenderHost(h, '') == null
-      || !Number.isFinite(ts) || ts >= asOf || !conf || conf === own) continue;
-    const hms = object(a.hms_fields), agency = String(hms.ta1 ?? '').trim(), company = String(hms.company ?? '').trim();
-    if (agency) rows.push({host: h!, name: agency, kind: 'agency'});
-    if (company) rows.push({host: h!, name: company, kind: 'organization'});
+  const counted = new Set<string>();
+  for (const anchor of world.anchors) {
+    const observations = anchorObservations(anchor, asOf).filter(row =>
+      row.basis === 'last_pre_as_of_pdf' || beforeCutoff(anchor.hms_available_at, asOf));
+    const letters = [...anchorPdfs(anchor), object(anchor.primary),
+      {sent_at: anchor.hms_available_at, recipient_fields: anchor.recipient_fields}].filter(pdf => beforeCutoff(pdf.sent_at, asOf));
+    for (const letter of letters) {
+      const recipients = object(letter.recipient_fields);
+      const hosts = [...new Set([recipients.to, recipients.cc].flatMap(value => Array.isArray(value) ? value : [value])
+        .map(value => String(value ?? '').toLowerCase().match(/@([a-z0-9.-]+)/)?.[1]?.replace(/\.+$/, ''))
+        .filter((value): value is string => Boolean(value)))];
+      const domain = hosts[0];
+      if (!domain || hosts.length !== 1 || !(host === domain || host.endsWith(`.${domain}`)) || extractSenderHost(domain, '') == null) continue;
+      const state = observations.filter(row => row.basis === 'pre_as_of_hms_capture' || row.at === Date.parse(String(letter.sent_at)))
+        .sort((a, b) => b.at - a.at)[0]?.stay;
+      if (!state) continue;
+      for (const [party, value] of [['agency', state.ta1 ?? state.agency_text], ['organization', state.company ?? state.company_text]] as const) {
+        const name = String(value ?? '').trim();
+        const key = `${anchor.confirmation}|${domain}|${party}`;
+        if (name && !counted.has(key)) {
+          counted.add(key);
+          rows.push({host: domain, name, kind: party});
+        }
+      }
+    }
   }
   if (kind === 'organization' && rows.some(r => r.kind === 'agency')) return null;
   const scoped = rows.filter(r => r.kind === kind).sort((a, b) => b.host.length - a.host.length);
@@ -77,18 +89,26 @@ function fieldMap(stay: Record<string, unknown> | null): Array<{name: string; ty
 function matchReservation(stay: Record<string, unknown>, criteria: Record<string, unknown>): boolean {
   const confirmation = String(stay.confirmation ?? stay.confirmationnumber ?? '');
   const rid = criteria.reservation_id != null ? String(criteria.reservation_id) : '';
-  if (rid && confirmation && rid !== confirmation && !confirmation.startsWith(rid) && !rid.startsWith(confirmation.split('-')[0]!)) {
-    return false;
+  if (rid && !matchesId(rid, confirmation)) return false;
+  const name = (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/\s+/g, ' ');
+  const full = name(stay.guestfullname ?? stay.guest_name);
+  const parts = full.split(' ');
+  const nativeParts = full.split(/\s*[,/]\s*/);
+  const last = name(stay.last_name ?? stay.lastName) || (nativeParts.length > 1 ? nativeParts[0] : parts.at(-1)) || '';
+  const first = name(stay.first_name ?? stay.firstName) || (nativeParts.length > 1 ? nativeParts[1] : parts.slice(0, -1).join(' '));
+  const surname = name(criteria.last_name ?? criteria.guest_name);
+  const given = name(criteria.guest_first_name);
+  if (surname.includes('/') && criteria.guest_name_is_surname !== true) {
+    const [left, right] = surname.split(/\s*\/\s*/);
+    if (!((left === last && right === first) || (right === last && left === first))) return false;
+  } else {
+    if (surname && surname !== last && !(criteria.guest_name_is_surname === true && !stay.last_name && !stay.lastName && full.endsWith(` ${surname}`))) return false;
+    if (given && given !== first && !full.startsWith(`${given} `)) return false;
   }
-  const surname = String(criteria.guest_name ?? '').toLowerCase();
-  if (surname) {
-    const guest = String(stay.guestfullname ?? stay.last_name ?? stay.lastName ?? '').toLowerCase();
-    if (!guest.includes(surname.split(/\s+/)[0]!)) return false;
-  }
-  const arrival = criteria.arrival_date != null ? String(criteria.arrival_date) : '';
-  if (arrival) {
-    const got = String(stay.arrivaldate ?? stay.arrival_date ?? stay.arrival ?? '');
-    if (got && !got.includes(arrival) && !arrival.includes(got.slice(0, 10))) return false;
+  for (const date of ['arrival', 'departure']) {
+    const requested = criteria[`${date}_date`];
+    const value = stay[`${date}_date`] ?? stay[`${date}date`] ?? stay[date];
+    if (requested && (isoDate(requested) === null || isoDate(value) !== isoDate(requested))) return false;
   }
   return true;
 }
@@ -142,25 +162,23 @@ function partyRecords(world: TwinWorld, kind: string): Array<Record<string, unkn
   return catalogueRecords(catalogs[key]).map(item => object(item));
 }
 
-function tokenOverlap(a: string, b: string): boolean {
-  const tokens = (s: string) => new Set(s.split(/[^a-z0-9]+/).filter(t => t.length >= 4));
-  const ta = tokens(a);
-  const tb = tokens(b);
-  let hit = 0;
-  for (const t of ta) if (tb.has(t)) hit += 1;
-  return hit >= 1;
-}
-
 /**
  * Prod hms_search_parties returns native HMS candidates only (nativeId/displayName/…).
  * Twin mirrors prod: sequential partySearchQueries, break on first hit (no OR + 25-cap).
  */
-function searchParties(world: TwinWorld, card: CaseCard, input: Record<string, unknown>): TwinEnvelope {
+function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
   const kind = String(input.kind ?? 'guest');
   const field = String(input.field ?? 'last_name');
   const rawQuery = String(input.query ?? '').trim();
   const host = extractSenderHost(input.sender_host, rawQuery);
-  const learned = host && (kind === 'agency' || kind === 'organization') ? twinLearnedSender(world, card, host, kind) : null;
+  const learned = host && (kind === 'agency' || kind === 'organization') ? twinLearnedSender(world, world.cutoff, host, kind) : null;
+  const history = learned ? {sender_history: learned} : {};
+  if (kind === 'guest' && !world.profiles.length) {
+    return fail('TWIN_PRE_CUTOFF_PROFILE_UNAVAILABLE', 'No dated guest profiles cover this property.', false, unobserved);
+  }
+  if (kind !== 'guest' && !Object.keys(world.catalog).length) {
+    return fail('TWIN_PRE_CUTOFF_PARTY_UNAVAILABLE', 'No dated native party catalogue covers this property.', false, {...unobserved, ...history});
+  }
   const queries = rawQuery ? partyQueriesWithLearned(rawQuery, kind, learned?.name) : [''];
   let candidates: Array<Record<string, unknown>> = [];
   let matchedTerm = rawQuery;
@@ -173,218 +191,127 @@ function searchParties(world: TwinWorld, card: CaseCard, input: Record<string, u
         const last = String(profile.lastName ?? profile.last_name ?? '').toLowerCase();
         const email = String(profile.email ?? '').toLowerCase();
         const id = String(profile.nativeId ?? profile.profile_id ?? profile.guestid ?? '');
-        const hay = field === 'first_name' ? first : field === 'email' ? email : field === 'profile_id' ? id.toLowerCase() : last;
-        if (!q || hay.includes(q) || `${last} ${first}`.includes(q)) {
+        if (!id) continue;
+        const hay = field === 'first_name' ? first : field === 'email' ? email : field === 'phone'
+          ? String(profile.mobile ?? profile.phone ?? '').replace(/[^\d+]/g, '') : field === 'profile_id' ? id.toLowerCase() : last;
+        if (!q || hay.includes(field === 'phone' ? q.replace(/[^\d+]/g, '') || q : q) || field === 'name' && `${last} ${first}`.includes(q)) {
           const displayName = `${profile.firstName ?? profile.first_name ?? ''} ${profile.lastName ?? profile.last_name ?? ''}`.trim() || null;
-          batch.push({nativeId: id || `twin-guest-${batch.length + 1}`, firstName: profile.firstName ?? profile.first_name ?? null, lastName: profile.lastName ?? profile.last_name ?? null, displayName, name: displayName});
+          batch.push({nativeId: id, firstName: profile.firstName ?? profile.first_name ?? null, lastName: profile.lastName ?? profile.last_name ?? null, displayName, name: displayName});
         }
       }
     } else {
       for (const row of partyRecords(world, kind)) {
         const id = String(row.nativeId ?? row.code ?? row.id ?? '');
+        if (!id) continue;
         const name = String(row.meaning ?? row.name ?? row.label ?? '');
         const nameLower = name.toLowerCase();
         const code = String(row.code ?? '').toLowerCase();
         const hay = field === 'profile_id' ? id.toLowerCase() : `${nameLower} ${code}`;
-        if (!q || hay.includes(q) || (nameLower.length >= 3 && q.includes(nameLower)) || (code && q === code) || tokenOverlap(nameLower, q)) {
-          batch.push({nativeId: id || `twin-${kind}-${batch.length + 1}`, code: row.code ?? null, displayName: row.meaning ?? row.name ?? row.label ?? null, name: row.meaning ?? row.name ?? row.label ?? null, kind});
+        if (!q || hay.includes(q) || (nameLower.length >= 3 && q.includes(nameLower)) || (code && q === code)) {
+          batch.push({nativeId: id, code: row.code ?? null, displayName: row.meaning ?? row.name ?? row.label ?? null, name: row.meaning ?? row.name ?? row.label ?? null, kind});
         }
       }
     }
     if (batch.length) { candidates = batch; matchedTerm = term; break; }
   }
-  const resolved = resolvePartySelection(kind, candidates, false, learned);
+  const truncated = candidates.length > 25;
+  candidates = candidates.slice(0, 25);
+  const resolved = resolvePartySelection(kind, candidates, truncated, learned);
   return ok({
     native: {
       outcome: candidates.length ? 'matches' : 'no_match',
       criteria: {query: matchedTerm || rawQuery},
       candidates,
-      coverage: {possiblyTruncated: false, source: 'twin'},
+      coverage: {possiblyTruncated: truncated, source: 'twin'},
     },
     selection: resolved.selection,
     ambiguity: resolved.ambiguity,
-    ...(learned ? {sender_history: {host: learned.host, kind: learned.kind, name: learned.name, nativeId: learned.nativeId, support: learned.support}} : {}),
+    ...history,
   });
 }
 
 function quoteFromWorld(world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
-  const quoteId = String(input.quote_id ?? '');
-  const groups = Array.isArray(input.groups) ? input.groups as Array<Record<string, unknown>> : [];
-  const outGroups: Array<Record<string, unknown>> = [];
-  let miss = false;
-  for (const group of groups) {
-    const arrival = String(group.arrival_date ?? '');
-    const departure = String(group.departure_date ?? '');
-    const roomsIn = Array.isArray(group.rooms) ? group.rooms as Array<Record<string, unknown>> : [];
-    const rooms = [];
-    for (const room of roomsIn) {
-      const roomCode = String(
-        object(room.preferred).roomCodes?.[0] ??
-        object(room.required).roomCode ??
-        room.room_type ??
-        room.id ??
-        'STQN',
-      );
-      const key = quoteKey(arrival, departure, String(roomCode));
-      const hit = world.quotes.get(key) ?? world.quotes.get(quoteKey(arrival, departure, String(room.id ?? '')));
-      if (!hit) {
-        miss = true;
-        world.coverage.quoteMisses += 1;
-        rooms.push({room_id: String(room.id ?? '1'), option_count: 0, options: [], outcome: 'execution_failure'});
-      } else {
-        const options = Array.isArray(object(hit).options) ? object(hit).options as unknown[] : [hit];
-        rooms.push({room_id: String(room.id ?? '1'), option_count: options.length, options, outcome: 'quote'});
-      }
-    }
-    outGroups.push({
-      group_id: String(group.group_id ?? 'g1'),
-      arrival_date: arrival,
-      departure_date: departure,
-      status: miss ? 'incomplete' : 'complete',
-      rooms,
-    });
-  }
-  if (miss) {
-    return fail('TWIN_NO_PRICE', 'No recorded native_quote capture for requested stay; twin never invents prices.', false, {
-      quote_order: quoteId ? [quoteId] : [],
-      quotes: quoteId ? {[quoteId]: {quote_id: quoteId, property_code: input.property_code, groups: outGroups}} : {},
-      nightly_fields: ['amount', 'currency', 'date', 'inventory', 'price_status', 'restricted'],
-    });
-  }
-  return ok({
-    quote_order: quoteId ? [quoteId] : [],
-    quotes: quoteId ? {[quoteId]: {quote_id: quoteId, property_code: input.property_code, groups: outGroups}} : {},
-    searches: [],
-    display_rows: [],
-    nightly_fields: ['amount', 'currency', 'date', 'inventory', 'price_status', 'restricted'],
-  });
+  const capture = world.quotes.get(quoteKey(input));
+  if (capture) return capture.response;
+  world.coverage.quoteMisses += 1;
+  return fail('TWIN_NO_PRICE', 'No dated native quote capture matches the complete request.', false, unobserved);
 }
 
-function readReservation(world: TwinWorld, card: CaseCard, input: Record<string, unknown>): TwinEnvelope {
-  const shown = projectHmsShown(world, card);
-  const rid = String(input.reservation_id ?? '');
-  if (!shown.exists || !shown.stay) return fail('CONFIRMATION_NOT_FOUND', 'Twin has no stay at as_of for this confirmation.');
-  const confirmation = String(shown.stay.confirmation ?? shown.confirmation ?? '');
-  if (rid && confirmation && rid !== confirmation && !confirmation.startsWith(rid.split('-')[0]!)) {
-    return fail('CONFIRMATION_HINT_MISMATCH', 'Requested reservation does not match twin stay at as_of.');
-  }
+function matchesId(requested: string, actual: string): boolean {
+  return requested === actual || (!requested.includes('-') && actual.startsWith(`${requested}-`));
+}
+
+type Stays = ReturnType<typeof observeStays>;
+const unobserved = {twin_coverage: 'unobserved', documents_observed: false};
+
+function readReservation(stays: Stays, input: Record<string, unknown>): TwinEnvelope {
+  if (!input.reservation_id) return fail('CONFIRMATION_NOT_FOUND', 'No reservation reference supplied.');
+  const matches = [...stays.values()].filter(row => matchReservation(row.stay, input));
+  if (matches.length > 1) return fail('CONFIRMATION_AMBIGUOUS', 'More than one observed stay satisfies the requested criteria.');
+  const found = matches[0];
+  if (!found) return fail('TWIN_PRE_CUTOFF_STAY_UNAVAILABLE', 'No observed stay matches the requested criteria.', false, unobserved);
   return ok({
     outcome: 'ok',
     id: null,
     tool: 'read',
+    twin_coverage: 'observed',
+    documents_observed: found.documents !== null,
     record: {
       notes: [],
-      details: {grids: [], fields: fieldMap(shown.stay)},
-      documents: shown.documents,
+      details: {grids: [], fields: fieldMap(found.stay)},
+      documents: found.documents,
+      documents_observed: found.documents !== null,
     },
   });
 }
 
-function searchReservations(world: TwinWorld, card: CaseCard, input: Record<string, unknown>): TwinEnvelope {
+function searchReservations(stays: Stays, input: Record<string, unknown>): TwinEnvelope {
   const criteria = object(input.criteria);
-  const rid = criteria.reservation_id != null ? String(criteria.reservation_id) : '';
-  const surname = String(criteria.guest_name ?? '').toLowerCase().trim();
-  const candidates: Array<Record<string, unknown>> = [];
-
-  // Explicit confirmation: resolve from world anchors (multi-conf cancel lists).
-  if (rid) {
-    const base = rid.split('-')[0]!;
-    for (const anchor of world.anchors) {
-      const conf = String(anchor.confirmation ?? '');
-      if (conf === rid || conf.startsWith(`${base}-`) || conf === base) {
-        const stay = {...object(anchor.hms_fields), confirmation: conf};
-        candidates.push({
-          reservation_id: conf,
-          native: {
-            ok: true,
-            notes: [],
-            method: 'twin',
-            details: {cards: [{title: 'Stay', grids: [], fields: fieldMap(stay)}]},
-          },
-        });
-        break;
-      }
-    }
+  if (!criteria.reservation_id && !criteria.guest_name && !criteria.guest_first_name) {
+    return fail('INPUT_GAP', 'Provide a confirmation number or a guest surname.');
   }
-
-  // Guest surname search across anchors (cancel by guest list).
-  if (!candidates.length && surname) {
-    const needle = surname.split(/\s+/)[0]!;
-    for (const anchor of world.anchors) {
-      const guest = String(object(anchor.hms_fields).guestfullname ?? '').toLowerCase();
-      if (!guest.includes(needle)) continue;
-      const conf = String(anchor.confirmation ?? '');
-      if (!conf) continue;
-      candidates.push({
-        reservation_id: conf,
-        native: {
-          ok: true,
-          notes: [],
-          method: 'twin',
-          details: {cards: [{title: 'Stay', grids: [], fields: fieldMap({...object(anchor.hms_fields), confirmation: conf})}]},
-        },
-      });
-      if (candidates.length >= 10) break;
-    }
+  const observed = [...stays.values()];
+  let matches = observed.filter(row => matchReservation(row.stay, criteria));
+  if (!matches.length && !criteria.reservation_id && criteria.guest_first_name && criteria.guest_name_is_surname !== true) {
+    matches = observed.filter(row => matchReservation(row.stay, {...criteria, guest_name: criteria.guest_first_name, guest_first_name: undefined}));
   }
-
-  // Fall back to this case's as_of-projected stay.
+  const candidates = matches.map(row => ({
+      reservation_id: row.confirmation,
+      documents_observed: row.documents !== null,
+      native: {ok: true, notes: [], method: 'twin', details: {cards: [{title: 'Stay', grids: [], fields: fieldMap(row.stay)}]}},
+    }));
   if (!candidates.length) {
-    const shown = projectHmsShown(world, card);
-    if (shown.exists && shown.stay && matchReservation(shown.stay, criteria)) {
-      const confirmation = String(shown.stay.confirmation ?? shown.confirmation ?? '');
-      candidates.push({
-        reservation_id: confirmation,
-        native: {
-          ok: true,
-          notes: [],
-          method: 'twin',
-          details: {cards: [{title: 'Stay', grids: [], fields: fieldMap(shown.stay)}]},
-        },
-      });
-    }
+    return fail('TWIN_PRE_CUTOFF_STAY_UNAVAILABLE', 'No observed stay matches the requested criteria; absence is unconfirmed.', false, unobserved);
   }
-
-  if (!candidates.length) {
-    return ok({outcome: 'not_found_in_searched_range', candidates: [], completeness: 'twin'});
-  }
-  return ok({outcome: 'candidates', candidates, completeness: 'twin'});
+  return ok({outcome: 'candidates', candidates, completeness: 'twin', twin_coverage: 'observed'});
 }
 
-/** Twin = reads + unsaved Prepare only. No cassette. No Save/readback simulation. */
 export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
+  let stays: Stays | undefined;
   return async function dispatch(name: string, input: unknown): Promise<TwinEnvelope> {
     const body = object(input);
+    if (name.startsWith('hms_') && body.property_code !== world.propertyCode) {
+      return fail('PROPERTY_MISMATCH', `Replay case uses ${world.propertyCode}; supply it as property_code.`);
+    }
     switch (name) {
       case 'hms_search_reservations':
-        return searchReservations(world, card, body);
+        return searchReservations(stays ??= observeStays(world, card), body);
       case 'hms_read_reservation':
-        return readReservation(world, card, body);
+        return readReservation(stays ??= observeStays(world, card), body);
       case 'hms_read_catalogue': {
+        if (!Object.keys(world.catalog).length) {
+          return fail('TWIN_PRE_CUTOFF_CATALOGUE_UNAVAILABLE', 'No dated catalogue predates the decision cutoff.');
+        }
         const kinds = Array.isArray(body.kinds) ? body.kinds as string[] : [];
         const sections: Record<string, unknown> = {};
         for (const kind of kinds) sections[kind] = catalogueSection(world.catalog, kind);
-        return ok({property_code: body.property_code ?? 'HRCEN', sections});
+        return ok({property_code: world.propertyCode, sections});
       }
       case 'hms_search_parties':
         // as_of blinding + sender-map leak fence; catalogue rows only (no invented defaults).
-        return searchParties(world, card, body);
+        return searchParties(world, body);
       case 'hms_quote':
         return quoteFromWorld(world, body);
-      case 'hms_prepare': {
-        const shown = projectHmsShown(world, card);
-        return ok({
-          workflow: body.workflow ?? card.workflow,
-          unsaved: true,
-          booking_id: object(object(body).booking).id ?? 'stay-1',
-          reservation_id: object(object(body).booking).reservation_id ?? card.real_confirmation ?? card.confirmation ?? null,
-          native: {expected: shown.stay, twin: true},
-          guest_candidates: [],
-          rate_choices: [],
-          room_choices: [],
-          track_choices: [],
-        });
-      }
       case 'save':
       case 'hms_save':
         return fail('TWIN_NO_SAVE', 'Twin does not simulate Save/readback; staff Go is out of scope.');

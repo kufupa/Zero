@@ -1,3 +1,4 @@
+import { strictCompatible } from './strict-schema.js';
 import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import { RuntimeLoop } from './loop.js';
@@ -10,29 +11,6 @@ const REGION = 'eu-west-1';
 const MODEL = 'global.anthropic.claude-haiku-5-5';
 const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
 const thinking = { type: 'adaptive' as const, block_binding: { prefix_mismatch_behavior: 'drop_block' as const } };
-
-function strictCompatible(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const schema = Object.fromEntries(Object.entries(value));
-  if (schema.type === undefined && schema.anyOf === undefined && schema.allOf === undefined && schema.enum === undefined && schema.const === undefined) return false;
-  if (schema.additionalProperties !== undefined && schema.additionalProperties !== false) return false;
-  if ((schema.type === 'object' || Array.isArray(schema.type) && schema.type.includes('object') || schema.properties !== undefined) && schema.additionalProperties !== false) return false;
-  for (const key of ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minProperties', 'maxProperties', 'maxItems', 'uniqueItems', 'pattern', '$ref', '$defs', 'definitions', 'patternProperties', 'oneOf', 'not', 'if', 'then', 'else']) {
-    if (Object.hasOwn(schema, key)) return false;
-  }
-  if (schema.minItems !== undefined && schema.minItems !== 0 && schema.minItems !== 1) return false;
-  if (Array.isArray(schema.enum) && schema.enum.some(item => typeof item === 'object' && item !== null)) return false;
-  if (schema.format !== undefined && !['date-time', 'time', 'date', 'duration', 'email', 'hostname', 'uri', 'ipv4', 'ipv6', 'uuid'].includes(String(schema.format))) return false;
-  if (schema.properties !== undefined) {
-    if (typeof schema.properties !== 'object' || schema.properties === null || Array.isArray(schema.properties)) return false;
-    if (!Object.values(schema.properties).every(strictCompatible)) return false;
-  }
-  if (schema.items !== undefined && !strictCompatible(schema.items)) return false;
-  for (const key of ['anyOf', 'allOf']) {
-    if (schema[key] !== undefined && (!Array.isArray(schema[key]) || !schema[key].every(strictCompatible))) return false;
-  }
-  return true;
-}
 
 function checkNoCache(blocks: RuntimeBlock[]): void {
   for (const block of blocks) {

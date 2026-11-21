@@ -41,9 +41,12 @@ export type LearnedSenderHit = { host: string; kind: 'agency' | 'organization'; 
 
 /** Prefer sender_host; else email/domain query. Skip freemail + owned-hotel hosts. */
 export function extractSenderHost(senderHost: unknown, query: string): string | null {
-  const src = typeof senderHost === 'string' && senderHost.trim() ? senderHost
-    : /@/.test(query) || (!/\s/.test(query.trim()) && /\.[a-z]{2,}$/i.test(query.trim())) ? query : '';
-  const host = src.trim().toLowerCase().replace(/\.+$/, '').split('@').pop() ?? '';
+  const domain = (value: unknown) => {
+    if (typeof value !== 'string') return undefined;
+    const address = (/<([^<>]+)>$/.exec(value.trim())?.[1] ?? value).trim().toLowerCase();
+    return /^(?:[^@\s<>]+@)?((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\.?$/.exec(address)?.[1];
+  };
+  const host = domain(senderHost) ?? domain(query);
   return !host || /(^|\.)(gmail|googlemail|yahoo|hotmail|outlook|icloud|live|msn|me\.com|aol|protonmail|proton\.me|mail\.com|gmx\.|yandex|mweb\.co\.za|telkomsa\.net|webmail\.co\.za|legacyhotels?)/.test(host) ? null : host;
 }
 

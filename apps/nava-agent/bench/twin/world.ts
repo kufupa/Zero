@@ -1,6 +1,6 @@
 import {readFileSync} from 'node:fs';
-import {join} from 'node:path';
-import type {CaseCard} from '../types.js';
+import {dirname, join, resolve} from 'node:path';
+import type {CaseCard, TwinEnvelope} from '../types.js';
 
 export const DEFAULT_DATA_ROOT='/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
@@ -17,6 +17,7 @@ export type TwinAnchor = {
   hms_capture_later?:string;
   hms_fields:Record<string,unknown>;
   pdfs?:TwinPdf[];
+  pdf_versions?:TwinPdf[];
   [key:string]:unknown;
 };
 
@@ -32,7 +33,6 @@ export type TwinProfile = {
 
 type BaseWorld = {
   anchors:TwinAnchor[];
-  anchorsByConfirmation:Map<string,TwinAnchor>;
   profiles:TwinProfile[];
   catalog:Record<string,unknown>;
 };
@@ -45,76 +45,104 @@ function jsonl<T>(path:string):T[] {
   return readFileSync(path,'utf8').split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line) as T);
 }
 
+function optionalJson(path:string):Record<string,unknown> | null {
+  try {
+    return object(JSON.parse(readFileSync(path,'utf8')));
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+export const defaultWorldDir = () => join(process.env.NAVA_BENCH_DATA_ROOT ?? DEFAULT_DATA_ROOT, 'world');
+export const rows = (value: unknown): Record<string,unknown>[] => Array.isArray(value) ? value.map(object) : [];
+
 function loadBase(root:string):BaseWorld {
   const cached=baseCache.get(root);
   if(cached) return cached;
-  const anchors=jsonl<TwinAnchor>(join(root,'world/anchors.jsonl'));
-  const profilesFile=JSON.parse(readFileSync(join(root,'world/profiles.json'),'utf8')) as {profiles?:TwinProfile[]};
-  const catalog=JSON.parse(readFileSync(join(root,'catalog/catalog.json'),'utf8')) as Record<string,unknown>;
+  const anchors=jsonl<TwinAnchor>(join(root,'anchors.jsonl'));
+  const profilesFile=optionalJson(join(root,'profiles.json'));
+  const catalog=optionalJson(join(root,'catalog.json')) ?? optionalJson(join(root,'catalog/catalog.json'))
+    ?? (resolve(root) === resolve(defaultWorldDir()) ? optionalJson(join(dirname(root),'catalog/catalog.json')) : null) ?? {};
   const base={
     anchors,
-    anchorsByConfirmation:new Map(anchors.map(anchor=>[anchor.confirmation,anchor])),
-    profiles:profilesFile.profiles ?? [],
+    profiles:Array.isArray(profilesFile?.profiles) ? profilesFile.profiles as TwinProfile[] : [],
     catalog,
   };
   baseCache.set(root,base);
   return base;
 }
 
-export function quoteKey(arrival:string,departure:string,room:string):string {
-  return `${arrival}|${departure}|${room}`.toLowerCase();
+const ordered = (value: unknown): unknown => Array.isArray(value) ? value.map(ordered) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, ordered(item)]))
+  : value;
+export const quoteKey = (value: unknown) => JSON.stringify(ordered(value));
+
+function loadQuotes(value: unknown, target: Map<string, {at: number; response: TwinEnvelope}>, cutoff: number): void {
+  for (const capture of Array.isArray(value) ? value : Object.values(object(value))) {
+    const row = object(capture);
+    const stamp = row.captured_at ?? row.observed_at;
+    const input = object(row.input ?? row.request);
+    const response = object(row.response ?? row.result);
+    // Date/room alone does not prove occupancy, filters, quantity, or restrictions matched.
+    if (!beforeCutoff(stamp, cutoff) || !Array.isArray(input.groups) || !input.groups.length ||
+        (response.ok !== true && response.ok !== false) || !Object.hasOwn(response, 'data')) continue;
+    const at = Date.parse(String(stamp));
+    const key = quoteKey(input);
+    if ((target.get(key)?.at ?? -Infinity) < at) target.set(key, {at, response: response as TwinEnvelope});
+  }
 }
 
-function loadQuotes(value:unknown,target:Map<string,unknown>):void {
-  if(Array.isArray(value)) {
-    for(const item of value) loadQuotes(item,target);
-    return;
-  }
-  const row=object(value);
-  const arrival=String(row.arrival_date ?? row.arrivalDate ?? '');
-  const departure=String(row.departure_date ?? row.departureDate ?? '');
-  const room=String(row.room ?? row.room_code ?? row.roomCode ?? row.room_type ?? row.roomType ?? '');
-  if(arrival && departure && room) target.set(quoteKey(arrival,departure,room),row.result ?? row.response ?? row.value ?? row);
-  for(const [key,item] of Object.entries(row)) {
-    if(key.includes('|') || /^\d{4}-\d\d-\d\d[/:]/.test(key)) target.set(key.toLowerCase().replaceAll('/', '|'),item);
-  }
+export function beforeCutoff(value: unknown, cutoff: number): boolean {
+  return typeof value === 'string' && Date.parse(value) < cutoff;
 }
 
-function initialDocuments(card:CaseCard):Array<Record<string,unknown>> {
-  const direct=(card.documents ?? object(card.later_hms).documents) as unknown;
-  return Array.isArray(direct) ? direct.map(item=>({...object(item)})) : [];
+export function selectedCutoff(card: CaseCard): number {
+  const selected = object(card.selected_email);
+  const cutoff = Date.parse(String(selected.received_at ?? card.as_of ?? ''));
+  if (!Number.isFinite(cutoff)) throw new Error('CASE_AS_OF_MISSING');
+  return cutoff;
+}
+
+export function anchorPdfs(anchor: TwinAnchor): TwinPdf[] {
+  return [...(anchor.pdf_versions ?? []), ...(anchor.pdfs ?? [])];
+}
+
+export function captureTime(anchor: TwinAnchor): unknown {
+  return anchor.captured_at ?? anchor.hms_capture_later ?? anchor.hms_available_at;
+}
+
+export function verifiedHmsFields(anchor: TwinAnchor, cutoff: number): Record<string, unknown> | null {
+  if (!beforeCutoff(captureTime(anchor), cutoff)) return null;
+  const fields = object(anchor.hms_fields);
+  return Object.keys(fields).length ? fields : null;
 }
 
 export class TwinWorld {
   readonly anchors:TwinAnchor[];
-  readonly anchorsByConfirmation:Map<string,TwinAnchor>;
   readonly profiles:TwinProfile[];
   readonly catalog:Record<string,unknown>;
-  readonly quotes=new Map<string,unknown>();
-  readonly reservations=new Map<string,Record<string,unknown>>();
-  readonly documents:Array<Record<string,unknown>>;
+  readonly quotes=new Map<string,{at: number; response: TwinEnvelope}>();
+  readonly cutoff: number;
   readonly coverage={quoteMisses:0};
-  readonly anchor?:TwinAnchor;
+  readonly propertyCode: string;
 
-  constructor(readonly caseCard:CaseCard,root=process.env.NAVA_BENCH_DATA_ROOT ?? DEFAULT_DATA_ROOT) {
+  constructor(caseCard:CaseCard, root=defaultWorldDir(), property?:string) {
     const base=loadBase(root);
-    this.anchors=base.anchors;
-    this.anchorsByConfirmation=base.anchorsByConfirmation;
-    this.profiles=base.profiles;
-    this.catalog=base.catalog;
-    const confirmation=caseCard.real_confirmation ?? caseCard.confirmation ?? undefined;
-    this.anchor=confirmation ? base.anchorsByConfirmation.get(confirmation) : undefined;
-    if(confirmation) {
-      const later=object(object(caseCard.later_hms).fields);
-      this.reservations.set(confirmation,{...(this.anchor?.hms_fields ?? {}),...later,confirmation});
-    }
-    loadQuotes(caseCard.quotes,this.quotes);
-    loadQuotes(object(caseCard.world).quotes,this.quotes);
-    loadQuotes(caseCard.recorded_prices,this.quotes);
-    this.documents=initialDocuments(caseCard);
+    this.propertyCode = String(caseCard.property_code ?? caseCard.source?.property_code ?? property ?? 'HRCEN').trim().toUpperCase();
+    if (!this.propertyCode) throw new Error('Replay property is empty');
+    const inProperty = (row: Record<string,unknown>) =>
+      String(row.property_code ?? row.propertyCode ?? 'HRCEN').toUpperCase() === this.propertyCode;
+    this.anchors = base.anchors.filter(inProperty);
+    this.cutoff=selectedCutoff(caseCard);
+    this.profiles=base.profiles.filter(profile => inProperty(profile) && beforeCutoff(profile.observedAt ?? profile.observed_at, this.cutoff));
+    this.catalog=inProperty(base.catalog) && beforeCutoff(base.catalog.capturedAt ?? base.catalog.captured_at, this.cutoff) ? base.catalog : {};
+    loadQuotes(caseCard.quotes,this.quotes,this.cutoff);
+    loadQuotes(object(caseCard.world).quotes,this.quotes,this.cutoff);
+    loadQuotes(caseCard.recorded_prices,this.quotes,this.cutoff);
   }
 }
 
-export function loadTwinWorld(caseCard:CaseCard,root?:string):TwinWorld {
-  return new TwinWorld(caseCard,root);
+export function loadTwinWorld(caseCard:CaseCard,root?:string, property?:string):TwinWorld {
+  return new TwinWorld(caseCard,root,property);
 }
