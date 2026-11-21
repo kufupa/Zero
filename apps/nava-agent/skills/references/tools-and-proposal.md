@@ -1,22 +1,13 @@
 # Tools and proposal
 
-Use registered tools and their input schemas. `mail_read_thread` returns current mail and available context; inspect a supplied attachment if its text is needed. Search/read HMS when available. `hms_quote` reads prices and availability; it does not reserve rooms. Native price or other missing results do not prevent publishing an editable proposal.
+Use registered tool schemas. `mail_read_thread` supplies the selected message and available context. Use extracted attachment text when available; a filename is a hint. Load missing references with `skill_read`: use `references/...` for local files and `../references/...` for shared files. Reuse files already pinned.
 
-Load skill-local files as `skill_read({"skill_name":"quote","path":"references/rules.md"})` and shared files as `skill_read({"skill_name":"quote","path":"../references/common.md"})`. The `../` is required for shared references.
+`proposal_publish` requires `workflow`, `disposition`, `reason`, `bookings`, `actions`, `field_specs`, `missing`, `warnings`, `reply_draft` and `native_result`. Use empty arrays for unused lists and null for absent nullable facts. Always pass `native_result: null`; the server attaches native quote captures.
 
-`proposal_publish` requires all top-level keys:
+Bookings carry `{id, property_code, reservation_id, current_state, fields}`; actions carry `{id, type, booking_ids, details}`. Use distinct draft IDs and link actions to the correct bookings. Use the requested task as the action type, never a disposition. Property and native stay ID are set by context or stay selection, not editable field paths.
 
-```json
-{"workflow":"create","disposition":"propose","reason":null,
- "bookings":[{"id":"stay-1","property_code":"HRCEN","reservation_id":null,"current_state":null,"fields":{"first_name":null,"last_name":null,"arrival_date":null,"departure_date":null}}],
- "actions":[{"id":"create-1","type":"create","booking_ids":["stay-1"],"details":{}}],
- "field_specs":[],"missing":[],"warnings":[],"reply_draft":null,"native_result":null}
-```
+Each field spec has `path`, `label`, `provenance` (`ai`, `hms`, `default`, `unknown`), `editable`, `required`, `error`, `control` (`text`, `number`, `date`, `checkbox`, `select`, `combobox`, `textarea`), `options` and `evidence`. Use JSON pointers under `/bookings/i/fields`, `/actions/i/details` or at `/reply_draft`. Replace `i` with the actual zero-based index; each pointer must resolve to a key present in the draft, even if its value is null. For Amend use e.g. `/bookings/0/fields/first_name`, `/bookings/0/fields/last_name` or `/bookings/0/fields/departure_date` for the actual patch. Do not point to an entire object, absent key or native stay metadata. Options are `{value,label,meaning}`; evidence items are `{message_id,attachment_id,quote}`. Unknown values, option meanings and unused evidence text are null. Mark editable defaults as defaults. Keep evidence brief.
 
-Replace example values with the actual request. Use `propose` for an identified supported action; `needs_info` is a disposition, not an action type. For each field staff can edit, include a `field_specs` item with all of `path`, `label`, `provenance` (`ai`, `hms`, `default`, `unknown`), `editable`, `required`, `error`, `control` (`text`, `number`, `date`, `checkbox`, `select`, `combobox`, `textarea`), `options` and `evidence`. A path must resolve to the actual field, e.g. `/bookings/0/fields/arrival_date`; set unknown values to null. Options are `{value,label,meaning}`; evidence is `{message_id,attachment_id,quote}`, with unknown attachment or quote null. Preserve separate guest/stay IDs, and put changed fields only in an Amend patch. `native_result` must be null: the server attaches a captured native result.
+Create requires separate `first_name` and `last_name` keys under `/bookings/i/fields/{first_name,last_name}`; `guest_name` alone is insufficient. Map evidenced surname-first names to the right parts and preserve initials as written. Keep explicit `room_type` and `rate_plan` as verified native codes or requested terms, including `COMP`, corporate or government rates. Store meal terms in `board` and the full concise invoice, PO or account reference in `billing_reference`. Requested terms are not native confirmations.
 
-Create field keys include `first_name`, `last_name`, `arrival_date`, `departure_date`, `adults`, `room_type`, `rate_plan`, `source_of_business`, `track`, `guarantee_type`, `note` and `cms_send`. Keep the agency, organization, meal, billing, child and other requested details in supported editable fields; retain anything not supported in a warning or note for staff. Use action type `triage`, `create`, `amend`, `cancel`, `quote`, `voucher_submission` or `payment_proof_submission` as appropriate, not a disposition as an action type.
-
-For quote, keep stable `quote_id` and date/occupancy groups in the `quote` action details. Each native group has `group_id`, `arrival_date`, `departure_date`, and rooms with `id`, `quantity`, `adults`, `children`, `child_ages`. No children indicated: editable default `0` and `[]`. Unknown fields remain editable; only call the native quote tool when its required input is available. Native results are not guest bookings.
-
-Staff reviews and edits, then triggers Prepare and Go. Historical replay uses only supplied pre-cutoff context and no live HMS or Save. `reply_draft` saves a draft; it never sends mail.
+Use the property and capabilities supplied for the session. Historical replay uses pre-cutoff inputs and supplied HMS results only.
