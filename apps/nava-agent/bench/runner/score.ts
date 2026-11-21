@@ -876,12 +876,15 @@ export function scoreCase(input: {
   const quotePartial = workflow === 'quote' && (expectedCount === 0 || !goldFields.some(field =>
     field.expectation === 'expected' && field.knowable !== false && !field.unobserved_in_twin &&
     !isBlank(field.value) && /\/(?:adults|occupancy)$/.test(field.path)));
+  const quoteTwinNoPrice = workflow === 'quote' && toolCalls.some(call =>
+    call.name === 'hms_quote' && call.result?.error?.code === 'TWIN_NO_PRICE');
   const allowedDispositions = card.expected_dispositions ?? (expectedDisposition ? [expectedDisposition] : undefined);
   const dispositionOk = reviewOnly
     ? executableActions.length === 0 && (review || disposition === 'propose' && (discovered || workflow === 'filing' && matchingActions.length > 0))
     : workflow === 'quote'
       ? actions.length === 0 && (disposition !== 'skip' || expectsNoAction || allowedDispositions?.includes('skip') === true)
         && (quotePartial && (disposition === 'needs_info' || disposition === 'propose')
+        || quoteTwinNoPrice && disposition === 'staff_review'
         || (allowedDispositions ?? ['propose', 'needs_info', 'staff_review', 'decline', 'skip']).includes(String(disposition)))
       : disposition !== 'skip' && expectedCount > 0
         ? matchingUnits === expectedCount && matchingActions.every(action => workflow === 'create'
