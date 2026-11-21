@@ -1,7 +1,5 @@
 import {mkdir, writeFile} from 'node:fs/promises';
 import {basename, join, resolve} from 'node:path';
-import {normalizeProposalFields} from '../../src/proposal-fields.js';
-import {proposalDraft} from '../../src/schema.js';
 import {pinSkills} from '../../tools/skills/index.js';
 import {applyGoldOverlay, loadReplayGold} from './gold-overlay.js';
 import {loadCaseCards, mapPool, readOptionalJson, skillsPath, writeBoards, type ReplayOptions} from './artifacts.js';
@@ -54,24 +52,22 @@ export async function rescoreRun(options: ReplayOptions & {runDir: string}) {
     world_dir: recorded('world directory', prior.world_dir, worldDir),
     skills_digest: recorded('skills digest', prior.skills_digest ?? prior.skill_sha256, digest),
   });
-  const cards = await loadCaseCards(casesDir, options.caseIds);
+  const cards = await loadCaseCards(casesDir, options.caseIds ?? prior.case_ids);
   const sourceBoard = await readOptionalJson(join(runDir, 'scoreboard.json'));
   await mkdir(outDir, {recursive: true});
   const results = await mapPool(cards, options.concurrency ?? 10, async card => {
     const saved: CaseScore | null = await readOptionalJson(join(runDir, `${card.case_id}.json`));
     if (saved === null) return null;
     // Saved staged proposals are authoritative. Truncated tool summaries cannot recreate binding.
-    const proposed = proposalDraft.safeParse(saved.proposal);
-    const checked = proposed.success ? normalizeProposalFields(proposed.data) : null;
     const score = scoreCase({
       card: applyGoldOverlay(card, gold.map[card.case_id]),
-      proposal: proposed.success ? proposed.data : null,
+      proposal: saved.proposal,
       proposal_raw: saved.proposal_raw ?? saved.proposal,
       toolCalls: [],
       tokens: saved.tokens ?? {input: 0, output: 0, cached_input: 0},
       wall_ms: saved.wall_ms ?? 0,
       normalize: false,
-      publish_invalid: saved.publish_invalid ?? (checked?.kind === 'invalid' ? checked.path : saved.proposal != null && !proposed.success ? true : undefined),
+      publish_invalid: saved.publish_invalid,
       run_error: saved.run_error,
       model: model ?? 'unknown',
     });

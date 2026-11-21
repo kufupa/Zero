@@ -5,7 +5,7 @@ import type {CaseCard, GoldField, Workflow} from '../types.js';
 import {DEFAULT_DATA_ROOT} from '../twin/world.js';
 
 export type GoldVersion = 'v4' | 'v5';
-type GoldEntry = Pick<CaseCard, 'gold'> & {
+type GoldEntry = Pick<CaseCard, 'gold' | 'unscored_request_fields'> & {
   workflow?: Workflow;
   skip?: boolean;
   gold_patches?: Array<Partial<GoldField> & {path: string}>;
@@ -36,7 +36,7 @@ export async function loadReplayGold(options: {casesDir: string; goldFile?: stri
 
 export function applyGoldOverlay(card: CaseCard, overlay: GoldEntry | undefined): CaseCard {
   if (!overlay) throw new Error(`Missing gold entry: ${card.case_id}`);
-  const {workflow, gold, gold_patches, skip, doc_kind, expected_targets, expected_action_count,
+  const {workflow, gold, gold_patches, unscored_request_fields, skip, doc_kind, expected_targets, expected_action_count,
     expected_disposition, expected_dispositions, is_vcc_trap, is_staff_reply_trap} = overlay;
   if (!Array.isArray(gold) && !Array.isArray(gold_patches)) throw new Error(`Gold entry has no fields or patches: ${card.case_id}`);
   const patches = new Map(gold_patches?.map(patch => [patch.path, patch]));
@@ -44,6 +44,7 @@ export function applyGoldOverlay(card: CaseCard, overlay: GoldEntry | undefined)
     ...card,
     workflow: workflow ?? card.workflow,
     gold: gold ?? card.gold?.map(field => ({...field, ...patches.get(field.path)} as GoldField)),
+    unscored_request_fields: unscored_request_fields ?? card.unscored_request_fields,
     doc_kind: doc_kind ?? card.doc_kind,
     expected_targets: expected_targets ?? card.expected_targets,
     expected_action_count: expected_action_count ?? (skip ? 0 : card.expected_action_count),

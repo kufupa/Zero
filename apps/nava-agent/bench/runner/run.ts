@@ -122,6 +122,19 @@ function people(value: unknown) {
   });
 }
 
+function quotedTime(header: string): number {
+  const value = header.trim().replace(/\s+at\s+(?=\d{1,2}:)/i, ' ')
+    .replace(/\b(\d{1,2})\/(\d{1,2})\/(20\d{2})\b/, '$3/$2/$1');
+  // Gmail's "On … wrote:" also includes the sender after the timestamp.
+  const stamp = /^(.+?\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s*[AP]M)?(?:\s*(?:GMT|UTC)(?:[+-]\d{2}:?\d{2})?|\s*SAST\b|\s*[+-]\d{2}:?\d{2}|Z)?)(?=\s|$)/i
+    .exec(value)?.[1] ?? value;
+  if (/SAST$/i.test(stamp)) return Date.parse(stamp.replace(/SAST$/i, 'GMT+0200'));
+  if (/(?:Z|GMT|UTC|[+-]\d{2}:?\d{2})$/i.test(stamp)) return Date.parse(stamp);
+  // Centurion wall time is UTC+02:00 year-round. Don't use the replay host's timezone.
+  if (/^\d{4}-\d{2}-\d{2}T/i.test(stamp)) return Date.parse(`${stamp}+02:00`);
+  return Date.parse(`${stamp} GMT+0200`);
+}
+
 function cutFutureQuote(body: string, at: number): string {
   const lines = body.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
@@ -130,7 +143,7 @@ function cutFutureQuote(body: string, at: number): string {
     const start = sent ? lines.slice(Math.max(0, i - 3), i).findIndex(line =>
       /^\s*(?:>\s*)*(?:From:|[- ]+Original Message[- ]*)/i.test(line)) : -1;
     const rawTime = replied?.[1] ?? (start >= 0 ? sent?.[1] : undefined);
-    if (rawTime && Date.parse(rawTime) > at) {
+    if (rawTime && quotedTime(rawTime) > at) {
       return lines.slice(0, replied ? i : Math.max(0, i - 3) + start).join('\n').trimEnd();
     }
   }

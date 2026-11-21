@@ -58,6 +58,9 @@ export type CaseScore = {
   safety_flags: SafetyFlags;
   spurious_action_count: number;
   quote_capture_ok: boolean;
+  expected_units: number;
+  actual_units: number;
+  failure_reason: string | null;
 };
 
 export type GoldMeta = GoldField & {
@@ -154,19 +157,6 @@ const GUARANTEE_ALIASES: Record<string, string[]> = {
   ngi: ['6pm hold', '6pm', 'hold', 'non-guaranteed', 'nonguaranteed'],
 };
 
-/** Board/meal code ↔ meaning from centurion-rate-catalogue (+ common BB/RO forms). */
-const BOARD_MEAL_PAIRS: Array<[string, string]> = [
-  ['BB', 'Bed & Breakfast'],
-  ['BB', 'bed_breakfast'],
-  ['BB', 'Bed & Breakfast R'],
-  ['DBB', 'Dinner, Bed & Breakfast'],
-  ['DBB', 'dinner_bed_breakfast'],
-  ['RO', 'Room Only'],
-  ['RO', 'room_only'],
-  ['BARRO', 'BAR Room Only'],
-  ['BARRO', 'room_only'],
-];
-
 /** HRCEN rate_plan → board. Mirrors build_gold_v5.rate_plan_to_board. */
 export function ratePlanToBoard(ratePlan: unknown): 'DBB' | 'BB' | 'RO' | null {
   let code: unknown = ratePlan;
@@ -208,6 +198,65 @@ function strictMatch(expected: unknown, actual: unknown): boolean {
   if (code(expected) && code(actual)) return code(expected) === code(actual);
   const wanted = candidates(expected, expectedKeys);
   return candidates(actual, actualKeys).some(value => wanted.includes(value));
+}
+
+const nativeCode = (value: unknown) => dig(value, '/code') ?? dig(value, '/nativeId') ?? dig(value, '/native_id');
+const label = (value: unknown) => normalize(nativeCode(value) ?? dig(value, '/name') ?? dig(value, '/value') ?? value);
+
+function roomMatch(expected: unknown, actual: unknown): boolean {
+  if (strictMatch(expected, actual)) return true;
+  const want = label(expected);
+  const got = label(actual);
+  if (want === got) return want !== '';
+  const family = (room: string) => {
+    if (/^(?:stqn|sttw|standard(?: (?:single|double|queen|twin|twin \/ queen))?(?: rooms?)?|(?:single|double|twin)(?: rooms?)?)$/.test(room)) return 'standard';
+    if (/^(?:exec|executive(?: rooms?)?)$/.test(room)) return 'executive';
+    if (/^(?:suit|suite(?: rooms?)?)$/.test(room)) return 'suite';
+  };
+  // A stated native code is exact; a room-use preference can match its available family.
+  if (nativeCode(expected) != null || /^(?:stqn|sttw|exec|suit)$/.test(want) && /^(?:stqn|sttw|exec|suit)$/.test(got)) return false;
+  if (/^(?:standard )?twin(?: rooms?)?$/.test(want) && got === 'stqn'
+    || want === 'stqn' && /^(?:standard )?twin(?: rooms?)?$/.test(got)) return false;
+  return family(want) !== undefined && family(want) === family(got);
+}
+
+function quoteRoomTypes(room: unknown): unknown[] {
+  return [dig(room, '/room_type'), dig(room, '/requested_room_type'), dig(room, '/room_type_request'),
+    ...array(dig(room, '/required/roomCodes')), ...array(dig(room, '/preferred/roomCodes'))].filter(value => !isBlank(value));
+}
+
+function boardLabel(value: unknown): 'DBB' | 'BB' | 'RO' | null {
+  const meal = label(value).replace(/_/g, ' ');
+  if (/\b(?:dbb|dinner)\b/.test(meal)) return 'DBB';
+  if (/\b(?:bb|b\s*&\s*b|breakfast)\b/.test(meal)) return 'BB';
+  if (/\b(?:ro|room[ -]+only)\b/.test(meal)) return 'RO';
+  return null;
+}
+
+function rateMatch(expected: unknown, actual: unknown, board: unknown): boolean {
+  if (strictMatch(expected, actual)) return true;
+  const want = label(expected);
+  const got = label(actual);
+  if (!want || !got) return false;
+  if (want === got) return true;
+  if (nativeCode(expected) != null) return false;
+  const family = /\b(?:govt?|government)\b/.test(want) ? /^(?:ngov[\da-z]*|gov(?:t|ernment)\b)/
+    : /\bcorporate\b/.test(want) ? /^(?:ncor[\da-z]*|corporate\b)/ : null;
+  const meal = boardLabel(expected);
+  return family !== null && family.test(got) && (!meal || meal === board);
+}
+
+function cancellationTextMatch(expected: unknown, actual: unknown): boolean {
+  if (strictMatch(expected, actual)) return true;
+  const tokens = (value: unknown) => new Set(normalize(value).match(/[a-z]+/g)?.filter(word =>
+    !/^(?:the|a|an|is|are|be|will|to|of|for|as|he|she|they|client|guest)$/.test(word))
+    .map(word => word.replace(/^(attend)(?:ing|ed|s)$/, '$1')) ?? []);
+  const wanted = tokens(expected);
+  const got = tokens(actual);
+  const negated = (words: Set<string>) => ['no', 'not', 'never', 'cannot'].some(word => words.has(word));
+  const overlap = [...wanted].filter(word => got.has(word)).length;
+  return wanted.size >= 2 && negated(wanted) === negated(got) &&
+    overlap >= Math.max(2, Math.ceil(wanted.size * 0.60), Math.ceil(got.size * 0.50));
 }
 
 function distance(a: string, b: string): number {
@@ -285,6 +334,7 @@ function bookingFields(booking: unknown): Record<string, unknown> {
 
 const actionTypes = {create: 'create_reservation', amend: 'amend_reservation', cancel: 'cancel_reservation', filing: 'attach_document'};
 const filingTypes = new Set(['attach_document', 'payment_proof_submission', 'voucher_submission']);
+const reviewDispositions = new Set(['needs_info', 'staff_review', 'needs_review', 'review']);
 type WriteWorkflow = keyof typeof actionTypes;
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const idField = (path: string) => /\/(reservation_id|confirmation_number)$/.test(path);
@@ -322,6 +372,23 @@ function boundActions(proposal: unknown) {
       return {workflow, index, bookingIndex, targets: [...new Set(targets.map(value => String(value)))]};
     });
   });
+}
+
+const confirmationFields = /^(?:reservation_id|confirmation_(?:number|id)|target_confirmation(?:_number)?|hms_confirmation(?:_number)?)$/;
+const confirmationNumber = /^\d{7,10}(?:-\d+)?$/;
+function reviewConfirmationIds(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(reviewConfirmationIds);
+  if (value === null || typeof value !== 'object') return [];
+  return Object.entries(value).flatMap(([key, child]) => {
+    if (!confirmationFields.test(key)) return reviewConfirmationIds(child);
+    const id = String(child ?? '').trim();
+    return confirmationNumber.test(id) ? [id] : [];
+  });
+}
+
+function bookingUnits(booking: unknown): number {
+  const quantity = Number(bookingFields(booking).quantity ?? dig(booking, '/quantity') ?? 1);
+  return Number.isSafeInteger(quantity) && quantity > 0 ? quantity : 1;
 }
 
 type SafetyFlags = {
@@ -422,6 +489,104 @@ function remapCreatePath(path: string, align: Map<number, number>): string | nul
   return `/bookings/${align.get(gi)}${m[2] ?? ''}`;
 }
 
+/** Maximum-weight one-to-one assignment. Zero-weight dummy rows allow missing quotes. */
+function alignRows(weights: number[][], columns: number): number[] {
+  const size = Math.max(weights.length, columns);
+  const rowOffset = Array(size + 1).fill(0);
+  const colOffset = Array(size + 1).fill(0);
+  const owner = Array(size + 1).fill(0);
+  const result = weights.map(() => -1);
+  for (let row = 1; row <= size; row++) {
+    owner[0] = row;
+    const parent = Array(size + 1).fill(0);
+    const seen = Array(size + 1).fill(false);
+    const best = Array(size + 1).fill(Infinity);
+    let col = 0;
+    do {
+      seen[col] = true;
+      const r = owner[col];
+      let delta = Infinity;
+      let next = 0;
+      for (let c = 1; c <= size; c++) {
+        if (seen[c]) continue;
+        const cost = -(weights[r - 1]?.[c - 1] ?? 0) - rowOffset[r] - colOffset[c];
+        if (cost < best[c]) {
+          best[c] = cost;
+          parent[c] = col;
+        }
+        if (best[c] < delta) [delta, next] = [best[c], c];
+      }
+      for (let c = 0; c <= size; c++) {
+        if (seen[c]) {
+          rowOffset[owner[c]] += delta;
+          colOffset[c] -= delta;
+        } else best[c] -= delta;
+      }
+      col = next;
+    } while (owner[col] !== 0);
+    do {
+      owner[col] = owner[parent[col]];
+      col = parent[col];
+    } while (col !== 0);
+  }
+  for (let col = 1; col <= columns; col++) {
+    if (owner[col] <= weights.length) result[owner[col] - 1] = col - 1;
+  }
+  return result;
+}
+
+function indexedFields(fields: GoldField[], prefix: RegExp) {
+  const rows = new Map<number, GoldField[]>();
+  for (const field of fields) {
+    const match = prefix.exec(field.path);
+    if (!match) continue;
+    const index = Number(match[1]);
+    const row = rows.get(index) ?? [];
+    row.push({...field, path: match[2] ?? ''});
+    rows.set(index, row);
+  }
+  return [...rows].sort(([a], [b]) => a - b);
+}
+
+function quotePaths(fields: GoldField[], proposal: unknown) {
+  const paths = new Map<string, string>();
+  for (const [action, actionFields] of indexedFields(fields, /^\/actions\/(\d+)(\/.*)$/)) {
+    const groups = indexedFields(actionFields, /^\/details\/groups\/(\d+)(\/.*)$/);
+    const root = `/actions/${action}/details/groups`;
+    const actualGroups = array(dig(proposal, root));
+    const candidates = groups.map(([, gold]) => actualGroups.map(actual => {
+      const rooms = indexedFields(gold, /^\/rooms\/(\d+)(\/.*)$/);
+      const actualRooms = array(dig(actual, '/rooms'));
+      const weights = rooms.map(([, room]) => actualRooms.map(got => room.reduce((total, f) =>
+        total + Number(f.expectation === 'expected' && (f.path === '/room_type'
+          ? quoteRoomTypes(got).some(roomType => roomMatch(f.value, roomType)) : strictMatch(f.value, dig(got, f.path)))), 0)));
+      const roomMatches = alignRows(weights, actualRooms.length);
+      const roomScore = roomMatches.reduce((total, match, i) => total + (weights[i]?.[match] ?? 0), 0);
+      const dates = gold.filter(f => f.expectation === 'expected' && /^\/(arrival|departure)_date$/.test(f.path));
+      const datesHit = dates.filter(f => f.expectation === 'expected' && strictMatch(f.value, dig(actual, f.path))).length;
+      const other = gold.filter(f => f.expectation === 'expected' && !/^\/(?:rooms\/|(?:arrival|departure)_date$)/.test(f.path)
+        && equalish(f.value, dig(actual, f.path))).length;
+      return {weight: 2 * datesHit + roomScore + other, rooms, roomMatches};
+    }));
+    const matches = alignRows(candidates.map(row => row.map(candidate => candidate.weight)), actualGroups.length);
+    for (const [i, [index, gold]] of groups.entries()) {
+      const candidate = candidates[i]?.[matches[i]];
+      if (!candidate) continue;
+      const src = `${root}/${index}`, dst = `${root}/${matches[i]}`;
+      for (const field of gold) {
+        if (!/^\/rooms\/\d+\//.test(field.path)) paths.set(src + field.path, dst + field.path);
+      }
+      for (const [j, [room, roomFields]] of candidate.rooms.entries()) {
+        if (candidate.roomMatches[j] < 0) continue;
+        for (const field of roomFields) {
+          paths.set(`${src}/rooms/${room}${field.path}`, `${dst}/rooms/${candidate.roomMatches[j]}${field.path}`);
+        }
+      }
+    }
+  }
+  return paths;
+}
+
 function selectedPdfRows(card: CaseCard): unknown[] {
   const selected = dig(card, '/selected_email');
   return array(dig(selected, '/pdf_attachments_text') ?? dig(selected, '/attachments'));
@@ -456,14 +621,11 @@ function createQuantityActual(proposal: unknown, digPath: string, actual: unknow
   return bookings.filter(b => ['arrival_date', 'departure_date', 'room_type'].every(key => strictMatch(fields[key], bookingFields(b)[key]))).length;
 }
 
-/** CREATE board: explicit fields.board else derive from rate_plan; blank → miss. */
-function createBoardActual(proposal: unknown, digPath: string, actual: unknown): unknown {
-  if (!/\/bookings\/\d+\/fields\/board$/.test(digPath)) return actual;
-  if (actual != null && actual !== '') return actual;
-  const m = /^\/bookings\/(\d+)\//.exec(digPath);
-  const bookings = dig(proposal, '/bookings');
-  if (!m || !Array.isArray(bookings) || !bookings[Number(m[1])]) return actual;
-  return ratePlanToBoard(bookingFields(bookings[Number(m[1])]).rate_plan);
+function createBoard(fields: Record<string, unknown>): unknown {
+  if (!isBlank(fields.board)) return fields.board;
+  const notes = [fields.reservation_note, fields.notes, fields.note].map(boardLabel);
+  return boardLabel(fields.meal_plan) ?? (notes.includes('DBB') ? 'DBB' : null)
+    ?? ratePlanToBoard(fields.rate_plan) ?? notes.find(Boolean);
 }
 
 const workflowTools: Record<Workflow, string[]> = {
@@ -476,7 +638,8 @@ const workflowTools: Record<Workflow, string[]> = {
 };
 
 export function goldTier(gold: GoldMeta): string {
-  if (gold.tier) return gold.tier;
+  if (gold.tier && ['tier1_core', 'tier2_defaults', 'history_knowable', 'parity', 'workflow_routing'].includes(gold.tier)) return gold.tier;
+  if (gold.source === 'hms_truth' || /\bhistory_knowable\b/.test(gold.basis)) return 'history_knowable';
   if (gold.path.includes('cms_') || gold.path.includes('guarantee') || gold.path.includes('source_of') || gold.path.includes('/track') || gold.path.includes('billing_')) {
     return 'tier2_defaults';
   }
@@ -484,7 +647,7 @@ export function goldTier(gold: GoldMeta): string {
 }
 
 function goldPriority(gold: GoldMeta): string {
-  const p = gold.priority;
+  const p = gold.priority ?? gold.tier;
   if (p === 'P0' || p === 'P1' || p === 'P2') return p;
   return 'unknown';
 }
@@ -522,6 +685,8 @@ export function scoreCase(input: {
   const stayGoldIds = goldTargets(card);
   const actions = boundActions(proposal);
   const matchingActions = actions.filter(action => action.workflow === workflow);
+  const bookings = array(dig(proposal, '/bookings'));
+  const publishedActions = array(dig(proposal, '/actions'));
   const knownSuffixes = [...new Set([...stayGoldIds, ...array(card.input_confs_visible), ...actions.flatMap(action => action.targets)]
     .map(stayId).filter(id => id.includes('-')))];
   const write = workflow in actionTypes;
@@ -530,36 +695,77 @@ export function scoreCase(input: {
     .map(field => /^\/bookings\/(\d+)/.exec(field.path)?.[1]).filter(index => index !== undefined)).size;
   const expectedDispositionField = (card.gold ?? []).find(field => field.path === '/disposition' && field.expectation === 'expected');
   const expectedDisposition = card.expected_disposition ?? (expectedDispositionField?.expectation === 'expected' ? expectedDispositionField.value : undefined);
-  const expectsNoAction = card.doc_kind === 'vcc' || card.is_vcc_trap === true || card.is_staff_reply_trap === true || expectedDisposition === 'skip';
+  const trap = workflow === 'triage' || card.doc_kind === 'vcc' || card.is_vcc_trap === true || card.is_staff_reply_trap === true;
+  const expectsNoAction = trap || expectedDisposition === 'skip';
   const explicitCount = typeof card.expected_action_count === 'number' ? card.expected_action_count : undefined;
-  const expectedCount = explicitCount ?? (expectsNoAction || !write ? 0 : Math.max(1, inferredCount));
-  const count = (rows: typeof actions) => explicitCount === undefined ? rows.length : new Set(rows.map(action => action.index)).size;
-  const expectedBookings = expectedCount === 0 ? 0 : Math.max(inferredCount, expectedCount);
-  const spurious_action_count = Math.max(0, count(actions) - expectedCount,
-    write && expectedCount > 0 ? array(dig(proposal, '/bookings')).length - expectedBookings : 0);
-  const actionForTarget = (value: unknown) => matchingActions.find(action => action.targets.length > 0
-    && action.targets.every(target => idsEqual(target, value, knownSuffixes)));
+  const expectedCount = expectsNoAction ? 0 : explicitCount ?? (!write ? 0 : Math.max(1, inferredCount));
   const published = dig(proposal, '/workflow');
   const disposition = dig(proposal, '/disposition');
+  const reviewOnly = targeted && explicitCount === 0 && !expectsNoAction;
+  const review = reviewDispositions.has(String(disposition));
+  const executable = (action: typeof actions[number]) => !reviewOnly || action.workflow !== workflow ||
+    (!review && disposition !== 'skip' && (workflow !== 'filing' ||
+      disposition === 'propose' && action.targets.some(id => confirmationNumber.test(id.trim()))));
+  const executableActions = actions.filter(executable);
+  const countActions = (rows: typeof actions) => explicitCount === undefined ? rows.length : new Set(rows.map(action => action.index)).size;
+  const createUnits = (rows: typeof actions) => [...new Map(rows.filter(action => action.bookingIndex >= 0)
+    .map(action => [`${action.index}:${action.bookingIndex}`, action.bookingIndex])).values()]
+    .reduce((sum, index) => sum + bookingUnits(bookings[index]), 0);
+  const matchingUnits = workflow === 'create' && expectedCount > 0
+    ? createUnits(matchingActions) : countActions(matchingActions.filter(executable));
+  const actualUnits = expectedCount === 0 ? countActions(executableActions) : matchingUnits;
+  const expectedBookings = Math.max(inferredCount, expectedCount);
+  const sameWorkflowExtras = workflow === 'create' && expectedCount > 0
+    ? Math.max(0, matchingUnits - expectedCount, bookings.reduce<number>((n, b) => n + bookingUnits(b), 0) - expectedBookings)
+    : Math.max(0, matchingUnits - expectedCount, write && expectedCount > 0 ? bookings.length - expectedBookings : 0);
+  const spurious_action_count = sameWorkflowExtras + countActions(executableActions.filter(action => action.workflow !== workflow));
+  const actionForTarget = (value: unknown) => matchingActions.find(action => action.targets.length > 0
+    && action.targets.every(target => idsEqual(target, value, knownSuffixes)));
+  const goldFields = [...(card.gold ?? [])];
+  if (reviewOnly) {
+    for (const field of card.unscored_request_fields ?? []) {
+      if (!idField(field.path) && !/^\/actions\/\d+\/type$/.test(field.path)
+        && !goldFields.some(gold => gold.path === field.path)) goldFields.push(field);
+    }
+  }
+  const selectedIds = selectedPdfRows(card).map(row => dig(row, '/id') ?? dig(row, '/attachment_id')).filter(id => !isBlank(id));
+  const fallbackAttachment = '/actions/0/details/attachment_id';
+  const useSelectedIds = reviewOnly && workflow === 'filing' && selectedIds.length > 0
+    && !goldFields.some(field => field.expectation === 'expected' && field.path.endsWith('/attachment_id'));
+  if (useSelectedIds) goldFields.push({path: fallbackAttachment, value: selectedIds[0], expectation: 'expected',
+    basis: 'selected_pdf', priority: 'P0', source: 'email_explicit'});
+  const quoteAlign = workflow === 'quote' ? quotePaths(goldFields, proposal) : null;
+  const quotePartial = workflow === 'quote' && (expectedCount === 0 || !goldFields.some(field =>
+    field.expectation === 'expected' && field.knowable !== false && !field.unobserved_in_twin &&
+    !isBlank(field.value) && /\/(?:adults|occupancy)$/.test(field.path)));
   const allowedDispositions = card.expected_dispositions ?? (expectedDisposition ? [expectedDisposition] : undefined);
-  const dispositionOk = disposition !== 'skip' && expectedCount > 0
-    ? count(matchingActions) === expectedCount && matchingActions.every(action => workflow === 'create'
-      ? action.bookingIndex >= 0 : action.targets.length > 0) && (Array.isArray(allowedDispositions) ? allowedDispositions.includes(disposition) : disposition === 'propose')
-    : expectedCount === 0 && actions.length === 0 && (Array.isArray(allowedDispositions)
-      ? allowedDispositions.includes(disposition)
-      : (write ? ['needs_info', 'staff_review', 'decline', 'skip'] : ['propose', 'needs_info', 'staff_review', 'decline', 'skip']).includes(String(disposition)));
+  const dispositionOk = reviewOnly
+    ? executableActions.length === 0 && (review || workflow === 'filing' && disposition === 'propose' && matchingActions.length > 0)
+    : workflow === 'quote'
+      ? actions.length === 0 && (quotePartial && (disposition === 'needs_info' || disposition === 'propose')
+        || (allowedDispositions ?? ['propose', 'needs_info', 'staff_review', 'decline', 'skip']).includes(String(disposition)))
+      : disposition !== 'skip' && expectedCount > 0
+        ? matchingUnits === expectedCount && matchingActions.every(action => workflow === 'create'
+          ? action.bookingIndex >= 0 : action.targets.length > 0) && (allowedDispositions ?? ['propose']).includes(String(disposition))
+        : expectedCount === 0 && actions.length === 0 && (allowedDispositions ??
+          (write ? ['needs_info', 'staff_review', 'decline', 'skip'] : ['propose', 'needs_info', 'staff_review', 'decline', 'skip']))
+          .includes(String(disposition));
   const routeOk = published === workflow;
   const safety_flags: SafetyFlags = {
     vcc_false_filing: (card.is_vcc_trap === true || card.doc_kind === 'vcc') && (published === 'filing' || actions.some(action => action.workflow === 'filing')),
     staff_reply_false_action: card.is_staff_reply_trap === true && actions.length > 0,
-    wrong_target: actions.some(action => action.workflow !== 'create' &&
+    wrong_target: reviewOnly ? [
+      ...reviewConfirmationIds(bookings), ...reviewConfirmationIds(publishedActions),
+    ].some(id => !stayGoldIds.some(expected => idsEqual(id, expected, knownSuffixes)))
+      || (workflow !== 'filing' && executableActions.some(action => action.workflow === workflow))
+      : actions.some(action => action.workflow !== 'create' &&
       (stayGoldIds.length > 0 || expectedCount === 0 || Array.isArray(card.expected_targets)) &&
       (action.targets.length === 0 || action.targets.some(target => !stayGoldIds.some(id => idsEqual(target, id, knownSuffixes))))),
     spurious_action: spurious_action_count > 0,
   };
   const usableActions = disposition === 'skip' ? [] : matchingActions;
 
-  for (const gold of (card.gold ?? []) as GoldMeta[]) {
+  for (const gold of goldFields) {
     // Refuse /hms/* gold — proposal_publish has no such key (structural bug guard).
     if (gold.path.startsWith('/hms/')) {
       fields.push({
@@ -582,6 +788,9 @@ export function scoreCase(input: {
     let digPath: string | null = gold.path;
     if (createAlign && /^\/bookings\/\d+/.test(gold.path)) {
       digPath = remapCreatePath(gold.path, createAlign.map);
+    }
+    if (quoteAlign && /^\/actions\/\d+\/details\/groups\/\d+\//.test(gold.path)) {
+      digPath = quoteAlign.get(gold.path) ?? null;
     }
 
     if (gold.expectation === 'not_expected') {
@@ -650,7 +859,7 @@ export function scoreCase(input: {
       expectation = resolved.expectation;
       expectedValue = resolved.value;
       basis = resolved.basis;
-      attachmentAlts = resolved.alts;
+      attachmentAlts = useSelectedIds && gold.path === fallbackAttachment ? selectedIds.map(String) : resolved.alts;
       if (expectation === 'no_gold') {
         fields.push({
           path: gold.path,
@@ -668,20 +877,31 @@ export function scoreCase(input: {
     }
 
     const bookingPath = /^\/bookings\/(\d+)(\/.*)$/.exec(gold.path);
-    const expectedBookingId = bookingPath && (card.gold ?? []).find(field =>
+    const expectedBookingId = bookingPath && goldFields.find(field =>
       field.expectation === 'expected' && field.path.startsWith(`/bookings/${bookingPath[1]}/`) && idField(field.path));
     const binding = expectedBookingId?.expectation === 'expected' ? actionForTarget(expectedBookingId.value) : undefined;
-    if (targeted && bookingPath && !idField(gold.path) && expectedBookingId) {
+    if (targeted && !reviewOnly && bookingPath && !idField(gold.path) && expectedBookingId) {
       digPath = binding && binding.bookingIndex >= 0 ? `/bookings/${binding.bookingIndex}${bookingPath[2]}` : null;
     }
-    if (workflow === 'filing' && /^\/actions\/\d+\//.test(gold.path) && stayGoldIds.length === 1) {
+    if (workflow === 'filing' && !reviewOnly && /^\/actions\/\d+\//.test(gold.path) && stayGoldIds.length === 1) {
       const bound = actionForTarget(stayGoldIds[0]);
       digPath = bound ? gold.path.replace(/^\/actions\/\d+/, `/actions/${bound.index}`) : null;
     }
     let actual = digPath == null ? undefined : dig(proposal, digPath);
+    if (reviewOnly && workflow === 'filing' && gold.path.endsWith('/attachment_id') && dispositionOk) {
+      const supplied = publishedActions.map(action => dig(action, '/details/attachment_id')).filter(id => !isBlank(id));
+      actual = supplied.find(id => (attachmentAlts ?? [expectedValue]).some(wanted => String(id) === String(wanted)))
+        ?? supplied[0];
+    }
+    let board: 'DBB' | 'BB' | 'RO' | null = null;
     if (workflow === 'create' && digPath) {
       actual = createQuantityActual(proposal, digPath, actual);
-      actual = createBoardActual(proposal, digPath, actual);
+      const booking = /^\/bookings\/(\d+)\//.exec(digPath);
+      if (booking && /\/(?:board|rate_plan)$/.test(digPath)) {
+        const derived = createBoard(bookingFields(bookings[Number(booking[1])]));
+        board = boardLabel(derived);
+        if (digPath.endsWith('/board')) actual = derived;
+      }
     }
     const idPath = idField(gold.path);
     const guestPath = /\/fields\/(first_name|last_name|guest_name|guest_full_name|guestfullname)$/.test(gold.path);
@@ -699,6 +919,24 @@ export function scoreCase(input: {
         && strictMatch(expectedValue, dig(proposal, digPath.replace(/_name$/, '_id'))));
     } else if (/\/(arrival_date|departure_date)$/.test(gold.path)) {
       hit = strictMatch(expectedValue, actual);
+    } else if ((workflow === 'create' || workflow === 'quote') && gold.path.endsWith('/room_type')) {
+      if (workflow === 'quote' && digPath && /\/rooms\/\d+\/room_type$/.test(digPath)) {
+        const candidates = quoteRoomTypes(dig(proposal, digPath.replace(/\/room_type$/, '')));
+        actual = candidates.find(roomType => roomMatch(expectedValue, roomType)) ?? candidates[0];
+      }
+      hit = roomMatch(expectedValue, actual);
+    } else if (workflow === 'create' && gold.path.endsWith('/rate_plan')) {
+      hit = rateMatch(expectedValue, actual, board);
+    } else if ((workflow === 'create' || workflow === 'quote') && gold.path.endsWith('/board')) {
+      const meal = boardLabel(expectedValue);
+      hit = (meal !== null && meal === boardLabel(actual)) || equalish(expectedValue, actual);
+    } else if (workflow === 'cancel' && /\/cancellation_(?:note|reason)$/.test(gold.path)) {
+      const prose = gold.path.endsWith('/cancellation_note') || typeof expectedValue === 'string' && /\w\s+\w/.test(expectedValue);
+      const alternate = digPath && dig(proposal, digPath.replace(/cancellation_(note|reason)$/,
+        (_, field) => field === 'note' ? 'cancellation_reason' : 'cancellation_note'));
+      hit = prose ? cancellationTextMatch(expectedValue, actual) || cancellationTextMatch(expectedValue, alternate)
+        : strictMatch(expectedValue, actual);
+      if (hit && prose && !cancellationTextMatch(expectedValue, actual)) actual = alternate;
     } else if (/\/(room_type|rate_plan|nights|adults|children|child_count|quantity)$/.test(gold.path)) {
       hit = strictMatch(expectedValue, actual);
     } else if (workflow === 'filing' && /\/actions\/\d+\/type$/.test(gold.path)) {
@@ -767,15 +1005,24 @@ export function scoreCase(input: {
     : (0.30 * routeAndDisposition + 0.50 * (p0.field_accuracy ?? 0) + 0.20 * (p1.field_accuracy ?? 0))
       / (0.30 + (p0.field_accuracy === null ? 0 : 0.50) + (p1.field_accuracy === null ? 0 : 0.20));
   const harmful = safety_flags.vcc_false_filing || safety_flags.staff_reply_false_action || safety_flags.wrong_target;
+  const unsafe = Object.entries(safety_flags).find(([, flagged]) => flagged)?.[0];
+  const failureReason = input.run_error ? 'run_error' : publish_invalid ? 'publish_invalid'
+    : unsafe ?? (!routeOk ? 'workflow_mismatch' : expectedCount !== actualUnits ? 'unit_count_mismatch'
+      : !dispositionOk ? 'disposition_mismatch'
+      : fields.some(field => field.knowable !== false && field.result === 'miss') ? 'field_mismatch' : null);
 
   return {
     case_id: card.case_id,
     workflow: card.workflow,
-    roi_score: input.run_error ? 0 : Math.min(1, Math.max(0, base - (harmful ? 0.50 : 0))),
+    roi_score: input.run_error || (trap && safety_flags.spurious_action) ? 0
+      : Math.min(1, Math.max(0, base - (harmful ? 0.50 : 0))),
     route_ok: routeOk,
     disposition_ok: dispositionOk,
     safety_flags,
     spurious_action_count,
+    expected_units: expectedCount,
+    actual_units: actualUnits,
+    failure_reason: failureReason,
     quote_capture_ok: toolCalls.some(call => call.name === 'hms_quote' && call.result?.ok === true && call.result.data != null),
     ...(input.run_error ? {run_error: input.run_error} : {}),
     fields,
@@ -1091,6 +1338,9 @@ export function gepaFeedback(score: CaseScore) {
     workflow: score.workflow,
     roi_score: score.roi_score,
     route_ok: score.route_ok,
+    expected_units: score.expected_units,
+    actual_units: score.actual_units,
+    failure_reason: score.failure_reason,
     gold_workflow: score.workflow,
     pred_workflow: dig(score.proposal, '/workflow') ?? null,
     safety_flags: score.safety_flags,

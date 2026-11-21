@@ -44,6 +44,7 @@ export type CaseCard = {
     [key:string]:unknown;
   };
   gold?:GoldField[];
+  unscored_request_fields?:GoldField[];
   omitted?:Array<{path:string;reason:string}>;
   quotes?:unknown;
   [key:string]:unknown;

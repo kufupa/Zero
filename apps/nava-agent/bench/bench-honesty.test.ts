@@ -197,6 +197,7 @@ test('case enumeration ignores _build and directories without case.json; rescore
   assert.equal(feedback.case_id, 'sample');
   assert.equal(feedback.pred_workflow, null);
   assert.equal(feedback.warnings[0], 'AZURE_RESPONSES_HTTP_503');
+  assert.deepEqual([feedback.expected_units, feedback.actual_units, feedback.failure_reason], [1, 0, 'run_error']);
 });
 
 test('Azure Responses retries HTTP 429 and 5xx with jitter for Sol', async t => {
@@ -298,4 +299,151 @@ test('fresh replay and rescore agree using a local Responses server and explicit
   assert.deepEqual(rescored.board.ruler, fresh.board.ruler);
   assert.equal(await readFile(join(outDir, 'gepa_feedback.jsonl'), 'utf8'),
     await readFile(join(rescored.outDir, 'gepa_feedback.jsonl'), 'utf8'));
+});
+
+const expected = (path: string, value: unknown, priority = 'P0'): GoldField =>
+  ({path, value, priority, expectation: 'expected', basis: 'email'});
+
+test('Create counts rooms in one grouped action, including numbered quantities', () => {
+  const card: CaseCard = {case_id: 'group', workflow: 'create', expected_action_count: 2, gold: [
+    expected('/bookings/0/fields/arrival_date', '2026-09-10'),
+    expected('/bookings/1/fields/arrival_date', '2026-09-11'),
+  ]};
+  const draft = {...proposal('create', 'propose', [], 'create_reservation'), bookings: [
+    {id: 'b0', fields: {arrival_date: '2026-09-10'}},
+    {id: 'b1', fields: {arrival_date: '2026-09-11'}},
+  ]};
+  draft.actions[0].booking_ids = ['b0', 'b1'];
+  const scored = score(card, draft);
+  assert.equal(scored.roi_score, 1);
+  assert.deepEqual([scored.expected_units, scored.actual_units, scored.failure_reason], [2, 2, null]);
+  const duplicate = {...draft, actions: [draft.actions[0], {...draft.actions[0], id: 'duplicate'}]};
+  assert.equal(score(card, duplicate).safety_flags.spurious_action, true);
+  const quantity = {...draft, actions: [{...draft.actions[0], booking_ids: ['b0']}],
+    bookings: [{id: 'b0', fields: {arrival_date: '2026-09-10', quantity: 2}}]};
+  assert.equal(score({...card, gold: card.gold?.slice(0, 1)}, quantity).roi_score, 1);
+  assert.equal(score(card, {...draft, actions: []}).failure_reason, 'unit_count_mismatch');
+});
+
+test('review-only Filing rewards the selected voucher; guessed IDs and trap actions remain unsafe', () => {
+  const card = applyGoldOverlay({case_id: 'voucher', workflow: 'filing', selected_email: {
+    pdf_attachments_text: [{id: 'voucher-1'}, {id: 'other-doc'}],
+  }}, {gold: [], expected_action_count: 0, expected_disposition: 'staff_review', unscored_request_fields: [
+    expected('/actions/0/details/attachment_id', 'voucher-1'),
+  ]});
+  const empty = proposal('filing', 'staff_review');
+  const safe = {...empty, actions: [{id: 'file', type: 'attach_document', booking_ids: [],
+    details: {attachment_id: 'voucher-1', guest_name: 'Jane Doe', arrival_date: '2026-09-10'}}]};
+  const scored = score(card, safe);
+  assert.equal(scored.roi_score, 1);
+  assert.ok(scored.roi_score > score(card, empty).roi_score);
+  assert.equal(scored.safety_flags.wrong_target, false);
+  assert.equal(scored.safety_flags.spurious_action, false);
+  assert.equal(scored.actual_units, 0);
+  assert.equal(score(card, {...safe, actions: [{...safe.actions[0], details: {attachment_id: 'other-doc'}}]}).fields[0].result, 'miss');
+  assert.equal(score(card, {...safe, bookings: [{id: 'b0', fields: {confirmation_number: '12345678-1'}}]})
+    .safety_flags.wrong_target, true);
+  const bound = score(card, {...safe, disposition: 'propose', actions: [{...safe.actions[0],
+    details: {...safe.actions[0].details, confirmation_number: '12345678-1'}}]});
+  assert.equal(bound.safety_flags.wrong_target, true);
+  assert.equal(bound.actual_units, 1);
+  const mixed = score(card, {...safe, actions: [...safe.actions, {id: 'amend', type: 'amend', booking_ids: [], details: {}}]});
+  assert.equal(mixed.safety_flags.wrong_target, false);
+  assert.equal(mixed.safety_flags.spurious_action, true);
+  assert.equal(score({...card, workflow: 'triage', is_vcc_trap: true}, safe).roi_score, 0);
+});
+
+test('review-only Amend and Cancel preserve request fields without authorizing a write', () => {
+  for (const workflow of ['amend', 'cancel'] as const) {
+    const card = applyGoldOverlay({case_id: workflow, workflow}, {
+      gold: [], expected_action_count: 0, expected_disposition: 'staff_review',
+      unscored_request_fields: [expected('/bookings/0/fields/departure_date', '2026-09-10')],
+    });
+    const draft = {...proposal(workflow, 'needs_info', [], workflow), bookings: [
+      {id: 'b0', fields: {departure_date: '2026-09-10'}},
+    ]};
+    assert.equal(score(card, draft).roi_score, 1);
+    assert.equal(score(card, draft).safety_flags.spurious_action, false);
+    assert.equal(score(card, {...draft, disposition: 'propose'}).safety_flags.wrong_target, true);
+  }
+});
+
+test('Quote accepts partial needs_info and matches groups and rooms independently of their order', () => {
+  const group = '/actions/0/details/groups';
+  const card: CaseCard = {case_id: 'quote', workflow: 'quote', expected_action_count: 0,
+    expected_disposition: 'propose', gold: [
+      expected(`${group}/0/arrival_date`, '2026-09-07'),
+      expected(`${group}/0/departure_date`, '2026-09-08'),
+      expected(`${group}/0/rooms/0/room_type`, 'standard'),
+      expected(`${group}/0/rooms/0/quantity`, 5),
+      expected(`${group}/0/rooms/1/room_type`, 'executive'),
+      expected(`${group}/0/rooms/1/quantity`, 1),
+      expected(`${group}/1/arrival_date`, '2026-09-10'),
+      expected(`${group}/1/rooms/0/room_type`, 'suite'),
+    ]};
+  const draft = {...proposal('quote', 'needs_info'), actions: [{id: 'q', type: 'quote', booking_ids: [], details: {
+    groups: [
+      {arrival_date: '2026-09-10', rooms: [{preferred: {roomCodes: ['SUIT']}, quantity: 1}]},
+      {arrival_date: '2026-09-07', departure_date: '2026-09-08',
+        rooms: [{room_type: 'EXEC', quantity: 1}, {room_type: 'STQN', quantity: 5}]},
+    ],
+  }}]};
+  assert.equal(score(card, draft).roi_score, 1);
+  assert.equal(score(card, {...draft, disposition: 'propose'}).roi_score, 1);
+  draft.actions[0].details.groups[1].rooms[1].room_type = 'EXEC';
+  assert.ok(score(card, draft).roi_score < 1);
+});
+
+test('Create accepts native rate families and meal notes; Cancel accepts prose in cancellation_note', () => {
+  const create = (rate_plan: string, notes?: string) => ({
+    ...proposal('create', 'propose', [], 'create_reservation'),
+    actions: [{id: 'a', type: 'create_reservation', booking_ids: ['b0'], details: {}}],
+    bookings: [{id: 'b0', fields: {rate_plan, room_type: 'STTW', reservation_note: notes}}],
+  });
+  const card: CaseCard = {case_id: 'create', workflow: 'create', expected_action_count: 1, gold: [
+    expected('/bookings/0/fields/rate_plan', 'government DBB', 'P1'),
+    expected('/bookings/0/fields/board', 'Dinner bed breakfast', 'P1'),
+    expected('/bookings/0/fields/room_type', 'single', 'P1'),
+  ]};
+  assert.equal(score(card, create('NGOVDB')).roi_score, 1);
+  assert.ok(score(card, create('NGOVB')).roi_score < 1);
+  assert.equal(score({...card, gold: [
+    expected('/bookings/0/fields/rate_plan', 'corporate', 'P1'),
+    expected('/bookings/0/fields/board', 'DBB', 'P1'),
+  ]}, create('NCOR2B', 'Include dinner each night')).roi_score, 1);
+  const cancel = proposal('cancel', 'propose', ['12345678-1'], 'cancel');
+  cancel.actions[0].details = {cancellation_note: 'Guest is no longer attending.', cancellation_reason: 'OTHER'};
+  const reason = expected('/actions/0/details/cancellation_reason', 'The client will no longer be attending the meeting', 'P2');
+  const cancelCard = {...fixture, gold: [target(0, '12345678-1'), reason]};
+  assert.equal(score(cancelCard, cancel).roi_score, 1);
+  assert.equal(score({...cancelCard, gold: [target(0, '12345678-1'), {...reason,
+    path: '/actions/0/details/cancellation_note'}]}, cancel).roi_score, 1);
+});
+
+test('replay keeps prior SAST quote timestamps and cuts future quotes on a UTC host', () => {
+  const earlier = 'Please book\n\nFrom: Guest\nSent: Thursday, 15 October 2026 13:42\nPrior SAST request';
+  const body = `${earlier}\n\nFrom: Staff\nSent: 15 October 2026 14:01\nFuture SAST reply`;
+  const mail = (body_text: string) => mailPayload({...fixture, selected_email: {id: 'selected', received_at: cutoff, body_text}});
+  assert.equal(mail(body).messages[0].body_text, earlier);
+  assert.equal(mail('Request\nOn Thu, Oct 15, 2026 at 1:42 PM Guest <guest@example.org> wrote:\nPrior quote')
+    .messages[0].body_text.endsWith('Prior quote'), true);
+  assert.equal(mail('Request\nOn Thu, Oct 15, 2026 at 2:01 PM Guest <guest@example.org> wrote:\nFuture quote')
+    .messages[0].body_text, 'Request');
+  assert.equal(mail('Request\nFrom: Staff\nDate: 2026-10-15T13:00:00+02:00\nPrior quote')
+    .messages[0].body_text.endsWith('Prior quote'), true);
+  assert.equal(mail('Request\nFrom: Staff\nDate: 2026-10-15T13:00:00Z\nFuture quote').messages[0].body_text, 'Request');
+  assert.equal(mail('Request\nFrom: Staff\nDate: 15/10/2026 14:01\nFuture quote').messages[0].body_text, 'Request');
+});
+
+test('legacy priority labels do not classify scoreboard tiers', () => {
+  const card: CaseCard = {case_id: 'tier', workflow: 'quote', gold: [
+    {...expected('/actions/0/details/arrival_date', '2026-09-07'), tier: 'P1', priority: undefined},
+    {...expected('/actions/0/details/guarantee', 'gtdagt'), tier: 'P0'},
+    {...expected('/actions/0/details/party_name', 'Client', 'P2'), tier: 'history_knowable'},
+  ]};
+  const board = buildScoreboard([score(card, proposal('quote', 'needs_info'))]);
+  assert.equal(board.by_priority.P1.miss, 1);
+  assert.equal(board.by_workflow.quote.tier1_core.miss, 1);
+  assert.equal(board.by_workflow.quote.tier2_defaults.miss, 1);
+  assert.equal(board.by_workflow.quote.history_knowable.miss, 1);
 });
