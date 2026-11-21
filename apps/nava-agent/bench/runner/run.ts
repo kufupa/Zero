@@ -139,7 +139,16 @@ function cutFutureQuote(body: string, at: number): string {
   const lines = body.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const sent = /^\s*(?:>\s*)*(?:Sent|Date):\s*(.+)$/i.exec(lines[i]);
-    const replied = /^\s*(?:>\s*)*On (.+?) wrote:\s*$/i.exec(lines[i]);
+    const line = (value: string) => value.replace(/^\s*(?:>\s*)*/, '');
+    let header = line(lines[i]);
+    if (/^On /i.test(header)) {
+      for (let j = i + 1; j < Math.min(i + 4, lines.length) && !/wrote:\s*$/i.test(header); j++) {
+        const continuation = line(lines[j]);
+        if (!continuation) break;
+        header += ' ' + continuation;
+      }
+    }
+    const replied = /^On (.+?) wrote:\s*$/i.exec(header);
     const start = sent ? lines.slice(Math.max(0, i - 3), i).findIndex(line =>
       /^\s*(?:>\s*)*(?:From:|[- ]+Original Message[- ]*)/i.test(line)) : -1;
     const rawTime = replied?.[1] ?? (start >= 0 ? sent?.[1] : undefined);
@@ -175,6 +184,7 @@ function mailMessage(source: Record<string, unknown>, fallback?: string) {
 export function mailPayload(card: CaseCard, propertyCode?: string) {
   const selected = record(card.selected_email);
   const cutoffMs = selectedCutoff(card);
+  if (!Number.isFinite(cutoffMs)) throw new Error('CASE_AS_OF_MISSING');
   const cutoff = new Date(cutoffMs).toISOString();
   const selectedMessage = mailMessage({...selected, direction: selected.direction ?? 'inbound'}, cutoff);
   if (!selectedMessage.id || !(Date.parse(selectedMessage.received_at ?? '') <= cutoffMs)) {

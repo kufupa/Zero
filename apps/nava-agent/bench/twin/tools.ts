@@ -2,12 +2,12 @@ import type {CaseCard, TwinEnvelope} from '../types.js';
 import {
   extractSenderHost,
   normalizePartyName,
-  partyQueriesWithLearned,
+  searchPartyWithFallback,
   resolvePartySelection,
   type LearnedSenderHit,
 } from '../../src/party-matching.js';
 import {anchorObservations, isoDate, observeStays} from './backdate.js';
-import {anchorPdfs, beforeCutoff, quoteKey, type TwinWorld} from './world.js';
+import {anchorPdfs, beforeCutoff, quoteKey, rows, type TwinWorld} from './world.js';
 
 function twinLearnedSender(world: TwinWorld, asOf: number, host: string, kind: 'agency' | 'organization'): LearnedSenderHit | null {
   const rows: Array<{host: string; name: string; kind: 'agency' | 'organization'}> = [];
@@ -166,23 +166,18 @@ function partyRecords(world: TwinWorld, kind: string): Array<Record<string, unkn
  * Prod hms_search_parties returns native HMS candidates only (nativeId/displayName/…).
  * Twin mirrors prod: sequential partySearchQueries, break on first hit (no OR + 25-cap).
  */
-function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
+async function searchParties(world: TwinWorld, input: Record<string, unknown>): Promise<TwinEnvelope> {
   const kind = String(input.kind ?? 'guest');
   const field = String(input.field ?? 'last_name');
   const rawQuery = String(input.query ?? '').trim();
   const host = extractSenderHost(input.sender_host, rawQuery);
-  const learned = host && (kind === 'agency' || kind === 'organization') ? twinLearnedSender(world, world.cutoff, host, kind) : null;
-  const history = learned ? {sender_history: learned} : {};
   if (kind === 'guest' && !world.profiles.length) {
     return fail('TWIN_PRE_CUTOFF_PROFILE_UNAVAILABLE', 'No dated guest profiles cover this property.', false, unobserved);
   }
   if (kind !== 'guest' && !Object.keys(world.catalog).length) {
-    return fail('TWIN_PRE_CUTOFF_PARTY_UNAVAILABLE', 'No dated native party catalogue covers this property.', false, {...unobserved, ...history});
+    return fail('TWIN_PRE_CUTOFF_PARTY_UNAVAILABLE', 'No dated native party catalogue covers this property.', false, unobserved);
   }
-  const queries = rawQuery ? partyQueriesWithLearned(rawQuery, kind, learned?.name) : [''];
-  let candidates: Array<Record<string, unknown>> = [];
-  let matchedTerm = rawQuery;
-  for (const term of queries) {
+  const {result, learned} = await searchPartyWithFallback(rawQuery, kind, async term => {
     const q = term.toLowerCase();
     const batch: Array<Record<string, unknown>> = [];
     if (kind === 'guest') {
@@ -212,22 +207,11 @@ function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEn
         }
       }
     }
-    if (batch.length) { candidates = batch; matchedTerm = term; break; }
-  }
-  const truncated = candidates.length > 25;
-  candidates = candidates.slice(0, 25);
-  const resolved = resolvePartySelection(kind, candidates, truncated, learned);
-  return ok({
-    native: {
-      outcome: candidates.length ? 'matches' : 'no_match',
-      criteria: {query: matchedTerm || rawQuery},
-      candidates,
-      coverage: {possiblyTruncated: truncated, source: 'twin'},
-    },
-    selection: resolved.selection,
-    ambiguity: resolved.ambiguity,
-    ...history,
-  });
+    return {outcome: batch.length ? 'matches' : 'no_match', criteria: {query: term},
+      candidates: batch.slice(0, 25), coverage: {possiblyTruncated: batch.length > 25, source: 'twin'}};
+  }, async () => host && (kind === 'agency' || kind === 'organization') ? twinLearnedSender(world, world.cutoff, host, kind) : null);
+  const resolved = resolvePartySelection(kind, rows(result.candidates), object(result.coverage).possiblyTruncated !== false, learned, rawQuery);
+  return ok({native: result, ...resolved, ...(learned ? {sender_history: learned} : {})});
 }
 
 function quoteFromWorld(world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {

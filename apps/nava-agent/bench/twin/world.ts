@@ -99,9 +99,8 @@ export function beforeCutoff(value: unknown, cutoff: number): boolean {
 
 export function selectedCutoff(card: CaseCard): number {
   const selected = object(card.selected_email);
-  const cutoff = Date.parse(String(selected.received_at ?? card.as_of ?? ''));
-  if (!Number.isFinite(cutoff)) throw new Error('CASE_AS_OF_MISSING');
-  return cutoff;
+  const received = Date.parse(String(selected.received_at ?? selected.timestamp ?? card.as_of ?? ''));
+  return Math.min(received, card.as_of == null ? received : Date.parse(card.as_of));
 }
 
 export function anchorPdfs(anchor: TwinAnchor): TwinPdf[] {
@@ -135,6 +134,7 @@ export class TwinWorld {
       String(row.property_code ?? row.propertyCode ?? 'HRCEN').toUpperCase() === this.propertyCode;
     this.anchors = base.anchors.filter(inProperty);
     this.cutoff=selectedCutoff(caseCard);
+    if (!Number.isFinite(this.cutoff)) throw new Error('CASE_AS_OF_MISSING');
     this.profiles=base.profiles.filter(profile => inProperty(profile) && beforeCutoff(profile.observedAt ?? profile.observed_at, this.cutoff));
     this.catalog=inProperty(base.catalog) && beforeCutoff(base.catalog.capturedAt ?? base.catalog.captured_at, this.cutoff) ? base.catalog : {};
     loadQuotes(caseCard.quotes,this.quotes,this.cutoff);

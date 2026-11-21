@@ -39,23 +39,39 @@ export function samePartyName(left:string,right:string,kind:string):boolean {
 
 export type LearnedSenderHit = { host: string; kind: 'agency' | 'organization'; name: string; nativeId: string | null; support: number };
 
+function senderDomain(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const address = (/<([^<>]+)>$/.exec(value.trim())?.[1] ?? value).trim().toLowerCase();
+  return /^(?:[^@\s<>]+@)?((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\.?$/.exec(address)?.[1];
+}
+
 /** Prefer sender_host; else email/domain query. Skip freemail + owned-hotel hosts. */
 export function extractSenderHost(senderHost: unknown, query: string): string | null {
-  const domain = (value: unknown) => {
-    if (typeof value !== 'string') return undefined;
-    const address = (/<([^<>]+)>$/.exec(value.trim())?.[1] ?? value).trim().toLowerCase();
-    return /^(?:[^@\s<>]+@)?((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\.?$/.exec(address)?.[1];
-  };
-  const host = domain(senderHost) ?? domain(query);
-  return !host || /(^|\.)(gmail|googlemail|yahoo|hotmail|outlook|icloud|live|msn|me\.com|aol|protonmail|proton\.me|mail\.com|gmx\.|yandex|mweb\.co\.za|telkomsa\.net|webmail\.co\.za|legacyhotels?)/.test(host) ? null : host;
+  const host = senderDomain(senderHost) ?? senderDomain(query);
+  return !host || /(?:^|\.)(?:(?:gmail|googlemail|outlook|icloud|live|msn|me|aol|protonmail|mail)\.com|(?:yahoo|hotmail)\.(?:com|co\.uk|fr|de|co\.za)|proton\.me|gmx\.(?:com|de|net)|yandex\.(?:com|ru)|(?:mweb|webmail)\.co\.za|telkomsa\.net|legacyhotels?\.(?:com|co\.za))$/.test(host) ? null : host;
 }
 
-export function partyQueriesWithLearned(query: string, kind: string, learned?: string | null): string[] {
-  const base = partySearchQueries(query, kind);
-  return !learned?.trim() ? base : [learned.trim(), ...base.filter(q => normalizePartyName(q) !== normalizePartyName(learned))];
+export async function searchPartyWithFallback(query: string, kind: string,
+  search: (term: string) => Promise<Record<string, unknown>>,
+  history: () => Promise<LearnedSenderHit | null>) {
+  const terms = query ? partySearchQueries(query, kind) : [];
+  const coverage = {possiblyTruncated: false};
+  let result: Record<string, unknown> = {outcome: 'no_match', candidates: [], coverage};
+  for (const term of terms) {
+    result = await search(term);
+    if (result.outcome !== 'no_match' || Array.isArray(result.candidates) && result.candidates.length ||
+        !(typeof result.coverage === 'object' && result.coverage !== null &&
+          'possiblyTruncated' in result.coverage && result.coverage.possiblyTruncated === false)) return {result, learned: null};
+  }
+  const learned = await history();
+  if (learned && !terms.some(term => normalizePartyName(term) === normalizePartyName(learned.name))) result = await search(learned.name);
+  return {result, learned};
 }
 
-export function resolvePartySelection(kind: string, candidates: Array<Record<string, unknown>>, truncated: boolean, learned?: LearnedSenderHit | null) {
+export function resolvePartySelection(kind: string, candidates: Array<Record<string, unknown>>, truncated: boolean, learned: LearnedSenderHit | null, query: string) {
+  if (learned && query && !samePartyName(query, learned.name, kind)) {
+    return {selection: 'none' as const, ambiguity: 'Sender history suggests a different party; staff selection is required.'};
+  }
   const ok = ['organization', 'agency'].includes(kind) && !truncated;
   if (ok && candidates.length === 1) return { selection: candidates[0]!, ambiguity: null as string | null };
   if (ok && candidates.length > 1 && learned) {

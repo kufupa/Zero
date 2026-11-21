@@ -126,26 +126,15 @@ export function observeStays(world: TwinWorld, card: CaseCard): Map<string, Obse
   const cutoff = world.cutoff;
   const raw = object(card.hms_raw);
   const frozen = object(card.hms_shown);
-  const primary = id(frozen.confirmation ?? raw.confirmation ?? card.real_confirmation ?? card.confirmation);
   const pdfs = [...rows(card.pdf_versions), ...rows(raw.pdf_versions)];
   const observations = world.anchors.flatMap(anchor => anchorObservations(anchor, cutoff, selected));
-  for (const pdf of pdfs) {
-    const identified = pdfObservations([pdf], cutoff, selected, null);
-    // Older cards without an explicit PDF confirmation only bind a frozen, hash-matched version.
-    observations.push(...(identified.length ? identified : pdf.sha256 != null && pdf.sha256 === frozen.basis_pdf_sha256
-      ? pdfObservations([pdf], cutoff, selected, primary) : []));
-  }
+  observations.push(...pdfObservations(pdfs, cutoff, selected, null));
   const capturedAt = frozen.captured_at ?? frozen.hms_capture_later;
   const frozenStay = object(frozen.stay ?? frozen.hms_fields);
+  const primary = id(frozen.confirmation ?? frozenStay.confirmation);
   if (primary && beforeCutoff(capturedAt, cutoff) && Object.keys(frozenStay).length) {
     observations.push({at: Date.parse(String(capturedAt)), confirmation: primary,
       stay: {...frozenStay, confirmation: primary}, documents: documentRows(frozen), basis: 'pre_as_of_hms_capture'});
-  }
-  // Some legacy cards retain only a frozen PDF projection. Remove synthetic/native-only fields.
-  if (primary && frozen.basis === 'last_pre_as_of_pdf' && frozen.basis_pdf_sha256 != null) {
-    const projected = pdfObservations([{sent_at: frozen.basis_pdf_sent_at, sha256: frozen.basis_pdf_sha256,
-      fields: object(frozen.stay)}], cutoff, selected, primary);
-    if (!observations.some(row => row.confirmation === primary && row.at === projected[0]?.at)) observations.push(...projected);
   }
   const latest = new Map<string, Observation>();
   for (const row of observations) {

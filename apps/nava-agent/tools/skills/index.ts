@@ -72,7 +72,7 @@ async function collect(dir: FileHandle, prefix: string, files: Record<string, st
   }
 }
 
-/** Pin at session creation; persist this result and supply it unchanged on every read. */
+/** Pin the deployed tree; persist it for reads and refresh it when the deployed bundle changes. */
 export async function pinSkills(root: string): Promise<SkillPin> {
   return withRoot(root, async dir => {
     const files: Record<string, string> = {};

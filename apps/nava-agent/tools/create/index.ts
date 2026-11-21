@@ -85,7 +85,7 @@ function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function buildRequest(input: CreateInput): { request: NativeRequest; unknown: string[]; expectedGuest?: { firstName: string; lastName: string } } | ToolResult {
+export function buildRequest(input: CreateInput): { request: NativeRequest; unknown: string[]; expectedGuest?: { firstName: string; lastName: string } } | ToolResult {
   const { booking, action } = input;
   if (!booking.property_code || booking.reservation_id !== null || booking.current_state !== null ||
       action.type !== 'create' || !action.booking_ids.includes(booking.id)) {
@@ -98,7 +98,7 @@ function buildRequest(input: CreateInput): { request: NativeRequest; unknown: st
   const unknown: string[] = [];
   const assigned = new Set<string>();
   for (const [field, value] of Object.entries(booking.fields)) {
-    if (field === 'room_count' || field.startsWith('profile_') || value === null) continue;
+    if (field === 'room_count' || field === 'board' || field.startsWith('profile_') || value === null) continue;
     const path = Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
     if (!path) { unknown.push(field); continue; }
     const key = path.join('.');

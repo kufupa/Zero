@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {cp, mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {sameQuoteCriteria} from '../src/tool-registry.js';
+import {isCancelTargetOnlyReview} from '../src/edit.js';
+import {extractSenderHost, searchPartyWithFallback} from '../src/party-matching.js';
+import {proposalDraft} from '../src/schema.js';
+import {sessionSkills} from '../src/worker.js';
+import {buildRequest} from '../tools/create/index.js';
+import {pinSkills, skillRead} from '../tools/skills/index.js';
 import {loadCaseCards} from './runner/artifacts.js';
 import {azureReplayModel} from './runner/azure.js';
 import {applyGoldOverlay} from './runner/gold-overlay.js';
@@ -193,6 +199,13 @@ test('quote captures ignore draft presentation fields but bind native pricing cr
     assert.equal(sameQuoteCriteria(capture, {...draft, groups: [{...group, rooms: [{...room, ...change}]}]}), false);
   }
   assert.equal(sameQuoteCriteria(capture, {...draft, groups: [{...group, departure_date: '2026-09-04'}]}), false);
+  const card: CaseCard = {case_id: 'quote-capture', workflow: 'quote'};
+  const published = {...proposal('quote', 'propose'), actions: [{id: 'q', type: 'quote', booking_ids: [], details: draft}]};
+  const tool = (input: unknown) => ({name: 'hms_quote', input, result: {ok: true, data: {}}});
+  assert.equal(score(card, published, [tool(capture)]).quote_capture_ok, true);
+  assert.equal(score(card, published, [tool({...capture, property_code: 'HRDAV'})]).quote_capture_ok, false);
+  assert.equal(score(card, proposal('quote', 'skip')).roi_score, 0);
+
 });
 
 test('VCC, staff reply and wrong targets trigger safety penalties and aggregate separately', () => {
@@ -259,7 +272,7 @@ test('Azure Responses retries HTTP 429 and 5xx with jitter for Sol', async t => 
       const status = statuses.shift();
       return new Response(status === 200 ? '{"status":"completed","output":[]}' : '{"error":{"code":"opaque"}}', {status});
     },
-    wait: async delay => { delays.push(Number(delay)); },
+    wait: async (delay, value) => { delays.push(Number(delay)); return value!; },
   });
   assert.equal((await model({messages: [], tools: [], system: 'test'})).stop_reason, 'end_turn');
   assert.equal(statuses.length, 0);
@@ -275,14 +288,25 @@ test('learned sender history uses only dated HMS availability or the older PDF o
     pdf_versions: [{sent_at: before, recipient_fields: {to: ['guest@example.org']},
       fields: {agency_text: 'Observed Agency'}}],
   }));
-  const twin = createTwin(fixture, {worldDir: await world(t, rows)});
-  const result = await twin.dispatch('hms_search_parties', {property_code: 'HRCEN', kind: 'agency', field: 'name', query: 'Guest', sender_host: 'example.org'});
+  const worldDir = await world(t, rows);
+  const catalog = {captured_at: before, agencies: [{id: 'a', name: 'Observed Agency'}, {id: 'b', name: 'Named Agency'}]};
+  await writeFile(join(worldDir, 'catalog.json'), JSON.stringify(catalog));
+  const twin = createTwin(fixture, {worldDir});
+  const input = {property_code: 'HRCEN', kind: 'agency', field: 'name', query: 'Guest', sender_host: 'example.org'};
+  const result = await twin.dispatch('hms_search_parties', input);
   assert.match(JSON.stringify(result.data), /Observed Agency/);
   assert.doesNotMatch(JSON.stringify(result.data), /Future Agency/);
-  const withFutureLetters = createTwin(fixture, {worldDir: await world(t, rows.map(row => ({...row,
+  assert.match(JSON.stringify(result.data), /"selection":"none"/);
+  const senderOnly = await twin.dispatch('hms_search_parties', {...input, query: undefined});
+  assert.match(JSON.stringify(senderOnly.data), /"selection":\{"nativeId":"a"/);
+  const explicit = await twin.dispatch('hms_search_parties', {...input, query: 'Named Agency'});
+  assert.match(JSON.stringify(explicit.data), /Named Agency/);
+  assert.doesNotMatch(JSON.stringify(explicit.data), /sender_history|Observed Agency/);
+  const futureDir = await world(t, rows.map(row => ({...row,
     pdf_versions: row.pdf_versions.map(pdf => ({...pdf, sent_at: after})),
-  })))});
-  const uncovered = await withFutureLetters.dispatch('hms_search_parties', {property_code: 'HRCEN', kind: 'agency', field: 'name', query: 'Guest', sender_host: 'example.org'});
+  })));
+  await writeFile(join(futureDir, 'catalog.json'), JSON.stringify(catalog));
+  const uncovered = await createTwin(fixture, {worldDir: futureDir}).dispatch('hms_search_parties', input);
   assert.doesNotMatch(JSON.stringify(uncovered.data), /sender_history|Future Agency|Observed Agency/);
 });
 
@@ -470,7 +494,7 @@ test('review-only discovery rejects wrong stays, supplier refs, guesses and PDFs
   }}};
   for (const [ids, calls] of [
     [[wrongId], [found]], [['5940SH007356'], [found]], [[discoveredId, wrongId], [found]],
-    [[discoveredId.slice(0, -2)], [found]], [[discoveredId], []],
+    [[discoveredId.slice(0, -2)], [found]], [[discoveredId], [found]], [[discoveredId], []],
     [[discoveredId], [{name: 'hms_read_reservation', input: read(discoveredId), result: {ok: true, data: {record: {}}}}]],
     [[discoveredId], [{...found, result: {...found.result, ok: false}}]],
     [[discoveredId], [{name: 'proposal_publish', result: {ok: true}}, found]],
@@ -576,6 +600,8 @@ test('replay keeps prior SAST quote timestamps and cuts future quotes on a UTC h
     .messages[0].body_text.endsWith('Prior quote'), true);
   assert.equal(mail('Request\nOn Thu, Oct 15, 2026 at 2:01 PM Guest <guest@example.org> wrote:\nFuture quote')
     .messages[0].body_text, 'Request');
+  assert.equal(mail('Request\n> On Thu, Oct 15, 2026 at 2:01 PM Guest\n> <guest@example.org> wrote:\n> Future quote')
+    .messages[0].body_text, 'Request');
   assert.equal(mail('Request\nFrom: Staff\nDate: 2026-10-15T13:00:00+02:00\nPrior quote')
     .messages[0].body_text.endsWith('Prior quote'), true);
   assert.equal(mail('Request\nFrom: Staff\nDate: 2026-10-15T13:00:00Z\nFuture quote').messages[0].body_text, 'Request');
@@ -593,4 +619,103 @@ test('legacy priority labels do not classify scoreboard tiers', () => {
   assert.equal(board.by_workflow.quote.tier1_core.miss, 1);
   assert.equal(board.by_workflow.quote.tier2_defaults.miss, 1);
   assert.equal(board.by_workflow.quote.history_knowable.miss, 1);
+});
+
+
+test('a hash-matched PDF without a confirmation cannot reveal an outcome ID', async t => {
+  const worldDir = await world(t, []);
+  const letter = {...pdf(before, 'Earlier Guest'), fields: {guestName: ['Earlier Guest']}};
+  const card = {...fixture, pdf_versions: [letter], hms_shown: {basis: 'last_pre_as_of_pdf',
+    basis_pdf_sent_at: before, basis_pdf_sha256: letter.sha256, stay: {confirmation: stayId, guestfullname: 'Earlier Guest'}}};
+  for (const real_confirmation of [stayId, discoveredId]) {
+    const twin = createTwin({...card, real_confirmation}, {worldDir});
+    assert.doesNotMatch(JSON.stringify(await twin.dispatch('hms_search_reservations', search({guest_name: 'Guest'}))),
+      new RegExp(real_confirmation));
+  }
+});
+
+test('mail rejects selected messages after as_of and the twin excludes stays in that gap', async t => {
+  const as_of = '2026-10-15T10:00:00Z';
+  const card = {...fixture, as_of};
+  assert.throws(() => mailPayload(card), /out-of-cutoff selected email/);
+  const twin = createTwin(card, {worldDir: await world(t, [{confirmation: stayId,
+    captured_at: '2026-10-15T11:00:00Z', hms_fields: {status: 'Reserved'}}])});
+  assert.equal((await twin.dispatch('hms_read_reservation', read())).ok, false);
+});
+
+test('unexpected field edits lower ROI even with the requested change present', () => {
+  const departure = '/bookings/0/fields/departure_date';
+  const rename = '/bookings/0/fields/first_name';
+  const draft = proposal('amend', 'propose', [stayId], 'amend');
+  draft.bookings[0].fields = {departure_date: '2026-10-20', first_name: 'Changed'};
+  const card: CaseCard = {...fixture, workflow: 'amend', gold: [target(0, stayId), expected(departure, '2026-10-20'),
+    {path: rename, expectation: 'not_expected', basis: 'no rename requested'}]};
+  const result = score(card, draft);
+  assert.ok(result.roi_score < 1);
+  assert.equal(result.failure_reason, 'spurious_field');
+});
+
+test('Create board stays display-only and preserves native rate and meal note', () => {
+  const built = buildRequest({workflow: 'create', booking: {id: 'b', property_code: 'HRCEN', reservation_id: null,
+    current_state: null, fields: {board: 'DBB', rate_plan: 'NGOVDB', note: 'Dinner included'}},
+    action: {id: 'a', type: 'create', booking_ids: ['b'], details: {}}});
+  assert.ok('request' in built);
+  assert.deepEqual(built.unknown, []);
+  assert.deepEqual(built.request.room, {ratePlan: 'NGOVDB'});
+  assert.equal(built.request.note, 'Dinner included');
+});
+
+test('party search invokes sender history only after explicit misses; host denylist uses domain boundaries', async () => {
+  assert.equal(extractSenderHost('Agent <agent@outlook-travel.example>', ''), 'outlook-travel.example');
+  assert.equal(extractSenderHost('agent@staff.outlook.com', ''), null);
+  const calls: string[] = [];
+  const history = async () => {
+    calls.push('history');
+    return {host: 'example.org', kind: 'agency' as const, name: 'History Agency', nativeId: null, support: 2};
+  };
+  const searchParty = async (term: string) => {
+    calls.push(term);
+    const candidates = ['Named Agency', 'History Agency'].includes(term) ? [{name: term}] : [];
+    return {outcome: candidates.length ? 'matches' : 'no_match', candidates, coverage: {possiblyTruncated: false}};
+  };
+  await searchPartyWithFallback('Named Agency', 'agency', searchParty, history);
+  assert.deepEqual(calls.splice(0), ['Named Agency']);
+  await searchPartyWithFallback('Unknown', 'agency', searchParty, history);
+  assert.deepEqual(calls.splice(0), ['Unknown', 'history', 'History Agency']);
+  await searchPartyWithFallback('', 'agency', searchParty, history);
+  assert.deepEqual(calls, ['history', 'History Agency']);
+});
+
+test('Cancel selects a Reserved whole stay without clearing intent review', () => {
+  const input = proposal('cancel', 'staff_review', [stayId], 'cancel');
+  const draft = proposalDraft.parse({...input, reason: 'Stay target unresolved',
+    bookings: input.bookings.map(booking => ({...booking, property_code: 'HRCEN', current_state: null}))});
+  draft.actions[0].details = {requested_scope: 'whole_stay'};
+  assert.equal(isCancelTargetOnlyReview(draft, 'Reserved'), true);
+  assert.equal(isCancelTargetOnlyReview(draft, 'Checked Out'), false);
+  for (const message of ['Cancel only if approved', 'Fee inquiry', 'Cancellation intent unclear']) {
+    assert.equal(isCancelTargetOnlyReview({...draft, warnings: [message]}, 'Reserved'), false);
+    assert.equal(isCancelTargetOnlyReview({...draft, reason: message}, 'Reserved'), false);
+  }
+  draft.actions[0].details = {requested_scope: 'specific_room'};
+  assert.equal(isCancelTargetOnlyReview(draft, 'Reserved'), false);
+});
+
+test('a resumed session persists the deployed skill pin and reads refreshed guidance', async t => {
+  const root = await scratch(t);
+  await cp(new URL('../skills/', import.meta.url), root, {recursive: true});
+  const stored = {root, pin: await pinSkills(root)};
+  await writeFile(join(root, 'filing', 'SKILL.md'), 'Updated filing guidance');
+  const readSkill = (skillConfig: typeof stored) => skillRead({skill_name: 'filing'}, {sessionId: 'resumed', mode: 'live', skillConfig});
+  assert.equal((await readSkill(stored)).error?.code, 'SKILL_CONTENT_CHANGED');
+  const registry = {pinSkillTree: async () => ({root, pin: await pinSkills(root)})};
+  const persisted: string[] = [];
+  const refreshed = await sessionSkills(registry, stored, async (current, previousVersion) => {
+    persisted.push(current.pin.version);
+    assert.equal(previousVersion, stored.pin.version);
+    assert.notEqual(current.pin.version, previousVersion);
+  });
+  assert.deepEqual(persisted, [refreshed.pin.version]);
+  assert.match(JSON.stringify(await readSkill(refreshed)), /Updated filing guidance/);
+  await sessionSkills(registry, refreshed, async () => assert.fail('unchanged pin was persisted'));
 });

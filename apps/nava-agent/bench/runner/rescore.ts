@@ -39,7 +39,7 @@ function recordedToolCalls(saved: CaseScore): NonNullable<CaseScore['tool_calls'
     name: call.name,
     result: {
       ok: call.ok && !call.error,
-      data: call.name === 'hms_search_reservations' && (call.hits ?? 0) > 0
+      data: call.name === 'hms_search_reservations' && call.hits === 1
         ? {candidates: call.top?.map(row => ({reservation_id: row.id}))}
         : undefined,
     },

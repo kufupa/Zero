@@ -153,6 +153,18 @@ function deliveryId(message:RuntimeMessage,version:number,pending:PendingInput|n
   return `message:${version}:${createHash('sha256').update(JSON.stringify(message)).digest('hex')}`;
 }
 
+const storedSkillConfig=z.object({root:z.string(),pin:z.object({version:z.string(),files:z.record(z.string())}).strict()}).strict();
+
+export async function sessionSkills(registry:Pick<ToolRegistry,'pinSkillTree'>,stored:unknown,
+  persist:(config:SkillConfig,previousVersion?:string)=>Promise<void>):Promise<SkillConfig> {
+  const root=resolve(process.env.NAVA_SKILLS_DIR ?? fileURLToPath(new URL('../skills/',import.meta.url)));
+  const current=await registry.pinSkillTree(root);
+  if(!current) throw new Error('SKILL_PIN_UNAVAILABLE');
+  const saved=storedSkillConfig.safeParse(stored).data;
+  if(!isDeepStrictEqual(saved,current)) await persist(current,saved?.pin.version);
+  return current;
+}
+
 export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void> {
   const lease=await deps.store.claim(sessionId,owner,leaseMs);
   if(!lease) return;
@@ -170,15 +182,11 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
     await discoverToolPacks(registry);
     let skillConfig:SkillConfig|undefined;
     if(registry.hasSkillPack()) {
-      const existing=z.object({root:z.string(),pin:z.object({version:z.string(),files:z.record(z.string())}).strict()}).strict().safeParse(session.config?.skill_config);
-      if(existing.success && !(pending?.payload.origin==='create_readback' && state.status!=='running')) skillConfig={root:resolve(process.env.NAVA_SKILLS_DIR ?? fileURLToPath(new URL('../skills/',import.meta.url))),pin:existing.data.pin};
-      else {
-        const pin=await registry.pinSkillTree(resolve(process.env.NAVA_SKILLS_DIR ?? fileURLToPath(new URL('../skills/',import.meta.url))));
-        if(!pin) throw new Error('SKILL_PIN_UNAVAILABLE');
+      skillConfig=await sessionSkills(registry,session.config?.skill_config,async(pin,previousVersion)=>{
         const rows=await sql`UPDATE nava_agent.agent_session SET config=config || ${json({skill_config:pin})}::jsonb WHERE id=${sessionId} AND worker_id=${lease.workerId} AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() RETURNING id`;
         if(!rows.length) throw new Error('LEASE_LOST');
-        skillConfig=pin;
-      }
+        if(previousVersion && previousVersion!==pin.pin.version) await deps.store.event(lease,'skill_pin_refreshed',{from:previousVersion,to:pin.pin.version});
+      });
     }
     if(createPilotEnabled() && await runStaffStage(lease,registry,{sessionId,mode,propertyCode:session.property_code,fence:lease,signal:abort.signal,skillConfig})) return;
     if(createPilotEnabled() && await runStaffGo(lease,registry,{sessionId,mode,signal:abort.signal})) return;
@@ -431,19 +439,10 @@ async function runCma(native:NativeAdmission):Promise<void> {
       if(!session || !['live','labtest','historical'].includes(session.mode)) return JSON.stringify({ok:false,data:null,error:{code:'SESSION_NOT_FOUND',message:'Session is unavailable.',retryable:false,outcome:'known'}});
       let skillConfig:SkillConfig|undefined;
       if(def.name==='skill_read' && registry.hasSkillPack()) {
-        const root=resolve(process.env.NAVA_SKILLS_DIR ?? fileURLToPath(new URL('../skills/',import.meta.url)));
-        const saved=z.object({root:z.string(),pin:z.object({version:z.string(),files:z.record(z.string())}).strict()}).strict().safeParse(session.config?.skill_config);
-        if(saved.success) skillConfig={root,pin:saved.data.pin};
-        else {
-          const pin=await registry.pinSkillTree(root);
-          if(!pin) throw new Error('SKILL_PIN_UNAVAILABLE');
-          const legacy=z.record(z.string()).safeParse(session.config?.skill_files);
-          if(legacy.success && Object.entries(legacy.data).some(([name,text])=>pin.pin.files[name]!==createHash('sha256').update(text).digest('hex'))) throw new Error('SKILL_PIN_CHANGED');
-          await sql`UPDATE nava_agent.agent_session SET config=config || ${json({skill_config:pin})}::jsonb WHERE id=${session.id} AND NOT (config ? 'skill_config')`;
-          const [current]=await sql`SELECT config->'skill_config' AS skill_config FROM nava_agent.agent_session WHERE id=${session.id}`;
-          const actual=z.object({root:z.string(),pin:z.object({version:z.string(),files:z.record(z.string())}).strict()}).strict().parse(current.skill_config);
-          skillConfig={root,pin:actual.pin};
-        }
+        skillConfig=await sessionSkills(registry,session.config?.skill_config,async(pin,previousVersion)=>{
+          const rows=await sql`UPDATE nava_agent.agent_session SET config=config || ${json({skill_config:pin})}::jsonb WHERE id=${session.id} AND config->'skill_config' IS DISTINCT FROM ${json(pin)}::jsonb RETURNING id`;
+          if(rows.length && previousVersion && previousVersion!==pin.pin.version) await event(session.id,'skill_pin_refreshed',{from:previousVersion,to:pin.pin.version});
+        });
       }
       const answer=await registry.run(def.name,input,{sessionId:session.id,mode:session.mode,propertyCode:session.property_code,toolUseId:ctx?.toolUse.id ?? '',signal:ctx?.signal ?? undefined,skillConfig});
       if(answer.kind==='pause') throw new Error('CMA_SAVE_PAUSE_UNAVAILABLE');

@@ -9,6 +9,16 @@ import { attachmentCheckPath, hasBoundCreateGuest, invalidGuestSelection, profil
 import { staffPrepareOnly } from './hms-mode.js';
 import { targetSelection, withAmendRoomTypeField } from './stay-target.js';
 
+export function isCancelTargetOnlyReview(draft:z.infer<typeof proposalDraft>,status:unknown):boolean {
+  const [action]=draft.actions;
+  return draft.workflow==='cancel' && draft.disposition==='staff_review' &&
+    draft.bookings.length===1 && draft.actions.length===1 && action?.type==='cancel' &&
+    z.object({requested_scope:z.literal('whole_stay')}).safeParse(action.details).success &&
+    /^reserved$/i.test(String(status).trim()) && draft.reason==='Stay target unresolved' &&
+    draft.missing.length===0 &&
+    !draft.warnings.some(warning=>/\b(?:conditions?|conditional|if|unless|subject to|pending approval|fee (?:inquiry|only|quote|question)|fee-only|intent|scope|unconfirmed request)\b/i.test(warning));
+}
+
 export async function selectStayTarget(id:string,mailboxIds:string[],actor:string,input:{expected_revision:number;job_id:string;remove_fields:string[]}) {
   return sql.begin(async tx=>{
     const [ref]=await tx`SELECT p.session_id,t.mailbox_id FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${id}`;
@@ -40,9 +50,7 @@ export async function selectStayTarget(id:string,mailboxIds:string[],actor:strin
       if(action.details && typeof action.details==='object' && !Array.isArray(action.details) && 'confirmation_number' in action.details)
         action.details.confirmation_number=selection.data.confirmation;
     } else if(input.remove_fields.length) throw new Error('STALE_REVISION');
-    if(draft.workflow==='cancel' && draft.disposition==='staff_review' &&
-      z.object({requested_scope:z.literal('whole_stay')}).safeParse(action.details).success &&
-      /^reserved$/i.test(String(p.stage.native_result.status).trim())) {
+    if(isCancelTargetOnlyReview(draft,p.stage.native_result.status)) {
       draft=withCancelReviewFields({...draft,disposition:'propose'});
     }
     if(draft.workflow==='filing') {

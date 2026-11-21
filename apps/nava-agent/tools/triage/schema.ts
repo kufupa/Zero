@@ -29,5 +29,5 @@ export const schemas = {
     field: { type: 'string', enum: ['last_name', 'first_name', 'email', 'phone', 'profile_id', 'name'] },
     query: string,
     sender_host: { ...string, description: 'From-domain host for party_sender_map lookup (optional).' },
-  }, ['property_code', 'kind', 'field', 'query']),
+  }, ['property_code', 'kind', 'field']),
 };

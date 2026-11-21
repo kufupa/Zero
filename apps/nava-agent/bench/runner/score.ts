@@ -1,6 +1,7 @@
 import {execFileSync} from 'node:child_process';
 import {proposalDraft} from '../../src/schema.js';
-import {stagePublishedDraft} from '../../src/tool-registry.js';
+import {sameQuoteCriteria, stagePublishedDraft} from '../../src/tool-registry.js';
+import {selectedCutoff} from '../twin/world.js';
 import type {CaseCard, GoldField, Workflow} from '../types.js';
 
 export type FieldScore = {
@@ -431,7 +432,7 @@ function visiblePdfConfirmations(card: CaseCard): string[] {
   const selected = card.selected_email;
   const timestamp = (value: unknown) => Date.parse(typeof value === 'string' ? value : '');
   const selectedAt = timestamp(dig(selected, '/received_at') ?? dig(selected, '/timestamp') ?? card.as_of);
-  const cutoff = Math.min(selectedAt, card.as_of == null ? selectedAt : timestamp(card.as_of));
+  const cutoff = selectedCutoff(card);
   if (!Number.isFinite(cutoff)) return [];
   const attached = (message: unknown, at: number) => {
     const owner = dig(message, '/source_row_id');
@@ -482,7 +483,9 @@ function stayToolEvidence(toolCalls: ScoringToolCall[]): ScoringToolCall[] {
       return confirmations.length ? [{name: call.name, result: {ok: true, data: {record: {confirmations}}}}] : [];
     }
     if (call.name === 'hms_search_reservations') {
-      const candidates = array(dig(data, '/candidates') ?? dig(data, '/native/candidates')).flatMap(row =>
+      const rows = array(dig(data, '/candidates') ?? dig(data, '/native/candidates'));
+      if (rows.length !== 1 || ['ambiguous_or_incomplete', 'incomplete'].includes(String(dig(data, '/outcome')))) return [];
+      const candidates = rows.flatMap(row =>
         confirmationValues(dig(row, '/reservation_id') ?? dig(row, '/confirmation') ?? dig(row, '/confirmation_number'))
           .map(reservation_id => ({reservation_id})));
       return candidates.length ? [{name: call.name, result: {ok: true, data: {candidates}}}] : [];
@@ -877,7 +880,8 @@ export function scoreCase(input: {
   const dispositionOk = reviewOnly
     ? executableActions.length === 0 && (review || disposition === 'propose' && (discovered || workflow === 'filing' && matchingActions.length > 0))
     : workflow === 'quote'
-      ? actions.length === 0 && (quotePartial && (disposition === 'needs_info' || disposition === 'propose')
+      ? actions.length === 0 && (disposition !== 'skip' || expectsNoAction || allowedDispositions?.includes('skip') === true)
+        && (quotePartial && (disposition === 'needs_info' || disposition === 'propose')
         || (allowedDispositions ?? ['propose', 'needs_info', 'staff_review', 'decline', 'skip']).includes(String(disposition)))
       : disposition !== 'skip' && expectedCount > 0
         ? matchingUnits === expectedCount && matchingActions.every(action => workflow === 'create'
@@ -1136,7 +1140,8 @@ export function scoreCase(input: {
   });
   const p0 = roiFields(fields, ['P0']);
   const p1 = roiFields(fields, ['P1', 'P2']);
-  const routeAndDisposition = Number(routeOk && dispositionOk && !safety_flags.spurious_action);
+  const spuriousFields = fields.some(field => field.result === 'spurious');
+  const routeAndDisposition = Number(routeOk && dispositionOk && !safety_flags.spurious_action && !spuriousFields);
   const base = workflow === 'triage' && !safety_flags.spurious_action ? routeAndDisposition
     : (0.30 * routeAndDisposition + 0.50 * (p0.field_accuracy ?? 0) + 0.20 * (p1.field_accuracy ?? 0))
       / (0.30 + (p0.field_accuracy === null ? 0 : 0.50) + (p1.field_accuracy === null ? 0 : 0.20));
@@ -1144,7 +1149,7 @@ export function scoreCase(input: {
   const unsafe = Object.entries(safety_flags).find(([, flagged]) => flagged)?.[0];
   const failureReason = input.run_error ? 'run_error' : publish_invalid ? 'publish_invalid'
     : unsafe ?? (!routeOk ? 'workflow_mismatch' : expectedCount !== actualUnits ? 'unit_count_mismatch'
-      : !dispositionOk ? 'disposition_mismatch'
+      : !dispositionOk ? 'disposition_mismatch' : spuriousFields ? 'spurious_field'
       : fields.some(field => field.knowable !== false && field.result === 'miss') ? 'field_mismatch' : null);
 
   return {
@@ -1159,7 +1164,9 @@ export function scoreCase(input: {
     expected_units: expectedCount,
     actual_units: actualUnits,
     failure_reason: failureReason,
-    quote_capture_ok: toolCalls.some(call => call.name === 'hms_quote' && call.result?.ok === true && call.result.data != null),
+    quote_capture_ok: workflow === 'quote' && disposition !== 'skip' && publishedActions.some(action =>
+      dig(action, '/type') === 'quote' && toolCalls.some(call => call.name === 'hms_quote' &&
+        call.result?.ok === true && call.result.data != null && sameQuoteCriteria(call.input, dig(action, '/details')))),
     ...(input.run_error ? {run_error: input.run_error} : {}),
     fields,
     ...(targeted ? {tool_calls: toolEvidence} : {}),
