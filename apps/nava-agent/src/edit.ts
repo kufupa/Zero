@@ -21,7 +21,7 @@ export async function selectStayTarget(id:string,mailboxIds:string[],actor:strin
       p.stage?.state!=='target' || p.stage?.job_id!==input.job_id || p.stage?.native_result?.kind!=='confirmation') throw new Error('STALE_REVISION');
     const source=await selectedStageSource(tx,p.session_id);
     const selection=targetSelection.safeParse(p.stage.native_result.selection);
-    const draft=proposalDraft.parse(p.current);
+    let draft=proposalDraft.parse(p.current);
     const booking=draft.bookings[0],action=draft.actions[0];
     if(!source.success || !isDeepStrictEqual(source.data,p.stage?.source) || source.data.mailbox_id!==ref.mailbox_id || !selection.success ||
       !['amend','cancel','filing'].includes(draft.workflow) || draft.bookings.length!==1 || draft.actions.length!==1 ||
@@ -40,6 +40,11 @@ export async function selectStayTarget(id:string,mailboxIds:string[],actor:strin
       if(action.details && typeof action.details==='object' && !Array.isArray(action.details) && 'confirmation_number' in action.details)
         action.details.confirmation_number=selection.data.confirmation;
     } else if(input.remove_fields.length) throw new Error('STALE_REVISION');
+    if(draft.workflow==='cancel' && draft.disposition==='staff_review' &&
+      z.object({requested_scope:z.literal('whole_stay')}).safeParse(action.details).success &&
+      /^reserved$/i.test(String(p.stage.native_result.status).trim())) {
+      draft=withCancelReviewFields({...draft,disposition:'propose'});
+    }
     if(draft.workflow==='filing') {
       if(draft.disposition==='staff_review') draft.disposition='propose';
       const stay=selection.data.current_state;

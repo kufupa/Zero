@@ -8,10 +8,8 @@ description: Use when an inbound hotel email supplies a voucher, proof of paymen
 Read [common rules](../references/common.md), [document rules and native order](references/rules.md), and [reply drafts](references/replies.md).
 
 1. Use `mail_read_thread`. Look at the selected inbound first. Propose Filing for an explicit current submission with a real PDF listed on that message. If the body is blank or near-blank and the selected PDF is identified by its filename or available extracted text as a voucher, POP or proof of payment, publish a Filing `staff_review` action for that file using the matching submission type; staff must check the document and its intended stay. An unclear PDF remains staff review. An earlier quoted voucher, promised payment, invoice request, or pro-forma alone is not a Filing task.
-Credit-card/VCC authorization forms and unreadable card PDFs are neither vouchers nor proof of payment. Route them to Triage for staff review; never emit `attach_document` or another filing action for them.
-
 2. **Bind `confirmation_number` before publish.** Pull candidates in this order and set `booking.fields.confirmation_number` to the unique native stay (with `-N` suffix) when one matches:
-   1. Attachment `extracted_text` (`confirmationNumber` JSON key, or plain `NNNNNNNN-N`).
+   1. Attachment `confirmation_hints` and `extracted_text` (`confirmationNumber` JSON key, or plain `NNNNNNNN-N`).
    2. Filename `HRCEN_Confirmation_Letter_<conf>.pdf`.
    3. Selected subject/body and earlier thread (patterns `n°`, `Confirmation Letter`, `confirmation`, `RES:` / reservation numbers that HMS resolves).
    4. When still absent: `hms_search_reservations` by guest surname + arrival/departure from the voucher/POP text or body; use the unique hit.

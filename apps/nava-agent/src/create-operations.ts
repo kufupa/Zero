@@ -110,7 +110,7 @@ function stageInput(draft:ProposalDraft,workflow:Workflow,property:string,quoteI
 
 function targetStageInput(draft:ProposalDraft,workflow:Workflow,property:string):StaffNativeInput|null {
   if((workflow!=='amend' && workflow!=='cancel' && workflow!=='filing') || draft.workflow!==workflow ||
-    (draft.disposition!=='propose' && !(workflow==='filing' && draft.disposition==='staff_review') &&
+    (draft.disposition!=='propose' && !((workflow==='filing' || workflow==='cancel') && draft.disposition==='staff_review') &&
       !(workflow==='amend' && ['needs_info','staff_review'].includes(draft.disposition))) ||
     draft.bookings.length!==1 || draft.actions.length!==1) return null;
   const [booking]=draft.bookings, [action]=draft.actions;

@@ -4,6 +4,7 @@ import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test, type TestContext} from 'node:test';
+import {sameQuoteCriteria} from '../src/tool-registry.js';
 import {loadCaseCards} from './runner/artifacts.js';
 import {azureReplayModel} from './runner/azure.js';
 import {applyGoldOverlay} from './runner/gold-overlay.js';
@@ -16,11 +17,11 @@ import type {CaseCard, GoldField} from './types.js';
 const before = '2026-10-14T12:00:00Z';
 const cutoff = '2026-10-15T12:00:00Z';
 const after = '2026-10-30T12:00:00Z';
+const stayId = '92227177-1';
 const fixture: CaseCard = {
-  case_id: 'sample', workflow: 'cancel', as_of: after, real_confirmation: '92227177-1',
+  case_id: 'sample', workflow: 'cancel', as_of: after, real_confirmation: stayId,
   selected_email: {id: 'selected', received_at: cutoff, direction: 'inbound', from: 'guest@example.org'},
 };
-const stayId = fixture.real_confirmation;
 const attachment = {sha256: 'a'.repeat(64), sent_at: cutoff, filename: 'letter.pdf'};
 const pdf = (sent_at: string, name: string, confirmation = stayId) => ({
   sent_at, sha256: attachment.sha256, fields: {confirmation, guestName: [name], arrivalDate: ['Wed 02-SEP-2026']},
@@ -93,6 +94,19 @@ test('stay lookup handles native dates, compound surnames, first names, exact su
   assert.equal((await twin.dispatch('hms_read_reservation', {property_code: 'HRSIS', reservation_id: '92227177-99'})).ok, false);
 });
 
+test('PDF column bleed does not pollute guest identity or room type', async t => {
+  const letter = pdf(before, 'Jane De Koker   Confirmation Number: 92227177-1');
+  const twin = createTwin({...fixture, pdf_versions: [{...letter, fields: {...letter.fields,
+    accommodationType: ['Standard Queen   Departure: 03-SEP-2026']}}]}, {worldDir: await world(t, [])});
+  const result = await twin.dispatch('hms_search_reservations', search({
+    reservation_id: stayId, guest_name: 'De Koker', guest_first_name: 'Jane',
+    guest_name_is_surname: true, arrival_date: '2026-09-02',
+  }));
+  assert.equal(result.ok, true);
+  assert.equal(twin.shown().stay?.guestfullname, 'Jane De Koker');
+  assert.equal(twin.shown().stay?.room_type_text, 'Standard Queen');
+});
+
 test('mail uses selected cutoff, keeps only its exact-cutoff attachments, and rechecks cross-thread links', () => {
   const mail = mailPayload({...fixture,
     selected_email: {...fixture.selected_email as object, pdf_attachments_text: [attachment, {...attachment, sent_at: after}],
@@ -148,6 +162,37 @@ test('guest aliases, titles and receptionist typos pass; unrelated names fail', 
   assert.equal(personEqual('Christina', '  Ms. Christa '), true);
   assert.equal(personEqual('Smith', 'Jones'), false);
   assert.equal(personEqual('Elizabeth', 'Beth', ['Beth']), true);
+});
+
+test('cancellation notes ignore auxiliaries and articles but preserve negation', () => {
+  const card = {...fixture, gold: [expected('/actions/0/details/cancellation_note', 'The meeting has been cancelled.')]};
+  const draft = proposal('cancel', 'propose', [stayId], 'cancel');
+  const result = (note: string) => {
+    draft.actions[0].details = {cancellation_note: note};
+    return score(card, draft).fields[0].result;
+  };
+  assert.equal(result('Meeting cancelled.'), 'hit');
+  for (const note of ['The meeting has not been cancelled.', 'The meeting was never cancelled.',
+    'No meeting was cancelled.', 'Proceed without the meeting being cancelled.',
+    'The meeting cannot be cancelled.', 'The meeting can’t be cancelled.', "The meeting won't be cancelled.",
+    "They don't want the meeting cancelled.", "The client doesn't want the meeting cancelled.", "They didn't get the meeting cancelled."]) {
+    assert.equal(result(note), 'miss', note);
+  }
+});
+
+test('quote captures ignore draft presentation fields but bind native pricing criteria', () => {
+  const room = {id: 'room-1', quantity: 3, adults: 1, children: 0, child_ages: [], required: {roomCodes: ['STQN']}};
+  const group = {group_id: 'stay', arrival_date: '2026-09-02', departure_date: '2026-09-03', rooms: [room]};
+  const capture = {quote_id: 'quote-1', property_code: 'HRCEN', groups: [group]};
+  const draft = {...capture, party_name: 'Guest', board: 'BB', extras: [{description: 'Transfer'}],
+    groups: [{...group, board: 'BB', rooms: [{...room, requested_room_type: 'Standard Queen'}]}]};
+  const original = structuredClone(draft);
+  assert.equal(sameQuoteCriteria(capture, draft), true);
+  assert.deepEqual(draft, original);
+  for (const change of [{quantity: 1}, {adults: 2}, {required: {roomCodes: ['STWN']}}]) {
+    assert.equal(sameQuoteCriteria(capture, {...draft, groups: [{...group, rooms: [{...room, ...change}]}]}), false);
+  }
+  assert.equal(sameQuoteCriteria(capture, {...draft, groups: [{...group, departure_date: '2026-09-04'}]}), false);
 });
 
 test('VCC, staff reply and wrong targets trigger safety penalties and aggregate separately', () => {
@@ -252,6 +297,15 @@ test('filing document identity and critical codes stay strict; native action spe
   assert.deepEqual(score(card, draft).fields.slice(0, 3).map(field => field.result), ['hit', 'miss', 'miss']);
   const native = score({...fixture, gold: [target(0, '12345678-1')]}, proposal('cancel', 'propose', ['12345678-1'], 'cancel'));
   assert.equal(native.roi_score, 1);
+});
+
+test('filing document selection scores independently of unresolved stay binding', () => {
+  const card: CaseCard = {...fixture, workflow: 'filing', gold: [target(0, '12345678-1'),
+    expected('/actions/0/details/attachment_id', 'doc-1'), expected('/actions/0/type', 'voucher_submission'),
+    expected('/actions/0/details/doc_kind', 'voucher')]};
+  const draft = proposal('filing', 'staff_review', [], 'voucher_submission');
+  draft.actions[0].details = {attachment_id: 'doc-1', doc_kind: 'voucher'};
+  assert.deepEqual(score(card, draft).fields.slice(0, 4).map(field => field.result), ['miss', 'hit', 'hit', 'hit']);
 });
 
 test('fresh replay and rescore agree using a local Responses server and explicit gold', async t => {

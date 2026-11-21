@@ -1,4 +1,4 @@
-import type {CaseCard, Workflow} from '../types.js';
+import type {CaseCard} from '../types.js';
 import {anchorPdfs, beforeCutoff, captureTime, rows, verifiedHmsFields, type TwinAnchor, type TwinPdf, type TwinWorld} from './world.js';
 
 const object = (value: unknown): Record<string, unknown> =>
@@ -26,11 +26,15 @@ export function isoDate(raw: unknown): string | null {
   return month < 0 ? null : `${native[3]}-${String(month + 1).padStart(2, '0')}-${native[1]}`;
 }
 
+const pdfCell = (value: unknown) => typeof value === 'string'
+  ? value.split(/\s+(?:Confirmation\s+(?:Number|No\.?)|Guest\s+Name|Arrival(?:\s+Date)?|Departure(?:\s+Date)?|Room\s+Type|Accommodation\s+Type|Occupancy|Rate\s+Includes|Average\s+Daily\s+Rate|Total\s+Accommodation|Adults|Children|Agency|Company)\s*:/i, 1)[0].trim()
+  : value;
+
 /** Stay from PDF fields only — never merge later HMS snapshot. */
 export function stayFromPdf(pdf: TwinPdf | null, confirmation: string | null): Record<string, unknown> | null {
   if (!pdf) return null;
   const fields = {...object(pdf.pdf_fields), ...object(pdf.fields)};
-  const guest = first(fields.guestName) ?? fields.guest_name;
+  const guest = pdfCell(first(fields.guestName) ?? fields.guest_name ?? fields.guestfullname);
   const arrival = first(fields.arrivalDate) ?? fields.arrival_date;
   const departure = first(fields.departureDate) ?? fields.departure_date;
   const conf = confirmation;
@@ -45,7 +49,7 @@ export function stayFromPdf(pdf: TwinPdf | null, confirmation: string | null): R
     departuredate: departure,
     adults: fields.adults ?? null,
     children: fields.children ?? null,
-    room_type_text: first(fields.accommodationType) ?? fields.room_type_text,
+    room_type_text: pdfCell(first(fields.accommodationType) ?? first(fields.roomType) ?? fields.room_type_text),
     occupancy_text: first(fields.occupancy) ?? fields.occupancy_text,
     rate_includes_text: first(fields.rateIncludes) ?? fields.rate_includes_text,
     average_daily_rate_text: first(fields.averageDailyRate) ?? fields.average_daily_rate_text,

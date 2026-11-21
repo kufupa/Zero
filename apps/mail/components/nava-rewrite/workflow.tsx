@@ -726,8 +726,9 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
       .map(option => [JSON.stringify([option.group_id, option.room_id]), option.option_index])));
   const [output,setOutput]=useState(()=>{
     const initial=quoteOutputPrefill(proposal,proposal.stage?.quote_id ?? '');
-    return {...initial,extras:initial.extras.map(extra=>({...extra,quantity:String(extra.quantity ?? ''),units:String(extra.units ?? ''),unit_price:extra.unit_price ?? ''}))};
+    return {...initial,extras:initial.extras.map((extra,index)=>({...extra,rowKey:`prefill-${index}`,quantity:String(extra.quantity ?? ''),units:String(extra.units ?? ''),unit_price:extra.unit_price ?? ''}))};
   });
+  const nextExtraKey=useRef(0);
   const stage = proposal.stage;
   if (!stage?.quote_id || !stage.job_id || !stage.quote_options || !onGenerateQuoteArtifacts) return null;
   const rooms = quoteRooms(proposal, stage.quote_id);
@@ -738,7 +739,7 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
     return index !== undefined && stage.quote_options?.some(option => option.group_id === room.groupId && option.room_id === room.roomId && option.option_index === index)
       ? [{ group_id: room.groupId, room_id: room.roomId, option_index: index }] : [];
   });
-  const readyOutput=quoteOutputSchema.safeParse({...output,extras:output.extras.map(extra=>({...extra,
+  const readyOutput=quoteOutputSchema.safeParse({...output,extras:output.extras.map(({rowKey:_rowKey,...extra})=>({...extra,
     quantity:extra.quantity.trim() ? Number(extra.quantity) : null,
     units:extra.units.trim() ? Number(extra.units) : null,unit_price:extra.unit_price.trim() || null}))});
   const changeExtra=(index:number,patch:Partial<(typeof output.extras)[number]>)=>setOutput(current=>({...current,
@@ -790,7 +791,7 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
     <PaneField label="Payment terms" control="textarea" value={output.payment_terms} disabled={busy} hint="Leave blank if not confirmed." onChange={value=>setOutput(current=>({...current,payment_terms:value}))} />
     <h4>Extras</h4>
     <p>Enter staff prices in ZAR. Leave unknown values blank. Extras without a complete price are excluded from the priced sum.</p>
-    {output.extras.map((extra,index)=><fieldset key={index} className={quoteStyles.stay}>
+    {output.extras.map((extra,index)=><fieldset key={extra.rowKey} className={quoteStyles.stay}>
       <legend>Extra {index+1}</legend>
       <PaneField label="Description" control="text" value={extra.description} disabled={busy} onChange={value=>changeExtra(index,{description:value})} />
       <PaneField label="Quantity" control="number" min="1" step="1" value={extra.quantity} disabled={busy} onChange={value=>changeExtra(index,{quantity:value})} />
@@ -798,7 +799,10 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
       <PaneField label="Price per unit (ZAR)" control="text" value={extra.unit_price} disabled={busy} onChange={value=>changeExtra(index,{unit_price:value})} />
       <button type="button" disabled={busy} onClick={()=>setOutput(current=>({...current,extras:current.extras.filter((_,i)=>i!==index)}))}>Remove extra</button>
     </fieldset>)}
-    <button type="button" disabled={busy} onClick={()=>setOutput(current=>({...current,extras:[...current.extras,{description:'',quantity:'',units:'',unit_price:''}]}))}>Add extra</button>
+    <button type="button" disabled={busy} onClick={()=>{
+      const rowKey=`added-${nextExtraKey.current++}`;
+      setOutput(current=>({...current,extras:[...current.extras,{rowKey,description:'',quantity:'',units:'',unit_price:''}]}));
+    }}>Add extra</button>
     {!readyOutput.success && <p>Enter a description for each extra. Use positive whole numbers for quantities and up to two decimals for prices.</p>}
     <button type="button" disabled={busy || selections.length === 0 || !readyOutput.success} onClick={() => {
       if (readyOutput.success) onGenerateQuoteArtifacts(stage.quote_id!, selections, readyOutput.data);
@@ -936,7 +940,9 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay,createdStays
   const [previousJob,setPreviousJob]=useState<string | null>(null);
   const [removed,setRemoved]=useState<Record<string,boolean>>(()=>Object.fromEntries(
     ['guest_name','group_name','guest_names','confirmation_number','guest_last_name','guest_first_name','guest_names_hint','reservation_hint','confirmation_hint'].map(key=>[key,true])));
-  if(!['amend','cancel','filing'].includes(proposal.workflow) || (proposal.disposition!=='propose' && !(proposal.workflow==='filing' && proposal.disposition==='staff_review') && !(proposal.workflow==='amend' && ['needs_info','staff_review'].includes(proposal.disposition))) || proposal.bookings.length!==1 || !booking || !onLookupStay || !onSelectStay) return null;
+  const canLookUp = proposal.disposition==='propose' || proposal.disposition==='staff_review' ||
+    (proposal.workflow==='amend' && proposal.disposition==='needs_info');
+  if(!['amend','cancel','filing'].includes(proposal.workflow) || !canLookUp || proposal.bookings.length!==1 || !booking || !onLookupStay || !onSelectStay) return null;
   const stage=proposal.stage;
   const native=stage?.state==='target' && stage.revision===proposal.revision && proposal.phase==='ready' &&
     stage.job_id!==previousJob && !changed && Object.keys(drafts).length===0 ? stage.native_result : null;

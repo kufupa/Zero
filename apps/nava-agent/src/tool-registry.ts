@@ -179,6 +179,11 @@ export function stagePublishedDraft(
   }
   return normalizeProposalFields(staffDraft);
 }
+export function sameQuoteCriteria(captured:unknown,draft:unknown) {
+  const actual=groupedQuoteRequest.safeParse(captured), expected=groupedQuoteRequest.safeParse(draft);
+  return actual.success && expected.success &&
+    isDeepStrictEqual({...actual.data,party_name:undefined},{...expected.data,party_name:undefined});
+}
 function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{native:unknown;incomplete:boolean} {
   const latest=new Map<string,{data:z.infer<typeof groupedCaptureSchema>;ok:boolean;input:unknown}>();
   let legacy:unknown=null,legacyOk=false;
@@ -199,7 +204,7 @@ function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{nati
   let incomplete=false;
   for(const id of quoteOrder) {
     const capture=latest.get(id);
-    if(!capture || (expected.has(id) && !isDeepStrictEqual(capture.input,expected.get(id)))) {incomplete=true;continue;}
+    if(!capture || (expected.has(id) && !sameQuoteCriteria(capture.input,expected.get(id)))) {incomplete=true;continue;}
     incomplete ||= !capture.ok;
     const offset=searches.length;
     const quote=z.object({groups:z.record(z.unknown())}).passthrough().safeParse(capture.data.quotes[id]);

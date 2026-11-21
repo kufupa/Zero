@@ -248,12 +248,12 @@ function rateMatch(expected: unknown, actual: unknown, board: unknown): boolean 
 
 function cancellationTextMatch(expected: unknown, actual: unknown): boolean {
   if (strictMatch(expected, actual)) return true;
-  const tokens = (value: unknown) => new Set(normalize(value).match(/[a-z]+/g)?.filter(word =>
-    !/^(?:the|a|an|is|are|be|will|to|of|for|as|he|she|they|client|guest)$/.test(word))
+  const tokens = (value: unknown) => new Set(normalize(value).replaceAll('’', "'").match(/[a-z]+(?:'t)?/g)?.filter(word =>
+    !/^(?:the|a|an|has|have|had|been|is|are|was|were|be|will|to|of|for|that|this|it|by|as|he|she|they|client|guest)$/.test(word))
     .map(word => word.replace(/^(attend)(?:ing|ed|s)$/, '$1')) ?? []);
   const wanted = tokens(expected);
   const got = tokens(actual);
-  const negated = (words: Set<string>) => ['no', 'not', 'never', 'cannot'].some(word => words.has(word));
+  const negated = (words: Set<string>) => [...words].some(word => /^(?:no|not|never|without|cannot)$|n't$/.test(word));
   const overlap = [...wanted].filter(word => got.has(word)).length;
   return wanted.size >= 2 && negated(wanted) === negated(got) &&
     overlap >= Math.max(2, Math.ceil(wanted.size * 0.60), Math.ceil(got.size * 0.50));
@@ -883,7 +883,8 @@ export function scoreCase(input: {
     if (targeted && !reviewOnly && bookingPath && !idField(gold.path) && expectedBookingId) {
       digPath = binding && binding.bookingIndex >= 0 ? `/bookings/${binding.bookingIndex}${bookingPath[2]}` : null;
     }
-    if (workflow === 'filing' && !reviewOnly && /^\/actions\/\d+\//.test(gold.path) && stayGoldIds.length === 1) {
+    const filingDocument = workflow === 'filing' && /^\/actions\/\d+\/(?:type|details\/(?:attachment_id|doc_kind))$/.test(gold.path);
+    if (workflow === 'filing' && !filingDocument && !reviewOnly && /^\/actions\/\d+\//.test(gold.path) && stayGoldIds.length === 1) {
       const bound = actionForTarget(stayGoldIds[0]);
       digPath = bound ? gold.path.replace(/^\/actions\/\d+/, `/actions/${bound.index}`) : null;
     }
