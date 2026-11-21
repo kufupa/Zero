@@ -7,6 +7,7 @@ import {DEFAULT_DATA_ROOT} from '../twin/world.js';
 export type GoldVersion = 'v4' | 'v5';
 type GoldEntry = Pick<CaseCard, 'gold' | 'unscored_request_fields'> & {
   workflow?: Workflow;
+  staff_outcome_only?: unknown;
   skip?: boolean;
   gold_patches?: Array<Partial<GoldField> & {path: string}>;
   doc_kind?: string;
@@ -45,6 +46,7 @@ export function applyGoldOverlay(card: CaseCard, overlay: GoldEntry | undefined)
     workflow: workflow ?? card.workflow,
     gold: gold ?? card.gold?.map(field => ({...field, ...patches.get(field.path)} as GoldField)),
     unscored_request_fields: unscored_request_fields ?? card.unscored_request_fields,
+    staff_outcome_only: [card.staff_outcome_only, overlay.staff_outcome_only],
     doc_kind: doc_kind ?? card.doc_kind,
     expected_targets: expected_targets ?? card.expected_targets,
     expected_action_count: expected_action_count ?? (skip ? 0 : card.expected_action_count),

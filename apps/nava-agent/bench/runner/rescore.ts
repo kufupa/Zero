@@ -32,6 +32,20 @@ function recorded(label: string, prior: string | null | undefined, supplied?: st
   return prior ?? supplied ?? null;
 }
 
+function recordedToolCalls(saved: CaseScore): NonNullable<CaseScore['tool_calls']> {
+  if (saved.tool_calls) return saved.tool_calls;
+  // Legacy runs saved search response IDs, but only the input for reads.
+  return (saved.tool_quality?.calls ?? []).map(call => ({
+    name: call.name,
+    result: {
+      ok: call.ok && !call.error,
+      data: call.name === 'hms_search_reservations' && (call.hits ?? 0) > 0
+        ? {candidates: call.top?.map(row => ({reservation_id: row.id}))}
+        : undefined,
+    },
+  }));
+}
+
 export async function rescoreRun(options: ReplayOptions & {runDir: string}) {
   const runDir = resolve(options.runDir);
   const prior: PriorManifest = await readOptionalJson(join(runDir, 'manifest.json')) ?? {};
@@ -58,12 +72,12 @@ export async function rescoreRun(options: ReplayOptions & {runDir: string}) {
   const results = await mapPool(cards, options.concurrency ?? 10, async card => {
     const saved: CaseScore | null = await readOptionalJson(join(runDir, `${card.case_id}.json`));
     if (saved === null) return null;
-    // Saved staged proposals are authoritative. Truncated tool summaries cannot recreate binding.
+    // The saved proposal is already staged. Tool responses only establish discovery evidence.
     const score = scoreCase({
       card: applyGoldOverlay(card, gold.map[card.case_id]),
       proposal: saved.proposal,
       proposal_raw: saved.proposal_raw ?? saved.proposal,
-      toolCalls: [],
+      toolCalls: recordedToolCalls(saved),
       tokens: saved.tokens ?? {input: 0, output: 0, cached_input: 0},
       wall_ms: saved.wall_ms ?? 0,
       normalize: false,
