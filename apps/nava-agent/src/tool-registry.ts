@@ -164,6 +164,7 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
 export function stagePublishedDraft(
   draft: ProposalDraft,
   partyReads: Array<{input: unknown; response: unknown}>,
+  quoteProperty?:string,
 ): {kind: 'valid'; draft: ProposalDraft} | {kind: 'invalid'; path: string} {
   let staffDraft = draft;
   if (['create', 'quote'].includes(staffDraft.workflow)) {
@@ -182,7 +183,7 @@ export function stagePublishedDraft(
     }
     staffDraft = withReadParties(staffDraft, partyReads);
   }
-  return normalizeProposalFields(staffDraft);
+  return normalizeProposalFields(staffDraft,quoteProperty);
 }
 export function sameQuoteCriteria(captured:unknown,draft:unknown) {
   const actual=groupedQuoteRequest.safeParse(captured), expected=groupedQuoteRequest.safeParse(draft);
@@ -300,13 +301,18 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
       }
     } else if (name==='proposal_publish') {
       const draft:ProposalDraft=schemas.proposal_publish.parse(input);
+      const hasNeedsInfoAction = draft.actions.some(action => action.type === 'needs_info');
+      const needsInfoType = draft.disposition === 'needs_info' && ['quote','create','amend','cancel'].includes(draft.workflow) ? draft.workflow : null;
+      if (needsInfoType) draft.actions = draft.actions.map(action => action.type === 'needs_info' ? {...action,type:needsInfoType} : action);
       const source=staffPrepareOnly() && ['quote','filing'].includes(draft.workflow)
         ? await sql.begin('read only',tx=>selectedStageSource(tx,session.id)) : undefined;
       const selected=source?.success ? (await sql`SELECT payload FROM nava_agent.mail_message
         WHERE thread_id=${session.thread_id} AND source_message_id=${source.data.source_message_id}`)[0]?.payload : undefined;
+      let quoteProperty:string|undefined;
       if(draft.workflow==='quote' && source?.success && selected) {
-        const text=[selected.subject,selected.body,selected.body_text].filter(value=>typeof value==='string').join('\n');
-        if(!/\b(?:da\s*vinci|hdav\w*|(?:legacy|davinci) hotel and suites)\b/i.test(text)) {
+        const text=[selected.subject,selected.body_text].join('\n');
+        if(!/\b(?:da\s*vinci|hrdavs?)\b/i.test(text)) {
+          quoteProperty=source.data.property_code;
           draft.actions=draft.actions.map((action,index)=>{
             if(action.type!=='quote' || !action.details || typeof action.details!=='object' || Array.isArray(action.details) ||
               action.details.property_code!=null || draft.field_specs.some(field=>
@@ -315,9 +321,6 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           });
         }
       }
-      const hasNeedsInfoAction = draft.actions.some(action => action.type === 'needs_info');
-      const needsInfoType = draft.disposition === 'needs_info' && ['quote','create','amend','cancel'].includes(draft.workflow) ? draft.workflow : null;
-      if (needsInfoType) draft.actions = draft.actions.map(action => action.type === 'needs_info' ? {...action,type:needsInfoType} : action);
       const jobs:{draft:ProposalDraft; selection?:z.infer<typeof targetSelection>}[]=[];
       for(let job of filingJobs(draft)) {
         let selection:z.infer<typeof targetSelection>|undefined;
@@ -340,12 +343,11 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
             try {
               const found=await nativeAdmission.withRead(propertyCode,signal,credentialLease=>
                 lookupExactStay(exact,booking.id,{propertyCode,credentialLease,signal:credentialLease.signal}));
-              selection=targetSelection.safeParse(z.object({selection:z.unknown()}).safeParse(found.data).data?.selection).data;
+              selection=z.object({selection:targetSelection}).safeParse(found.data).data?.selection;
             } catch { signal?.throwIfAborted(); }
           }
           if(selection) job={...job,disposition:'propose',reason:null,bookings:[{...booking,fields:{...booking.fields,confirmation_number:selection.confirmation},property_code:selection.property_code,
             reservation_id:selection.confirmation,current_state:selection.current_state}]};
-          else if(job.disposition==='propose') job={...job,disposition:'staff_review'};
         }
         jobs.push({draft:job,selection});
       }
@@ -388,7 +390,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           // Staff-prepare create/quote: party bind + normalize via shared pure fn. Else normalize only
           // (avoid forcing profile_create_new outside staff-prepare).
           const normalized=staffPrepareOnly()
-            ? stagePublishedDraft(staffDraft,partyReads)
+            ? stagePublishedDraft(staffDraft,partyReads,quoteProperty)
             : normalizeProposalFields(staffDraft);
           if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
           proposals.push({current:normalized.draft,selection:job.selection});

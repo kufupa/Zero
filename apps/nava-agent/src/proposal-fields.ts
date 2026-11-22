@@ -261,7 +261,7 @@ export function hrcenCode(kind:'rate_plan'|'room_type',value:unknown,board:unkno
   return null;
 }
 
-export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
+export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:string): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
   if(draft.workflow==='create') {
     draft=withCreateNativeFields(createOccupancyFields(draft));
     const fieldSpecs=[...draft.field_specs];
@@ -296,7 +296,8 @@ export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; dr
   const scaffold = draft.workflow === 'quote' && draft.disposition === 'needs_info' && !draft.actions.length && draft.field_specs.some(field => field.editable && field.path !== '/reply_draft' && field.path !== 'reply_draft');
   const actions = scaffold ? [{
     id: 'quote-input', type: 'quote', booking_ids: [],
-    details: {quote_id:'quote-input',property_code:null,groups:[{group_id:'stay-input',arrival_date:null,departure_date:null,rooms:null,room_quantity_and_type:null,occupancy:null,board:null}]},
+    details: {quote_id:'quote-input',property_code: draft.field_specs.some(field =>
+      /(?:^|\/)property_code$/.test(field.path) && (field.error || field.evidence.length)) ? null : quoteProperty ?? null,groups:[{group_id:'stay-input',arrival_date:null,departure_date:null,rooms:null,room_quantity_and_type:null,occupancy:null,board:null}]},
   }] : draft.actions;
   if ((draft.workflow === 'cancel' || draft.workflow === 'amend') && draft.disposition === 'propose'
     && (!draft.bookings.length || draft.bookings.some(booking => !booking.reservation_id?.trim()))) {
