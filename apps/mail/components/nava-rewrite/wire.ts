@@ -70,7 +70,7 @@ const quoteOptionSchema = z.object({
     date: z.string(), price: z.object({ amount: z.string(), currency: z.string() }),
     inventory: z.number().int().nonnegative(), restricted: z.boolean(), rateAvailable: z.boolean(),
   })),
-  availability: z.literal('available'), eligibility: z.literal('verified'), match_status: z.string(),
+  availability: z.literal('available'), eligibility: z.literal('verified'), match_status: z.string(), rate_scope: z.string().optional(),
 });
 const nativeDisplayBase = {
   id, booking_id: z.string().nullable(), label: z.string(), native_path: z.string(),

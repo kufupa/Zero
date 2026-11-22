@@ -133,7 +133,7 @@ export function quoteOptions(request:unknown, native:unknown, _requireJointSelec
       const item=selected.data;
       return [{group_id:group.group_id,room_id:room.id,option_index,room:{code:item.room.code,label:item.room.label ?? null},
         rate:{code:item.rate.code,label:item.rate.label ?? null},meal_plan:item.mealPlan ?? null,nightly:item.nightly,
-        availability:item.availability,eligibility:item.eligibility,match_status:item.matchStatus}];
+        availability:item.availability,eligibility:item.eligibility,match_status:item.matchStatus,rate_scope:item.rateScope}];
     });
   }));
 }

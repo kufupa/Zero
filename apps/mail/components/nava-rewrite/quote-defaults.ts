@@ -9,6 +9,7 @@ function strings(value: unknown): string[] {
 }
 
 function barBreakfast(option: QuoteOption): boolean {
+  if (option.rate_scope && option.rate_scope !== 'public') return false;
   const meal = typeof option.meal_plan === 'string' ? option.meal_plan : Object.values(object(option.meal_plan)).join(' ');
   return (option.rate.code.toUpperCase() === 'BAR' || /best available rate/i.test(option.rate.label ?? '')) && /breakfast|\bB\s*&\s*B\b/i.test(meal);
 }
@@ -43,7 +44,10 @@ export function defaultQuoteSelections(proposal: Proposal): QuoteSelection[] {
       const matches=options.filter(option=>roomMatches(option,room));
       const breakfast=options.filter(barBreakfast);
       const matchingBreakfast=matches.filter(barBreakfast);
-      const candidates=matchingBreakfast.length ? matchingBreakfast : matches.length ? matches : breakfast;
+      const negotiated=options.filter(option=>option.rate_scope==='contextual' && option.match_status==='match');
+      const matchingNegotiated=negotiated.filter(option=>roomMatches(option,room));
+      const candidates=[matchingNegotiated,negotiated,matchingBreakfast,matches,breakfast,
+        options.filter(option=>option.match_status==='match')].find(group=>group.length) ?? [];
       const selected=[...candidates].sort((a,b)=>price(a)-price(b) || a.option_index-b.option_index)[0];
       if (selected) selections.push({group_id:group.group_id,room_id:room.id,option_index:selected.option_index});
     }

@@ -28,6 +28,7 @@ const room = z.object({ id, quantity: z.number().int().positive().safe(), adults
 const group = z.object({ group_id: id, arrival_date: date, departure_date: date, rooms: z.array(room).min(1) }).passthrough();
 const option = z.object({
   availability: z.literal('available'), eligibility: z.literal('verified'), matchStatus: z.enum(['match', 'alternative']),
+  rateScope: z.string().optional(),
   room: z.object({ code: id, label: z.string().nullable().optional() }).passthrough(),
   rate: z.object({ code: id, label: z.string().nullable().optional() }).passthrough(),
   mealPlan: z.union([z.string(), z.object({ code: z.string().nullable().optional(), label: z.string().nullable().optional() }).passthrough(), z.null()]).optional(),
