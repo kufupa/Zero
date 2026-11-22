@@ -1,5 +1,6 @@
 import type { ProposalDraft } from './schema.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
+import { isEmptyQuoteGroup } from '../tools/quote/schema.js';
 
 export function pointerParts(path: string): string[] | null {
   if (!path.startsWith('/') || /~(?![01])/.test(path)) return null;
@@ -207,6 +208,22 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
     if(!Object.hasOwn(details,'property_code')) details.property_code=null;
     add(`/actions/${actionIndex}/details/property_code`,'Property','text',true);
     if(!Array.isArray(details.groups)) return {...action,details};
+    if(details.groups.some(isEmptyQuoteGroup) && details.groups.some(group=>group && typeof group==='object' &&
+      !Array.isArray(group) && Array.isArray(group.rooms) && group.rooms.length>0)) {
+      const roomGroups:unknown[]=[], manualGroups:unknown[]=[];
+      const base=`/actions/${actionIndex}/details/`;
+      details.groups.forEach((group,index)=>{
+        const manual=isEmptyQuoteGroup(group), target=manual?manualGroups:roomGroups;
+        const from=`${base}groups/${index}`, to=`${base}${manual?'manual_groups':'groups'}/${target.length}`;
+        target.push(group);
+        for(let i=0;i<fieldSpecs.length;i++) {
+          const path=fieldSpecs[i].path.replace(/^\/?/,'/');
+          if(path===from || path.startsWith(from+'/')) fieldSpecs[i]={...fieldSpecs[i],path:to+path.slice(from.length)};
+        }
+      });
+      details.groups=roomGroups;
+      details.manual_groups=manualGroups;
+    }
     const groups=details.groups.map((value,groupIndex)=>{
       if(!value || typeof value!=='object' || Array.isArray(value)) return value;
       const group:Record<string,unknown>={...value};
@@ -216,6 +233,8 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
       add(`${groupRoot}/arrival_date`,'Arrival','date',true);
       add(`${groupRoot}/departure_date`,'Departure','date',true);
       if(!Array.isArray(group.rooms)) return group;
+      group.board ??= details.board ?? 'BB';
+      if(group.rooms.length) add(`${groupRoot}/board`,'Meal plan','text',false);
       const rooms=group.rooms.map((value:unknown,roomIndex:number)=>{
         if(!value || typeof value!=='object' || Array.isArray(value)) return value;
         const room:Record<string,unknown>={...value};
@@ -224,13 +243,22 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
           ['quantity','Rooms','number',true], ['adults','Adults','number',true], ['children','Children','number',false],
           ['child_ages','Child ages','text',false], ['required','Required room and rate','text',false],
         ] as const) {
-          if(!Object.hasOwn(room,key)) room[key]=key==='required'?{}:null;
+          if(!Object.hasOwn(room,key)) room[key]=key==='required'?{}:key==='quantity'?1:key==='children'?
+            (Array.isArray(room.child_ages)?room.child_ages.length:0):
+            key==='child_ages' && room.children===0?[]:null;
           add(`${root}/${key}`,label,control,required);
         }
+        if(Object.hasOwn(room,'board')) add(`${root}/board`,'Room meal plan','text',false);
         return room;
       });
       return {...group,rooms};
     });
+    const extras=Array.isArray(details.extras)?details.extras:[];
+    if(groups.some(group=>group && typeof group==='object' && !Array.isArray(group) && Array.isArray(group.rooms) &&
+      group.rooms.some(room=>room && typeof room==='object' && /\b(?:dbb|dinner)\b/i.test(String(room.board ?? group.board)))) &&
+      !extras.some(extra=>extra && typeof extra==='object' && /\bdinner\b/i.test(String(extra.description)))) {
+      details.extras=[...extras,{description:'Dinner add-on (hotel to confirm price)',quantity:null,price:null}];
+    }
     return {...action,details:{...details,groups}};
   });
   return {...draft,actions,field_specs:fieldSpecs};

@@ -179,7 +179,8 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote','target'
         if(!draft.success || workflow.data!=='quote') throw new OperationError('NOT_FOUND');
         const action=draft.data.actions.find(item=>item.type==='quote' && typeof item.details==='object' && item.details!==null && !Array.isArray(item.details) && item.details.quote_id===quoteId);
         if(!action) throw new OperationError('NOT_FOUND');
-        if(!groupedQuoteRequest.safeParse(action.details).success) throw new OperationError('INVALID_INPUT');
+        const checked=groupedQuoteRequest.safeParse(action.details);
+        if(!checked.success) throw new OperationError('INVALID_INPUT',checked.error.issues.map(({path,message})=>({path,message})));
       }
       const preparedJobId='prepared_job_id' in input.data && typeof input.data.prepared_job_id==='string'?input.data.prepared_job_id:undefined;
       const createProfile='create_profile' in input.data && input.data.create_profile===true?true:undefined;
@@ -201,7 +202,7 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote','target'
     if(code==='NOT_FOUND') return c.json({error:{code,message:'Proposal not found',details:null}},404);
     if(code==='FORBIDDEN') return c.json({error:{code,message:'Mailbox unavailable',details:null}},403);
     if(code==='REAL_GUEST_GO_UNAVAILABLE') return c.json({error:{code,message:'This proposal cannot be saved in Infor.',details:null}},403);
-    if(code==='INVALID_INPUT') return c.json({error:{code,message:'Invalid proposal fields',details:null}},400);
+    if(code==='INVALID_INPUT') return c.json({error:{code,message:'Invalid proposal fields',details:error instanceof OperationError?error.details:null}},400);
     if(code==='REQUIRED_FIELDS_MISSING') return c.json({error:{code,message:'Fill the required booking fields first.',details:error instanceof OperationError?error.details:null}},409);
     if(code===invalidGuestSelection.code) return c.json({error:{...invalidGuestSelection,details:null}},400);
     if(code===attachmentsUnconfirmed.code) return c.json({error:{...attachmentsUnconfirmed,details:null}},409);

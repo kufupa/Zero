@@ -135,7 +135,7 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
     const fields={...original};
     for(const kind of ['agency','organization'] as const) {
       const nameKey=`${kind}_name`, idKey=`${kind}_id`;
-      const choice=readPartyChoice(propertyCode,fields[nameKey],values,kind);
+      const choice=readPartyChoice(propertyCode,fields[nameKey] ?? (draft.workflow==='quote'?fields.party_name:null),values,kind);
       if(nameKey in fields || choice) fields[nameKey]=choice?.name ?? null;
       if(idKey in fields || choice) fields[idKey]=choice?.nativeId ?? null;
       if(!choice) continue;
@@ -155,7 +155,8 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
   const actions=draft.actions.map((action,index)=>{
     if(draft.workflow!=='quote' || action.type!=='quote' || !action.details || typeof action.details!=='object' || Array.isArray(action.details)) return action;
     const property=typeof action.details.property_code==='string'?action.details.property_code:null;
-    return {...action,details:bind(action.details,property,`/actions/${index}/details`)};
+    const {rate_context:_unverified,...details}=action.details;
+    return {...action,details:bind(details,property,`/actions/${index}/details`)};
   });
   return {...draft,bookings,actions,field_specs:fieldSpecs};
 }

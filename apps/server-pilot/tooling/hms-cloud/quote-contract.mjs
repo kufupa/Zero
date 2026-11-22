@@ -46,6 +46,9 @@ const BED_ALIASES = new Map([
   ['double', 'double'],
   ['queen', 'queen'],
   ['king', 'king'],
+  ['king bed', 'king'],
+  ['one queen bed', 'queen'],
+  ['two double beds', 'double'],
 ]);
 const LEGACY_ROOT = new Set([
   'propertyCode', 'arrivalDate', 'departureDate', 'rooms', 'roomCode', 'rateCode',
@@ -60,6 +63,8 @@ const ROOM_BASE = new Set(['quantity', 'adults', 'children', 'childAges', 'id'])
 const CONSTRAINT_FIELDS = new Set(['roomCodes', 'rateCodes', 'bedTypes', 'mealPlanBases', 'features']);
 const NATIVE_CODE = /^[A-Z0-9_-]+$/;
 const SALES_STRATEGIES = new Set(['Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Negoticated Contracted', 'Group & Convention', 'Government', 'Comp / House Use', 'Airline Crews', 'Domestic Leisure', 'Other']);
+export const nativeQuoteSalesStrategy = (value, contextual) => contextual ? undefined :
+  value && SALES_STRATEGIES.has(value) && !/contracted|preset/i.test(value) ? value : 'BAR';
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_CURRENCY = /^[A-Z]{3}$/;
 const MONEY = /^(\d+)\.(\d{2})$/;

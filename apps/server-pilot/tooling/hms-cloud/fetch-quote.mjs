@@ -1416,3 +1416,4 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exitCode = ['quote', 'no_match', 'unavailable'].includes(result.outcome) && result.audit.status === 'complete' ? 0 : 2;
   }).catch(() => { process.stderr.write('CLOUD_QUOTE_CAPTURE_FAILED\n'); process.exitCode = 2; });
 }
+export { nativeQuoteSalesStrategy } from './quote-contract.mjs';

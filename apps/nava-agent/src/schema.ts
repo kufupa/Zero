@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { quoteInput as nativeGroupedQuote } from '../tools/quote/schema.js';
+import { isEmptyQuoteGroup, quoteInput as nativeGroupedQuote, type QuoteInput } from '../tools/quote/schema.js';
 
 const id = z.string();
 const json: z.ZodType<null | boolean | number | string | unknown[] | Record<string, unknown>> = z.lazy(() => z.union([z.null(), z.boolean(), z.number(), z.string(), z.array(json), z.record(json)]));
@@ -43,12 +43,35 @@ export const goInput = operationKey.extend({prepared_job_id:id.optional()}).stri
 export const requoteInput = operationKey.extend({quote_id:z.string().min(1)}).strict();
 const calendarDate = z.string().date();
 const nativeGroup = nativeGroupedQuote.shape.groups.element;
+const board = z.string().nullish().catch(null);
+const partyField = z.string().trim().min(1).nullish().catch(null);
 export const groupedQuoteRequest = nativeGroupedQuote.strip().extend({
-  groups: z.array(nativeGroup.strip().extend({rooms:z.array(nativeGroup.shape.rooms.element.strip()).min(1)})).min(1),
+  board, organization_id:partyField, organization_name:partyField, agency_id:partyField, agency_name:partyField,
+  party_name:nativeGroupedQuote.shape.party_name.nullish().catch(null),
+  groups:z.preprocess(value=>Array.isArray(value) ? value.filter(group=>!isEmptyQuoteGroup(group)) : value,
+    z.array(nativeGroup.strip().extend({board,rooms:z.array(nativeGroup.shape.rooms.element.strip().extend({board})).min(1)})).min(1)),
 })
   .refine(quote=>new Set(quote.groups.map(group=>group.group_id)).size===quote.groups.length,{message:'group ids must be unique'})
   .refine(({groups})=>groups.every(group=>calendarDate.safeParse(group.arrival_date).success
-    && calendarDate.safeParse(group.departure_date).success && group.departure_date>group.arrival_date),{message:'departure must follow arrival'});
+    && calendarDate.safeParse(group.departure_date).success && group.departure_date>group.arrival_date),{message:'departure must follow arrival'})
+  .transform(({board,organization_id,organization_name,agency_id,agency_name,party_name,groups,...quote}):QuoteInput=>({
+    ...quote,...(party_name ? {party_name} : {}),
+    ...(organization_id && organization_name || agency_id && agency_name ? {rate_context:{
+      ...(organization_id && organization_name ? {organization:{nativeId:organization_id,name:organization_name}} : {}),
+      ...(agency_id && agency_name ? {bookingAgency:{nativeId:agency_id,name:agency_name}} : {}),
+    }} : {}),
+    groups:groups.map(({board:groupBoard,rooms,...group})=>({...group,rooms:rooms.map(({board:roomBoard,...room})=>{
+      const meal=roomBoard ?? groupBoard ?? board;
+      const bases=room.required?.mealPlanBases;
+      const roomOnly=meal && /^(?:ro|room only|room_only)$/i.test(meal);
+      const breakfast=!meal || /\b(?:bb|dbb|breakfast|dinner)\b/i.test(meal) || /^b&b$/i.test(meal);
+      const dinner=(basis:string)=>/^(?:dbb|dinner_bed_breakfast|dinner[, ]+bed)/i.test(basis);
+      return {...room,required:{...room.required,
+        ...(roomOnly ? {mealPlanBases:['room_only']} : bases?.length ? {mealPlanBases:bases.map(basis=>dinner(basis)?'breakfast':basis)} :
+          breakfast ? {mealPlanBases:['breakfast']} : {}),
+      }};
+    })})),
+  }));
 export type Workflow = ProposalDraft['workflow'];
 const S={type:'string'};
 const J={};

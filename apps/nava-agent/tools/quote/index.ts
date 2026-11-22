@@ -20,7 +20,7 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
   const configuredCap=process.env.HMS_CREDENTIAL_SESSION_CAP;
   if(configuredCap!==undefined && !staffSlotCount(configuredCap)) return fail('HMS_SESSION_CAP_INVALID','Native shared read cap must be an integer from 1 to 12.');
   const parsed=quoteInput.safeParse(input);
-  if(!parsed.success) return fail('INVALID_INPUT','Invalid quote request.');
+  if(!parsed.success) return fail('INVALID_INPUT',parsed.error.issues.map(issue=>`${issue.path.join('.')}: ${issue.message}`).join('; '));
   const request=parsed.data, seen=new Set<string>();
   for(const group of request.groups) {
     if(seen.has(group.group_id)) return fail('DUPLICATE_GROUP_ID','Group IDs must be unique within a quote.');
@@ -51,10 +51,12 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
     }
     const searchIndex=searches.length;
     try {
-      const {fetchQuote}=await import(new URL('../../../server-pilot/tooling/hms-cloud/fetch-quote.mjs', import.meta.url).href);
+      const {fetchQuote,nativeQuoteSalesStrategy}=await import(new URL('../../../server-pilot/tooling/hms-cloud/fetch-quote.mjs', import.meta.url).href);
+      const salesStrategy=nativeQuoteSalesStrategy(request.search?.sales_strategy,request.rate_context);
       const native=await fetchQuote({propertyCode:request.property_code,signal:context.signal,credentialLease:context.credentialLease,request:{schemaVersion:2,propertyCode:request.property_code,arrivalDate:batch.arrival_date,departureDate:batch.departure_date,
         rooms:batch.rooms.map((room,index)=>({id:batch.identities[index].native_id,quantity:room.quantity,adults:room.adults,children:room.children,childAges:room.child_ages,...(room.required?{required:room.required}:{}),...(room.preferred?{preferred:room.preferred}:{})})),
-        search:{includeRestricted:request.search?.include_restricted ?? false,includeAlternatives:request.search?.include_alternatives ?? true,...(request.search?.sales_strategy?{salesStrategy:request.search.sales_strategy}:{})},
+        ...(request.rate_context?{rateContext:request.rate_context}:{}),
+        search:{includeRestricted:request.search?.include_restricted ?? false,includeAlternatives:request.search?.include_alternatives ?? true,...(salesStrategy?{salesStrategy}:{})},
         ...(request.details?{details:request.details}:{}),...(request.max_options_per_group?{maxOptionsPerGroup:request.max_options_per_group}:{})}});
       searches.push({property_code:request.property_code,arrival_date:batch.arrival_date,departure_date:batch.departure_date,identities:batch.identities,native_result:native});
       const nativeGroups=array(native.groups);
@@ -82,11 +84,7 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
       if(context.signal?.aborted) {failure={code:'ABORTED',message:'Quote was cancelled; retained captures are incomplete.',retryable:false,outcome:'known'};break;}
       if(!complete || displayIdentities.some(identity=>!identity) || batch.identities.some(identity=>groups[identity.group_id].status!=='complete')) {
         failure ??= {code:'NATIVE_INCOMPLETE',message:'Native quote incomplete; inspect retained captures and group status.',retryable:native.outcome==='execution_failure',outcome:'known'};
-        break;
-      }
-      if(partialOptions && batch!==batches[batches.length-1]) {
-        failure ??= {code:'NATIVE_INCOMPLETE',message:'Native quote returned room options; later date groups were not checked.',retryable:false,outcome:'known'};
-        break;
+        if(native.outcome==='execution_failure') break;
       }
     } catch {
       for(const identity of batch.identities) groups[identity.group_id].status=context.signal?.aborted?'aborted':'search_failed';
