@@ -88,10 +88,10 @@ export async function searchReservations(input: unknown, context: ToolContext): 
   if (!obj(input) || !keys(input, ['property_code', 'criteria']) || !str(input.property_code) || !obj(input.criteria) ||
       !keys(input.criteria, ['reservation_id', 'guest_name', 'guest_first_name', 'guest_name_is_surname', 'arrival_date', 'departure_date', 'near_arrival'])) return fail('INVALID_INPUT', 'Property and valid search criteria are required.');
   const { reservation_id: reference, guest_name: name, guest_first_name: first, guest_name_is_surname: confirmedSurname, arrival_date: arrival, departure_date: departure, near_arrival: near } = input.criteria;
-  const id = str(reference) ? normalizeReservationReference(reference) : undefined;
-  if ((reference !== undefined && !str(reference)) || (name !== undefined && !str(name)) ||
+  const id = !near && str(reference) ? normalizeReservationReference(reference) : undefined;
+  if ((!near && reference !== undefined && !str(reference)) || (name !== undefined && !str(name)) ||
       (first !== undefined && !str(first)) ||
-      (near !== undefined && (typeof near !== 'boolean' || (near && (!date(arrival) || !name || id)))) ||
+      (near !== undefined && (typeof near !== 'boolean' || (near && (!date(arrival) || !name)))) ||
       (confirmedSurname !== undefined && (typeof confirmedSurname !== 'boolean' || !name)) ||
       (arrival !== undefined && !date(arrival)) || (departure !== undefined && !date(departure))) return fail('INVALID_INPUT', 'Invalid search criterion.');
   const property = input.property_code;

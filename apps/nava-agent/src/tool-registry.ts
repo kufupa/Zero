@@ -9,7 +9,7 @@ import { normalizeProposalFields } from './proposal-fields.js';
 import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
-import { lookupStay, lookupExactStay, targetLookup, targetSelection } from './stay-target.js';
+import { lookupStay, lookupExactStay, lookupFilingStay, targetLookup, targetSelection } from './stay-target.js';
 import { mailPrompt } from './mail-prompt.js';
 import { normalizePartyName } from './party-matching.js';
 
@@ -338,12 +338,18 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           const references=new Set(evidence.match(/\b\d{6,10}-\d{1,10}\b/g) ?? []);
           const exact=lookup.data?.kind==='confirmation' ? lookup.data : undefined;
           if(nativeAdmission && booking && job.bookings.length===1 && job.actions[0]?.booking_ids[0]===booking.id &&
-            job.disposition!=='needs_info' && fileId && exact && references.size===1 && references.has(exact.confirmation) &&
+            job.disposition!=='needs_info' && fileId &&
             (!booking.property_code || booking.property_code===propertyCode)) {
             try {
-              const found=await nativeAdmission.withRead(propertyCode,signal,credentialLease=>
-                lookupExactStay(exact,booking.id,{propertyCode,credentialLease,signal:credentialLease.signal}));
-              selection=z.object({selection:targetSelection}).safeParse(found.data).data?.selection;
+              selection=await nativeAdmission.withRead(propertyCode,signal,async credentialLease=>{
+                const context={sessionId:session.id,propertyCode,credentialLease,signal:credentialLease.signal};
+                if(exact && references.size===1 && references.has(exact.confirmation)) {
+                  const found=await lookupExactStay(exact,booking.id,context);
+                  return z.object({selection:targetSelection}).safeParse(found.data).data?.selection;
+                }
+                return lookupFilingStay(booking,evidence,context,(criteria,found)=>
+                  emit(session.id,'filing_target_lookup',{booking_id:booking.id,criteria,result:found}));
+              });
             } catch { signal?.throwIfAborted(); }
           }
           if(selection) job={...job,disposition:'propose',reason:null,bookings:[{...booking,fields:{...booking.fields,confirmation_number:selection.confirmation},property_code:selection.property_code,

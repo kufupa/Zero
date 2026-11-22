@@ -2,7 +2,7 @@ import { normalizeReservationReference } from './reservation-reference.js';
 import { z } from 'zod';
 import { isDeepStrictEqual } from 'node:util';
 import { selectedStay } from '../tools/amend/index.js';
-import { stageRead } from '../tools/triage/index.js';
+import { searchReservations, stageRead } from '../tools/triage/index.js';
 import type { ToolResult, StaffNativeContext } from './tool-registry.js';
 import type { ProposalDraft } from './schema.js';
 
@@ -76,4 +76,46 @@ export async function lookupExactStay(lookup:Extract<z.infer<typeof targetLookup
       adults:stay.adults,room_type:stay.roomType,rate_plan:stay.ratePlan,native_stay_id:stay.reservationStayId,
       guest_id:stay.guestId,reservation_id:stay.reservationId,record_id:stay.recordId}});
   return {ok:true,data:{kind:'confirmation',selection,status:stay.status},error:null};
+}
+
+
+const filingIdentity=z.object({first:z.string().trim().min(1),last:z.string().trim().min(1),arrival:z.string().date(),departure:z.string().date()});
+const filingSearch=z.object({outcome:z.literal('candidates'),candidates:z.array(z.object({
+  reservation_id:confirmation,first_name:z.string(),last_name:z.string(),arrival_date:z.string().date(),departure_date:z.string().date(),
+}))});
+const nameWords=(v:string)=>v.normalize('NFKC').toLowerCase().match(/[\p{L}\p{M}]+/gu) ?? [];
+const nameKey=(v:string)=>nameWords(v).filter(word=>!['mr','mrs','ms','miss','dr'].includes(word)).sort().join(' ');
+
+export async function lookupFilingStay(booking:ProposalDraft['bookings'][number], evidence:string,
+  context:Pick<StaffNativeContext,'sessionId'|'propertyCode'|'credentialLease'|'signal'>,
+  trace:(criteria:unknown,result:ToolResult)=>Promise<void>) {
+  const f=booking.fields;
+  const identity=filingIdentity.safeParse({first:f.first_name??f.guest_first_name,last:f.last_name??f.guest_last_name,
+    arrival:f.arrival_date,departure:f.departure_date});
+  if(!identity.success) return;
+  const {first,last,arrival,departure}=identity.data;
+  const wanted=nameKey(first+' '+last);
+  const source=new Set(nameWords(evidence));
+  if(!wanted || !wanted.split(' ').every(word=>source.has(word))) return;
+  const refs=[...evidence.matchAll(/(?:supplier confirmation|hotel ref\.?)\s*:?\s*(\d{6,10}(?:-\d+)?)(?!\d)/gi)]
+    .map(match=>normalizeReservationReference(match[1]));
+  const candidates=[];
+  for(const surname of new Set([last,first])) {
+    const criteria={guest_name:surname,arrival_date:arrival,near_arrival:true};
+    const result=await searchReservations({property_code:context.propertyCode,criteria},{...context,mode:'live'});
+    await trace(criteria,result);
+    const parsed=filingSearch.safeParse(result.data);
+    if(!parsed.success) continue;
+    candidates.push(...parsed.data.candidates.filter(stay=>nameKey(stay.first_name+' '+stay.last_name)===wanted &&
+      stay.departure_date===departure && (stay.arrival_date===arrival || (stay.arrival_date<arrival &&
+        refs.includes(stay.reservation_id)))));
+    if(candidates.length) break;
+  }
+  if(candidates.length!==1) return;
+  const [candidate]=candidates;
+  const read=await lookupExactStay({kind:'confirmation',confirmation:candidate.reservation_id,arrival_date:candidate.arrival_date},booking.id,context);
+  await trace({reservation_id:candidate.reservation_id,arrival_date:candidate.arrival_date},read);
+  const stay=z.object({selection:targetSelection}).safeParse(read.data).data?.selection;
+  if(stay?.current_state.departure_date===departure && stay.current_state.arrival_date===candidate.arrival_date &&
+    nameKey(stay.current_state.first_name+' '+stay.current_state.last_name)===wanted) return stay;
 }
