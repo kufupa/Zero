@@ -1,5 +1,6 @@
 import {execFileSync} from 'node:child_process';
 import {proposalDraft} from '../../src/schema.js';
+import {hrcenCode} from '../../src/proposal-fields.js';
 import {sameQuoteCriteria, stagePublishedDraft} from '../../src/tool-registry.js';
 import {selectedCutoff} from '../twin/world.js';
 import type {CaseCard, GoldField, Workflow} from '../types.js';
@@ -245,8 +246,11 @@ function strictMatch(expected: unknown, actual: unknown): boolean {
 const nativeCode = (value: unknown) => dig(value, '/code') ?? dig(value, '/nativeId') ?? dig(value, '/native_id');
 const label = (value: unknown) => normalize(nativeCode(value) ?? dig(value, '/name') ?? dig(value, '/value') ?? value);
 
+const proseCode = (kind: 'rate_plan' | 'room_type', expected: unknown, actual: unknown, board: unknown) =>
+  typeof expected === 'string' && typeof actual === 'string' && hrcenCode(kind, expected, board) === actual.trim().toUpperCase();
+
 function roomMatch(expected: unknown, actual: unknown): boolean {
-  if (strictMatch(expected, actual)) return true;
+  if (strictMatch(expected, actual) || proseCode('room_type', expected, actual, null)) return true;
   const want = label(expected);
   const got = label(actual);
   if (want === got) return want !== '';
@@ -276,7 +280,7 @@ function boardLabel(value: unknown): 'DBB' | 'BB' | 'RO' | null {
 }
 
 function rateMatch(expected: unknown, actual: unknown, board: unknown): boolean {
-  if (strictMatch(expected, actual)) return true;
+  if (strictMatch(expected, actual) || proseCode('rate_plan', expected, actual, board)) return true;
   const want = label(expected);
   const got = label(actual);
   if (!want || !got) return false;
@@ -284,7 +288,8 @@ function rateMatch(expected: unknown, actual: unknown, board: unknown): boolean 
   if (nativeCode(expected) != null) return false;
   const family = /\b(?:govt?|government)\b/.test(want) ? /^(?:ngov[\da-z]*|gov(?:t|ernment)\b)/
     : /\bcorporate\b/.test(want) ? /^(?:ncor[\da-z]*|corporate\b)/
-    : /\b(?:comp|complimentary)\b/.test(want) ? /^(?:cmp[\da-z]*|comp(?:limentary)?\b)/
+    : /\b(?:comp|complimentary)/.test(want) ? /^(?:cmp[\da-z]*|comp(?:limentary)?\b)/
+    : /\b(?:ed|edu|educational?)\b/.test(want) ? /^edu\b/
     : /\b(?:bar|best available|rack)\b/.test(want) ? /^(?:bar[\da-z]*|best available\b)/ : null;
   const meal = boardLabel(expected);
   return family !== null && family.test(got) && (!meal || meal === board);
