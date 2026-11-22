@@ -174,6 +174,10 @@ export function withAmendSupportedFields(draft: ProposalDraft): ProposalDraft {
       }
       delete fields[key];
     }
+    for (const key of ['rate_plan', 'room_type'] as const) {
+      const code = booking.property_code === 'HRCEN' ? hrcenCode(key, fields[key], fields.board) : null;
+      if (code) fields[key] = code;
+    }
     return {...booking, fields};
   });
   const field_specs = draft.field_specs.filter(spec => {
@@ -232,6 +236,27 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
   return {...draft,actions,field_specs:fieldSpecs};
 }
 
+/** HRCEN requested rate/room wording → native code Prepare accepts. Codes pass through; unknown wording stays for staff. */
+export function hrcenCode(kind:'rate_plan'|'room_type',value:unknown,board:unknown):string|null {
+  if(typeof value!=='string' || !value.trim() || /^[A-Z0-9]{1,12}$/.test(value.trim())) return null;
+  const text=value.toLowerCase(), meal=String(board ?? '').toUpperCase();
+  const plan=/\bdbb\b|dinner/.test(text) || meal==='DBB' ? 'DBB' : /\bro\b|room only/.test(text) || meal==='RO' ? 'RO' : 'BB';
+  if(kind==='rate_plan') {
+    if(/\bgov/.test(text)) return {BB:'NGOVB',DBB:'NGOVDB',RO:'NGOVRO'}[plan];
+    if(/\bcomp\b|complimentary/.test(text)) return {BB:'CMPBB',DBB:'CMPDBB',RO:'CMPRO'}[plan];
+    if(/\bbar\b|best available|rack/.test(text)) return plan==='RO' ? 'BARRO' : 'BAR';
+    if(/corporate|negotiated|contract/.test(text)) return plan==='RO' ? 'NCORRO' : 'NCOR1B';
+    return null;
+  }
+  const bed=/twin/.test(text) ? 'TWN' : /king/.test(text) ? 'KNG' : 'QN';
+  if(/suite/.test(text)) return 'SUITE';
+  if(/lux/.test(text)) return 'LUXKNG';
+  if(/exec/.test(text)) return 'EXKNG';
+  if(/deluxe|\bdlx\b/.test(text)) return `DLX${bed}`;
+  if(/standard|single|double|queen|twin|king|\bstd\b/.test(text)) return {TWN:'STWN',KNG:'SKNG',QN:'STQN'}[bed];
+  return null;
+}
+
 export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
   if(draft.workflow==='create') {
     draft=withCreateNativeFields(createOccupancyFields(draft));
@@ -239,6 +264,10 @@ export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; dr
     const bookings=draft.bookings.map((booking,index)=>{
       if(booking.property_code!=='HRCEN') return booking;
       const fields={...booking.fields};
+      for(const key of ['rate_plan','room_type'] as const) {
+        const code=hrcenCode(key,fields[key],fields.board);
+        if(code) fields[key]=code;
+      }
       const rate=String(fields.rate_plan ?? '');
       const track=rate.startsWith('NGOV')?'GOV':rate.startsWith('NCOR')?'COR':
         !fields.agency_id && !fields.agency_name && !fields.organization_id && !fields.organization_name && ['BAR','BARRO'].includes(rate)?'BAR':null;
