@@ -136,7 +136,8 @@ export class TwinWorld {
     this.cutoff=selectedCutoff(caseCard);
     if (!Number.isFinite(this.cutoff)) throw new Error('CASE_AS_OF_MISSING');
     this.profiles=base.profiles.filter(profile => inProperty(profile) && beforeCutoff(profile.observedAt ?? profile.observed_at, this.cutoff));
-    this.catalog=inProperty(base.catalog) && beforeCutoff(base.catalog.capturedAt ?? base.catalog.captured_at, this.cutoff) ? base.catalog : {};
+    // Code tables and party directories are property configuration that production always reads live.
+    this.catalog=inProperty(base.catalog) ? base.catalog : {};
     loadQuotes(caseCard.quotes,this.quotes,this.cutoff);
     loadQuotes(object(caseCard.world).quotes,this.quotes,this.cutoff);
     loadQuotes(caseCard.recorded_prices,this.quotes,this.cutoff);

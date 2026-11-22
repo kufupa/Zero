@@ -23,7 +23,7 @@ function isRoutinePreStay(body: string): boolean {
 const otaChannelDomains = [
   'synxis.com', 'expediapartnercentral.com', 'expedia.com', 'webbeds.com', 'hotelbeds.com',
   'booking.com', 'get-e.com', 'hotels.com', 'agoda.com', 'trip.com', 'traveloka.com',
-  'airbnb.com', 'tiket.com', 'travelit.co.za', 'travelit.com', 'tbo.com', 'tbohelp.zendesk.com',
+  'airbnb.com', 'tiket.com', 'travelit.co.za', 'travelit.com', 'tbohelp.zendesk.com',
 ];
 const systemDomains = [
   'ratetiger.com', 'erevmax.com', 'erevmax.co.uk', 'erevmax.net', 'hospitality.cloud',
@@ -37,6 +37,8 @@ export function mailPrefilterRule(message: Email): string | null {
   if (!host) return null;
   const from = (domain: string) => host === domain || host.endsWith('.' + domain);
   const subject = message.subject.trim();
+  // TBO ops staff (e.g. ops.southafrica@) send real agent requests; only TBO system senders are channel noise.
+  if (from('tbo.com') && /^(?:no-?reply|do-?not-?reply|notifications?|alerts?|system|mailer|bookings?)\b/i.test(email)) return 'ota_channel:tbo.com';
   const ota = otaChannelDomains.find(from);
   if (ota) return `ota_channel:${ota}`;
   const sys = systemDomains.find(from);

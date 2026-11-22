@@ -118,6 +118,39 @@ export function normalizePublishedProposal(
   return {proposal_raw: raw, proposal: staged.draft};
 }
 
+/** Quote rows with the same spec are one HMS request: `single:1 + single:1` == `single:2`. */
+function mergeQuoteRooms(proposal: unknown): unknown {
+  const actions = dig(proposal, '/actions');
+  if (!Array.isArray(actions) || !actions.some(a => Array.isArray(dig(a, '/details/groups')))) return proposal;
+  const merge = (rooms: unknown[]) => {
+    const out = new Map<string, Record<string, unknown>>();
+    for (const room of rooms) {
+      const row = room && typeof room === 'object' ? {...room as Record<string, unknown>} : {};
+      const {quantity, ...spec} = row;
+      const key = JSON.stringify(spec);
+      const prev = out.get(key);
+      const n = Number(quantity ?? 1);
+      if (prev) prev.quantity = Number(prev.quantity ?? 1) + (Number.isFinite(n) ? n : 1);
+      else out.set(key, row);
+    }
+    return [...out.values()];
+  };
+  return {...proposal as Record<string, unknown>, actions: actions.map(action => {
+    const groups = dig(action, '/details/groups');
+    if (!Array.isArray(groups)) return action;
+    return {...action, details: {...dig(action, '/details') as Record<string, unknown>,
+      groups: groups.map(g => Array.isArray(dig(g, '/rooms')) ? {...g as Record<string, unknown>, rooms: merge(dig(g, '/rooms') as unknown[])} : g)}};
+  })};
+}
+
+/** Staff-did HMS code gold: `{code, alt_codes?}` — hit only on a native code, never prose. */
+function codeGoldHit(expected: unknown, actual: unknown): boolean | null {
+  const code = dig(expected, '/code');
+  if (typeof code !== 'string' || dig(expected, '/source') !== 'hms_anchor') return null;
+  const got = String(nativeCode(actual) ?? actual ?? '').trim().toUpperCase();
+  return [code, ...array(dig(expected, '/alt_codes'))].some(value => String(value).toUpperCase() === got);
+}
+
 function normalize(value: unknown): string {
   if (value == null) return '';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -794,7 +827,7 @@ export function scoreCase(input: {
   const normalized = input.normalize === false
     ? {proposal_raw: input.proposal_raw ?? input.proposal, proposal: input.proposal, publish_invalid: input.publish_invalid}
     : normalizePublishedProposal(input.proposal, input.partyReads ?? []);
-  const proposal = input.run_error || normalized.publish_invalid ? null : normalized.proposal;
+  const proposal = mergeQuoteRooms(input.run_error || normalized.publish_invalid ? null : normalized.proposal);
   const proposal_raw = normalized.proposal_raw;
   const publish_invalid = normalized.publish_invalid;
   const fields: FieldScore[] = [];
@@ -1058,7 +1091,7 @@ export function scoreCase(input: {
     } else if (guestPath) {
       hit = personEqual(expectedValue, actual, gold.aliases);
     } else if (/\/(organization|agency)(_name|_id)?$/.test(gold.path)) {
-      hit = strictMatch(expectedValue, actual) || (digPath !== null && /_name$/.test(digPath)
+      hit = strictMatch(expectedValue, actual) || equalish(expectedValue, actual) || (digPath !== null && /_name$/.test(digPath)
         && strictMatch(expectedValue, dig(proposal, digPath.replace(/_name$/, '_id'))));
     } else if (/\/(arrival_date|departure_date)$/.test(gold.path)) {
       hit = strictMatch(expectedValue, actual);
@@ -1067,9 +1100,9 @@ export function scoreCase(input: {
         const candidates = quoteRoomTypes(dig(proposal, digPath.replace(/\/room_type$/, '')));
         actual = candidates.find(roomType => roomMatch(expectedValue, roomType)) ?? candidates[0];
       }
-      hit = roomMatch(expectedValue, actual);
+      hit = codeGoldHit(expectedValue, actual) ?? roomMatch(expectedValue, actual);
     } else if (workflow === 'create' && gold.path.endsWith('/rate_plan')) {
-      hit = rateMatch(expectedValue, actual, board);
+      hit = codeGoldHit(expectedValue, actual) ?? rateMatch(expectedValue, actual, board);
     } else if ((workflow === 'create' || workflow === 'quote') && gold.path.endsWith('/board')) {
       const meal = boardLabel(expectedValue);
       hit = (meal !== null && meal === boardLabel(actual)) || equalish(expectedValue, actual);

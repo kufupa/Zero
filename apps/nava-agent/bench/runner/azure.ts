@@ -5,7 +5,7 @@ export function azureReplayModel(model: string, effort: string, options: {fetche
   const base = (process.env.AZURE_OPENAI_BASE_URL ?? 'https://nava.openai.azure.com/openai/v1').replace(/\/$/, '');
   const key = process.env.AZURE_FOUNDRY_API_KEY ?? process.env.AZURE_OPENAI_API_KEY;
   if (!key) throw new Error('AZURE_FOUNDRY_API_KEY_REQUIRED');
-  if (!['low', 'medium', 'high', 'max'].includes(effort)) throw new Error('INVALID_REASONING_EFFORT');
+  if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) throw new Error('INVALID_REASONING_EFFORT');
   const fetcher = options.fetcher ?? fetch;
   const wait = options.wait ?? sleep;
   return async request => {
