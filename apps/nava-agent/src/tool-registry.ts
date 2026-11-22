@@ -353,8 +353,17 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
               });
             } catch { signal?.throwIfAborted(); }
           }
-          if(selection) job={...job,disposition:'propose',reason:null,bookings:[{...booking,fields:{...booking.fields,confirmation_number:selection.confirmation},property_code:selection.property_code,
-            reservation_id:selection.confirmation,current_state:selection.current_state}]};
+          if(selection) {
+            const stay=selection.current_state, fields={...booking.fields,confirmation_number:selection.confirmation};
+            if(!exact || references.size!==1 || !references.has(exact.confirmation)) {
+              if(fields.arrival_date!==stay.arrival_date) job={...job,warnings:[...job.warnings,
+                `Voucher arrival ${fields.arrival_date}; HMS arrival ${stay.arrival_date}. Check coverage on the PDF.`]};
+              for(const [key,value] of Object.entries({...stay,guest_first_name:stay.first_name,guest_last_name:stay.last_name}))
+                if(Object.hasOwn(fields,key) && ['first_name','last_name','guest_first_name','guest_last_name','arrival_date','departure_date'].includes(key)) Object.assign(fields,{[key]:value});
+            }
+            job={...job,disposition:'propose',reason:null,bookings:[{...booking,fields,property_code:selection.property_code,
+              reservation_id:selection.confirmation,current_state:stay}]};
+          }
         }
         jobs.push({draft:job,selection});
       }
