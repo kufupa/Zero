@@ -45,6 +45,54 @@ function jsonl<T>(path:string):T[] {
   return readFileSync(path,'utf8').split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line) as T);
 }
 
+function optionalJsonl<T>(path: string): T[] {
+  try { return jsonl<T>(path); }
+  catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+export const confirmationId = (value: unknown) => {
+  const raw = String(value ?? '').trim();
+  return /^\d{6,10}(?:-\d+)?$/.test(raw) ? (raw.includes('-') ? raw : `${raw}-1`) : null;
+};
+
+export function indexMentions(mail: Record<string, unknown>, index: Map<string, number>) {
+  const at = Date.parse(String(mail.received_at ?? mail.timestamp ?? ''));
+  if (!Number.isFinite(at)) return;
+  for (const value of `${mail.subject ?? ''} ${mail.body_text ?? ''}`.matchAll(/(?<![\w-])\d{6,10}(?:-\d+)?(?![\w-])/g)) {
+    const id = confirmationId(value[0])!;
+    if (at < (index.get(id) ?? Infinity)) index.set(id, at);
+  }
+}
+
+const letterCache = new Map<string, {letters: TwinPdf[]; mentions: Map<string, number>}>();
+function loadLetterEvidence() {
+  const path = process.env.NAVA_BENCH_LETTERS ?? '/home/orca/.local/share/zero/runs/overnight-20261122/data/letters.jsonl';
+  const cached = letterCache.get(path);
+  if (cached) return cached;
+  const letters = optionalJsonl<Record<string, unknown>>(path).map(row => ({
+    sent_at: String(row.sent_at ?? ''),
+    confirmation: row.confirmation_no ?? row.filename_confirmation_no,
+    thread_id: row.source_thread_id,
+    fields: row.parse_ok === true ? {
+      guest_name: row.guest_name, arrival_date: row.arrival, departure_date: row.departure,
+      adults: row.adults, children: row.children, room_type_text: row.room_type_text,
+      company_text: row.company, agency_text: row.agency,
+    } : {},
+  }));
+  const mentions = new Map<string, number>();
+  for (const row of optionalJsonl<Record<string, unknown>>(join(dirname(path), 'threads.jsonl'))) {
+    if (Array.isArray(row.confirmations) && row.confirmations.length) {
+      for (const mail of rows(row.messages)) indexMentions(mail, mentions);
+    }
+  }
+  const evidence = {letters, mentions};
+  letterCache.set(path, evidence);
+  return evidence;
+}
+
 function optionalJson(path:string):Record<string,unknown> | null {
   try {
     return object(JSON.parse(readFileSync(path,'utf8')));
@@ -115,14 +163,10 @@ export function anchorPdfs(anchor: TwinAnchor): TwinPdf[] {
   return [...(anchor.pdf_versions ?? []), ...(anchor.pdfs ?? [])];
 }
 
-export function captureTime(anchor: TwinAnchor): unknown {
-  return anchor.captured_at ?? anchor.hms_capture_later ?? anchor.hms_available_at;
-}
-
-export function verifiedHmsFields(anchor: TwinAnchor, cutoff: number): Record<string, unknown> | null {
-  if (!beforeCutoff(captureTime(anchor), cutoff)) return null;
-  const fields = object(anchor.hms_fields);
-  return Object.keys(fields).length ? fields : null;
+export function anchorCaptures(anchor: TwinAnchor) {
+  return [...rows(anchor.captures), {...anchor, captured_at: anchor.captured_at ?? anchor.hms_capture_later}]
+    .filter(row => Object.keys(object(row.hms_fields)).length)
+    .sort((a, b) => Date.parse(String(b.captured_at)) - Date.parse(String(a.captured_at)));
 }
 
 export type ThreadSenders = ReadonlyMap<string, {host: string; at: number}>;
@@ -133,6 +177,7 @@ export class TwinWorld {
   readonly catalog:Record<string,unknown>;
   readonly quotes=new Map<string,{at: number; response: TwinEnvelope}>();
   readonly cutoff: number;
+  readonly letterEvidence: ReturnType<typeof loadLetterEvidence>;
   readonly coverage={quoteMisses:0};
   readonly propertyCode: string;
 
@@ -143,22 +188,17 @@ export class TwinWorld {
     const inProperty = (row: Record<string,unknown>) =>
       String(row.property_code ?? row.propertyCode ?? 'HRCEN').toUpperCase() === this.propertyCode;
     this.anchors = base.anchors.filter(inProperty);
+    this.letterEvidence = this.propertyCode === 'HRCEN' ? loadLetterEvidence() : {letters: [], mentions: new Map()};
     this.cutoff=selectedCutoff(caseCard);
     if (!Number.isFinite(this.cutoff)) throw new Error('CASE_AS_OF_MISSING');
     this.profiles=base.profiles.filter(profile => inProperty(profile) && beforeCutoff(profile.observedAt ?? profile.observed_at, this.cutoff));
-    // Room and rate codes are treated as static; party search applies its own cutoff.
+    // Room, rate, and party directories are static reference data.
     this.catalog=inProperty(base.catalog) ? base.catalog : {};
     loadQuotes(caseCard.quotes,this.quotes,this.cutoff);
     loadQuotes(object(caseCard.world).quotes,this.quotes,this.cutoff);
     loadQuotes(caseCard.recorded_prices,this.quotes,this.cutoff);
   }
 
-  partyStates(anchor: TwinAnchor) {
-    return [...rows(anchor.captures), {...anchor, captured_at: anchor.captured_at ?? anchor.hms_capture_later}]
-      .filter(row => beforeCutoff(row.captured_at, this.cutoff))
-      .sort((a, b) => Date.parse(String(b.captured_at)) - Date.parse(String(a.captured_at)))
-      .map(row => object(row.hms_fields)).filter(state => Object.keys(state).length);
-  }
 }
 
 export function loadTwinWorld(caseCard:CaseCard,root?:string, property?:string, threadSenders?:ThreadSenders):TwinWorld {

@@ -1,5 +1,5 @@
 import type {CaseCard} from '../types.js';
-import {anchorPdfs, beforeCutoff, captureTime, rows, verifiedHmsFields, type TwinAnchor, type TwinPdf, type TwinWorld} from './world.js';
+import {anchorCaptures, anchorPdfs, beforeCutoff, confirmationId as id, indexMentions, rows, type TwinAnchor, type TwinPdf, type TwinWorld} from './world.js';
 
 const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -65,30 +65,14 @@ type Observation = {
   confirmation: string;
   stay: Record<string, unknown>;
   documents: Record<string, unknown>[] | null;
-  basis: 'pre_as_of_hms_capture' | 'last_pre_as_of_pdf';
+  basis: 'pre_as_of_hms_capture' | 'last_pre_as_of_pdf' | 'pre_as_of_identity';
 };
 
-const id = (value: unknown) => {
-  const raw = String(value ?? '').trim();
-  return /^\d{6,10}(?:-\d+)?$/.test(raw) ? (raw.includes('-') ? raw : `${raw}-1`) : null;
-};
-
-/** The owner of an exact-cutoff PDF is proved by its attachment identity, never filename alone. */
-function attachedToSelected(pdf: TwinPdf, selected: Record<string, unknown>, cutoff: number): boolean {
-  return [...rows(selected.pdf_attachments_text), ...rows(selected.attachments)].some(row => {
-    if (row.sent_at != null && (parseTime(row.sent_at) ?? Infinity) > cutoff) return false;
-    if (selected.source_row_id != null && row.source_row_id != null && selected.source_row_id !== row.source_row_id) return false;
-    const pdfId = pdf.pdf_attachment_id ?? pdf.attachment_id ?? pdf.id;
-    return (pdf.sha256 && pdf.sha256 === row.sha256)
-      || (pdfId != null && pdfId === (row.pdf_attachment_id ?? row.attachment_id ?? row.id));
-  });
-}
-
-function pdfObservations(pdfs: TwinPdf[], cutoff: number, selected: Record<string, unknown>, scopedId: string | null) {
+function pdfObservations(pdfs: TwinPdf[], cutoff: number, scopedId: string | null) {
   const out: Observation[] = [];
   for (const pdf of pdfs) {
     const at = parseTime(pdf.sent_at);
-    if (at === null || at > cutoff || (at === cutoff && !attachedToSelected(pdf, selected, cutoff))) continue;
+    if (at === null || at >= cutoff) continue;
     const fields = {...object(pdf.pdf_fields), ...object(pdf.fields)};
     if (!Object.keys(fields).length) continue;
     const declared = fields.confirmationNumber ?? fields.confirmation_number ?? fields.confirmation ?? pdf.confirmation;
@@ -104,16 +88,14 @@ function pdfObservations(pdfs: TwinPdf[], cutoff: number, selected: Record<strin
   return out;
 }
 
-export function anchorObservations(anchor: TwinAnchor, cutoff: number, selected = {}): Observation[] {
+function anchorObservations(anchor: TwinAnchor, cutoff: number): Observation[] {
   const confirmation = id(anchor.confirmation);
   if (!confirmation) return [];
-  const rows = pdfObservations(anchorPdfs(anchor), cutoff, selected, confirmation);
-  const capture = verifiedHmsFields(anchor, cutoff);
-  const at = parseTime(captureTime(anchor));
-  if (capture && at !== null) {
-    rows.push({at, confirmation, stay: {...capture, confirmation}, documents: documentRows(anchor), basis: 'pre_as_of_hms_capture'});
-  }
-  return rows;
+  const captures = anchorCaptures(anchor).filter(row => beforeCutoff(row.captured_at, cutoff));
+  return [...pdfObservations(anchorPdfs(anchor), cutoff, confirmation), ...captures.map(row => ({
+    at: Date.parse(String(row.captured_at)), confirmation, stay: {...object(row.hms_fields), confirmation},
+    documents: documentRows(row) ?? documentRows(object(row.hms_fields)), basis: 'pre_as_of_hms_capture' as const,
+  }))];
 }
 
 function documentRows(row: Record<string, unknown>) {
@@ -127,8 +109,8 @@ export function observeStays(world: TwinWorld, card: CaseCard): Map<string, Obse
   const raw = object(card.hms_raw);
   const frozen = object(card.hms_shown);
   const pdfs = [...rows(card.pdf_versions), ...rows(raw.pdf_versions)];
-  const observations = world.anchors.flatMap(anchor => anchorObservations(anchor, cutoff, selected));
-  observations.push(...pdfObservations(pdfs, cutoff, selected, null));
+  const observations = world.anchors.flatMap(anchor => anchorObservations(anchor, cutoff));
+  observations.push(...pdfObservations([...world.letterEvidence.letters, ...pdfs], cutoff, null));
   const capturedAt = frozen.captured_at ?? frozen.hms_capture_later;
   const frozenStay = object(frozen.stay ?? frozen.hms_fields);
   const primary = id(frozen.confirmation ?? frozenStay.confirmation);
@@ -137,11 +119,34 @@ export function observeStays(world: TwinWorld, card: CaseCard): Map<string, Obse
       stay: {...frozenStay, confirmation: primary}, documents: documentRows(frozen), basis: 'pre_as_of_hms_capture'});
   }
   const latest = new Map<string, Observation>();
+  const priority = {pre_as_of_hms_capture: 2, last_pre_as_of_pdf: 1, pre_as_of_identity: 0};
   for (const row of observations) {
     const previous = latest.get(row.confirmation);
-    if (!previous || row.at > previous.at || (row.at === previous.at && row.basis === 'pre_as_of_hms_capture')) {
+    if (!previous || priority[row.basis] > priority[previous.basis] || row.basis === previous.basis && (row.at > previous.at || row.at === previous.at && row.documents && !previous.documents)) {
       latest.set(row.confirmation, row);
     }
+  }
+  const mentions = new Map<string, number>();
+  for (const mail of [...rows(card.context_before), ...rows(card.cross_thread_context), selected]) indexMentions(mail, mentions);
+  const letters = new Map<string, number>();
+  for (const pdf of world.letterEvidence.letters) {
+    const confirmation = id(pdf.confirmation);
+    const at = parseTime(pdf.sent_at);
+    if (confirmation && at !== null && at < (letters.get(confirmation) ?? Infinity)) letters.set(confirmation, at);
+  }
+  for (const anchor of world.anchors) {
+    const confirmation = id(anchor.confirmation);
+    if (!confirmation || latest.has(confirmation)) continue;
+    const capture = anchorCaptures(anchor).find(row => parseTime(row.captured_at) !== null);
+    if (!capture) continue;
+    const fields = object(capture.hms_fields);
+    const created = fields.created_at ?? fields.creation_date ?? fields.created_date ?? fields.createdate ?? anchor.created_at;
+    const at = Math.min(mentions.get(confirmation) ?? Infinity, world.letterEvidence.mentions.get(confirmation) ?? Infinity,
+      letters.get(confirmation) ?? Infinity, parseTime(/\d:\d/.test(String(created)) ? created : isoDate(created) ?? created) ?? Infinity,
+      ...anchorPdfs(anchor).map(pdf => parseTime(pdf.sent_at) ?? Infinity));
+    if (at >= cutoff) continue;
+    const guestfullname = fields.guestfullname ?? fields.guest_name ?? [fields.firstname, fields.lastname].filter(Boolean).join(' ');
+    latest.set(confirmation, {at, confirmation, stay: {confirmation, guestfullname}, documents: null, basis: 'pre_as_of_identity'});
   }
   return latest;
 }

@@ -8,7 +8,7 @@ import {
   type LearnedSenderHit,
 } from '../../src/party-matching.js';
 import {isoDate, observeStays} from './backdate.js';
-import {anchorPdfs, beforeCutoff, quoteKey, rows, type TwinWorld} from './world.js';
+import {anchorCaptures, anchorPdfs, beforeCutoff, quoteKey, rows, type TwinWorld} from './world.js';
 
 // Ignore legal suffixes and punctuation; keep commercial name words.
 function partyKey(value: unknown): string {
@@ -22,8 +22,12 @@ function partyKey(value: unknown): string {
 function twinLearnedSender(world: TwinWorld, host: string, kind: 'agency' | 'organization'): LearnedSenderHit | null {
   const matches = new Map<string, Map<string, {name: string; support: number}>>();
   const counted = new Set<string>();
+  const cutoffDate = new Date(world.cutoff).toISOString().slice(0, 10);
   for (const anchor of world.anchors) {
-    const state = world.partyStates(anchor)[0];
+    const state = anchorCaptures(anchor).map(row => object(row.hms_fields)).find(fields => {
+      const departure = isoDate(fields.departure_date ?? fields.departuredate);
+      return departure !== null && departure < cutoffDate;
+    });
     const agency = String(state?.ta1 ?? state?.agency_text ?? '').trim();
     const name = kind === 'agency' ? agency : agency ? '' : String(state?.company ?? state?.company_text ?? '').trim();
     if (!name) continue;
