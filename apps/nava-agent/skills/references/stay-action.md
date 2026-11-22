@@ -1,0 +1,3 @@
+An unverified stay is a gap in binding a clear action, not uncertainty about the requested action. Keep the supported change, whole-stay cancellation or qualifying document as `propose` with the requested fields or attachment filled. If the stay remains unverified, keep `reservation_id` and `current_state` null; Prepare requires a verified stay.
+
+Try a visible confirmation first. If it cannot verify the stay, search by surname and stated original stay dates. Include the first name if known. Use `near_arrival: true` when original arrival is known; use a stated original departure to narrow results. Read the candidate with its actual dates before binding. If candidates are ambiguous or coverage is incomplete, leave the stay unbound and show the available hints.
