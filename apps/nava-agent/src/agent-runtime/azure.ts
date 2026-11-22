@@ -88,8 +88,6 @@ function parseToolInput(argumentsText: string): unknown {
 }
 
 function fromResponsesOutput(payload: {
-  status?: string;
-  incomplete_details?: { reason?: string } | null;
   output?: Array<Record<string, unknown>>;
 }): { content: RuntimeBlock[]; stop_reason: string | null } {
   const content: RuntimeBlock[] = [];
@@ -114,9 +112,6 @@ function fromResponsesOutput(payload: {
     }
     if (item.type === 'reasoning') continue;
   }
-  if (payload.status === 'incomplete' && payload.incomplete_details?.reason === 'max_output_tokens') {
-    return { content, stop_reason: 'max_tokens' };
-  }
   return { content, stop_reason: sawTool ? 'tool_use' : 'end_turn' };
 }
 
@@ -132,13 +127,13 @@ function usageFrom(payload: Record<string, unknown>): ModelResponse['usage'] {
   };
 }
 
-export async function callAzureResponses(request: ModelRequest, options: {
+async function fetchAzureResponses(request: ModelRequest, options: {
   baseURL: string;
   apiKey: string;
   deployment: string;
   effort: string;
   maxTokens: number;
-}): Promise<ModelResponse> {
+}): Promise<Record<string, unknown>> {
   const response = await fetch(`${options.baseURL}/responses`, {
     method: 'POST',
     headers: {
@@ -173,8 +168,38 @@ export async function callAzureResponses(request: ModelRequest, options: {
     throw new Error(`AZURE_RESPONSES_FAILED:${code}`);
   }
   if (payload.status === 'failed') throw new Error('AZURE_RESPONSES_FAILED:status');
-  const converted = fromResponsesOutput(payload);
-  return { ...converted, usage: usageFrom(payload) };
+  return payload;
+}
+
+export async function retryAzureOutput<T extends {
+  status?: unknown; incomplete_details?: unknown; finish_reason?: unknown;
+}>(maxTokens: number, load: (cap: number) => Promise<T>) {
+  const truncated = (payload: T) => payload.finish_reason === 'length' ||
+    (payload.status === 'incomplete' && typeof payload.incomplete_details === 'object' &&
+      payload.incomplete_details !== null && 'reason' in payload.incomplete_details &&
+      payload.incomplete_details.reason === 'max_output_tokens');
+  const first = await load(maxTokens);
+  const retryCap = Math.min(maxTokens * 2, 65536);
+  const payload = truncated(first) && retryCap > maxTokens ? await load(retryCap) : first;
+  return { payload, first: payload === first ? null : first,
+    stop: truncated(payload) ? 'max_tokens' : payload.status === 'incomplete' ? 'incomplete' : null };
+}
+
+export function azureOutputUsage(payload: Record<string, unknown>, first: Record<string, unknown> | null) {
+  const usage = usageFrom(payload);
+  if (!first) return usage;
+  const previous = usageFrom(first);
+  for (const key of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const) {
+    if (previous[key] != null) usage[key] = (usage[key] ?? 0) + previous[key];
+  }
+  return usage;
+}
+
+export async function callAzureResponses(request: ModelRequest, options: Parameters<typeof fetchAzureResponses>[1]): Promise<ModelResponse> {
+  const { payload, first, stop } = await retryAzureOutput(options.maxTokens,
+    maxTokens => fetchAzureResponses(request, { ...options, maxTokens }));
+  const usage = azureOutputUsage(payload, first);
+  return stop ? { content: [], stop_reason: stop, usage } : { ...fromResponsesOutput(payload), usage };
 }
 
 export class AzureRuntime implements AgentRuntime {
