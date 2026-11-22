@@ -287,7 +287,8 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     const run = async (lease: Lease) => {
       const result = await loadNativeResult(api, { ...request, mode: 'prepare' }, {
         credentialLease: lease, signal: lease.signal, transportId, expectedGuest, cloudTargetKey, requireExplicitGuestSelection: true,
-        allowRealGuest: context.mode === 'live' && arrival >= new Date().toISOString().slice(0, 10),
+        allowRealGuest: context.mode === 'live' &&
+          (expectedGuest.firstName !== labGuest.firstName || expectedGuest.lastName !== labGuest.lastName),
       });
       const rateUnavailable = result.issue === 'RATE_NOT_AVAILABLE' ||
         (object(result.detail) && result.detail.issue === 'RATE_NOT_AVAILABLE');
@@ -367,8 +368,8 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
         if(!verified) return fail('CREATE_PREVIOUS_ROOM_UNVERIFIED','Check the completed rooms in Infor before continuing.');
       }
       const options = { credentialLease: lease, signal: lease.signal, expectedGuest, cloudTargetKey: target, transportId,
-        ...(realGuest ? { allowRealGuest: true, requireExplicitGuestSelection: true } : {}) };
-      const stage = await loadNativeResult(api, { ...request, mode: 'prepare' }, options);
+        ...(realGuest ? { allowRealGuest: true } : {}) };
+      const stage = await loadNativeResult(api, { ...request, mode: 'prepare' }, { ...options, requireExplicitGuestSelection: realGuest });
       const guest = stage.applied?.guest;
       const note = stage.applied?.note;
       const binding = stagedBinding.safeParse(stage.requestBinding?.request);
@@ -394,6 +395,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       }
       const saved = await loadNativeResult(api, commit, {
         ...options,
+        expectedGuest: { firstName: String(guest.firstName), lastName: String(guest.lastName) },
         expectedRequestDigest: stage.requestBinding.digest,
         ...(price ? { expectedRateAvailability: price } : {}),
         ...(stage.requestBinding.arAccountProfileId ? { expectedArProfileId: stage.requestBinding.arAccountProfileId } : {}),

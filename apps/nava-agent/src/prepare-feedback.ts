@@ -14,8 +14,11 @@ const labels = new Map([
 const messages = new Map([
   ['guest_ambiguous', 'More than one Infor guest profile matched. Select the correct profile.'],
   ['guest_choice_required', 'Select a guest profile before preparing again.'],
-  ['guest_not_found', 'Infor could not find the guest profile. Verify the guest in Infor.'],
+  ['guest_not_found', 'No matching guest profile in Infor. Create the profile in Infor, then run Prepare again.'],
   ['guest_email_unverified', 'Infor could not verify the guest email against the selected profile.'],
+  ['GUEST_PROFILE_BINDING_FAILED', 'Infor found the guest profile but did not attach it to the booking. Check the profile and run Prepare again.'],
+  ['current_or_future_arrival_required', 'The arrival date has passed. Enter a current or future arrival date.'],
+  ['CURRENT_OR_FUTURE_ARRIVAL_REQUIRED', 'The arrival date has passed. Enter a current or future arrival date.'],
   ['room_type_not_unique', 'Infor could not confirm the selected room type. Check the room code.'],
   ['CURRENT_RATE_CODE_UNVERIFIED', 'Infor did not confirm this rate code for the selected stay.'],
   ['RATE_NOT_AVAILABLE', 'Infor did not offer this rate for the selected stay.'],
@@ -61,11 +64,15 @@ const displayRow = z.discriminatedUnion('kind', [
 const nativePrice = z.object({
   averageRate:z.string().nullable().optional(),totalRate:z.string().nullable().optional(),currency:z.string().nullable().optional(),
 });
+const observedParty = z.object({nativeId:z.union([z.string(),z.number()]),name:z.string()}).optional().catch(undefined);
 const createObserved=z.object({
   arrival:z.string().optional(),departure:z.string().optional(),adults:z.union([z.string(),z.number()]).optional(),
   childAges:z.array(z.number()).optional(),roomType:z.string().optional(),roomTypeForCharge:z.string().optional(),
   ratePlan:z.string().optional(),guaranteeType:z.string().optional(),sourceOfBusiness:z.string().optional(),
   track:z.string().optional(),mealPlan:z.string().optional(),
+  guest:z.object({nativeId:z.string(),firstName:z.string(),lastName:z.string(),email:z.string().nullable().optional()}).optional().catch(undefined),
+  organization:observedParty,agency:observedParty,arAccount:observedParty,
+  price:nativePrice.optional(),
 }).optional().catch(undefined);
 const envelope = z.object({native_result:z.unknown(),display_rows:z.array(z.unknown()).optional(),
   observed_fields:z.unknown(),coverage:z.unknown(),cancellation_fee:z.unknown(),
@@ -100,6 +107,15 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
       if(typeof amount==='string') rows.push({id:unit,booking_id:bookingId,kind:'money',label,amount,unit,
         native_path:`/native/ratePlanAvailability/${key}`,currency:rate.currency,date:null,basis:'native',official:true});
     }
+  }
+  const applied=capture?.native?.applied;
+  if (workflow==='create' && applied?.guest) {
+    for (const [key,label,value] of [
+      ['guest','Guest profile',`${applied.guest.firstName} ${applied.guest.lastName}`],
+      ['organization','Organization',applied.organization?.name],
+      ['agency','Travel agency',applied.agency?.name],
+      ['arAccount','A/R account',applied.arAccount?.name],
+    ] as const) if (value) rows.push({id:key,booking_id:bookingId,kind:'text',label,value,native_path:`/native/applied/${key}`});
   }
   const native=workflow==='create' ? {
     native:rate || failedStep || detailIssue || rateIssue ? {

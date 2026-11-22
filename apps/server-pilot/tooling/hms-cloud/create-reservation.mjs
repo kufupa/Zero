@@ -12,7 +12,7 @@ import { isSupportedLabtestGuarantee, validCreateBillingReference } from './gues
 import { digestCloudCreateRequest, validCreateNote } from './create-request-binding.mjs';
 import { listTrackSubSegments } from './guest-stay-track-catalog.mjs';
 import { stageGuestStayBookerBilling } from './guest-stay-booker-billing.mjs';
-import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { CREATE_GUARANTEES, createCloudTargetKey, hrcenToday, isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
 const same = (a, b) => text(String(a ?? '')).toLocaleLowerCase() === text(String(b ?? '')).toLocaleLowerCase();
@@ -168,8 +168,9 @@ function validate(input, allowRealGuest = false) {
       return { outcome: 'refused', issue: allowRealGuest ? 'current_or_future_arrival_required' : 'labtest_arrival_required' };
     }
   }
-  if (allowRealGuest && date(stay.arrival) && date(stay.departure) &&
-      !validCreateDates(stay.arrival, stay.departure, true)) return { outcome: 'refused', issue: 'current_or_future_arrival_required' };
+  if (allowRealGuest && date(stay.arrival) && stay.arrival < hrcenToday()) {
+    return { outcome: 'refused', issue: 'current_or_future_arrival_required' };
+  }
   return { missing, unsupportedFields: fidelity.unsupported, unsupportedIssue };
 }
 
@@ -612,6 +613,10 @@ export async function createReservation(input, options = {}) {
           Object.assign(output, error.result); missing.push('guest'); await call(runTool, 'closeGuestProfilePicker', {}, ['closed_unsaved']);
           state.guestNameDraft = await stageUnresolvedGuestName(runTool, propertyCode, input.guest?.search, error.result);
         }
+        if (state.guest && allowRealGuest && createAuthority) {
+          const { firstName, lastName } = state.guest.guest;
+          createAuthority.expectedGuest = { firstName, lastName };
+        }
       }
       // The native Create flow types the rate before selecting track and guarantee.
       if (!commit && state.guest && typeof createAuthority?.withM1CreateRateSelection === 'function' &&
@@ -898,6 +903,7 @@ export async function createReservation(input, options = {}) {
       output.appliedVerification = { visibleFields: true, ...(state.children ? { childAges: 'at_selection_only' } : {}),
         ...(state.organization ? { organizationId: 'at_selection_only' } : {}),
         ...(state.agency ? { agencyId: 'at_selection_only' } : {}), ...(state.arAccount ? { arAccountId: 'at_selection_only' } : {}) };
+      if (output.ratePlanAvailability) output.applied.price = output.ratePlanAvailability;
       if (!commit) {
         output.outcome = checked.unsupportedFields.length ? 'unsupported' : missing.length ? 'needs_input' : 'prepared';
         if (checked.unsupportedIssue) output.issue ||= checked.unsupportedIssue;

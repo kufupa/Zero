@@ -4,7 +4,7 @@ import { searchRatePlans, closeRoomRatePicker, chargeRoomRevision } from './gues
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
-import { validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { hrcenToday, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 import { compareChargeRoomPricing } from './charge-room-pricing.mjs';
 import { cloudSessionIdentity } from './cloud-session.mjs';
 
@@ -45,13 +45,13 @@ async function readDraft(page) {
     const arAccount = one('araccountname'), guarantee = one('guaranteetype');
     const first = one('firstname'), last = one('lastname'), arrival = one('arrivaldate'), departure = one('departuredate');
     const guestIds = named('guestid');
-    if (guestIds.length !== 1) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
+    if (guestIds.length !== 1) throw new Error('GUEST_PROFILE_BINDING_FAILED');
     const guestId = guestIds[0], guestCmp = guestId.id && globalThis.Ext?.getCmp?.(guestId.id.replace(/-inputEl$/, ''));
-    if (!guestCmp || typeof guestCmp.getValue !== 'function') throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
+    if (!guestCmp || typeof guestCmp.getValue !== 'function') throw new Error('GUEST_PROFILE_BINDING_FAILED');
     let root = agency;
     while (root && !root.contains(confirmation)) root = root.parentElement;
     if (!root) throw new Error('DRAFT_UNAVAILABLE');
-    if (!root.contains(guestId)) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
+    if (!root.contains(guestId)) throw new Error('GUEST_PROFILE_BINDING_FAILED');
     const cmp = rate.id && globalThis.Ext?.getCmp?.(rate.id.replace(/-inputEl$/, ''));
     const component = element => element.id && globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''));
     const arCmp = component(arAccount), form = component(guarantee)?.up?.('form');
@@ -103,7 +103,6 @@ async function readDraft(page) {
 }
 
 async function checkedDraft(draft, guestId, page, { allowRealGuest = false, expectedGuest } = {}) {
-  if (clean(draft.guestId) !== guestId || clean(draft.guestNativeId) !== guestId) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
   const arrival = dateParts(draft.arrival), departure = dateParts(draft.departure);
   if (draft.property !== cloudSessionIdentity(page)?.propertyCode || clean(draft.confirmation) || draft.windows || !arrival || !departure || arrival.iso >= departure.iso) {
     throw new Error('NEW_DRAFT_UNVERIFIED');
@@ -111,14 +110,17 @@ async function checkedDraft(draft, guestId, page, { allowRealGuest = false, expe
   const identity = draft.identity;
   const guest = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
   const hasAr = Boolean(clean(draft.arAccountName) || identity?.arAccountId || identity?.arProfileId);
-  const issue = hasAr ? 'AR_SELECTION_UNVERIFIED' : 'GUEST_PROFILE_ID_UNSUPPORTED';
-  if ((hasAr || guestId) && (!identity?.valid || identity.guestId !== guestId || !validCreateGuest(guest) ||
-      clean(draft.first) !== guest.firstName || clean(draft.last) !== guest.lastName ||
-      !validCreateDates(arrival.iso, departure.iso, allowRealGuest))) throw new Error(issue);
+  if (arrival.iso < hrcenToday()) throw new Error('CURRENT_OR_FUTURE_ARRIVAL_REQUIRED');
+  if (clean(draft.guestId) !== guestId || clean(draft.guestNativeId) !== guestId ||
+      ((hasAr || guestId) && (!identity?.valid || identity.guestId !== guestId || !validCreateGuest(guest) ||
+        clean(draft.first) !== guest.firstName || clean(draft.last) !== guest.lastName))) {
+    throw new Error('GUEST_PROFILE_BINDING_FAILED');
+  }
+  if ((hasAr || guestId) && !validCreateDates(arrival.iso, departure.iso, allowRealGuest)) throw new Error('LABTEST_ARRIVAL_REQUIRED');
   let guestProof = null, ar = null;
   if (guestId) {
     const token = await verifiedLabtestProfileToken(page,{nativeId:guestId,session:identity.session});
-    if (!token) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
+    if (!token) throw new Error('GUEST_PROFILE_BINDING_FAILED');
     guestProof = {nativeId:guestId,token};
   }
   if (hasAr) {
@@ -652,7 +654,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       effects:{validationStatus:validation[0]?.response.status() ?? null,rateChangeStatus:change[0]?.response.status() ?? null,blockedRequests:blocked}};
   } catch (error) {
     if (attempted) { selectedOnPage.delete(page); fence?.quarantine(); }
-    const unsupported = unsupportedId || (['GUEST_PROFILE_ID_UNSUPPORTED','AR_SELECTION_UNVERIFIED'].includes(error?.message) ? error.message : null);
+    const unsupported = unsupportedId || (['GUEST_PROFILE_BINDING_FAILED','AR_SELECTION_UNVERIFIED'].includes(error?.message) ? error.message : null);
     return {outcome:unsupported ? 'unsupported' : attempted ? 'selection_uncertain' : 'execution_failure',
       issue:unsupported || (nativeDialog ? 'UNEXPECTED_DIALOG' : safeIssue(error)),
       ...(attempted && unsupported ? {draftMayHaveChanged:true} : {}),
