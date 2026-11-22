@@ -681,7 +681,8 @@ async function searchGuest(ctx) {
   let dateWindow = await readWindow(page);
   result.completeness = guestSearchCompleteness(args, dateWindow);
   if (!dateWindow) return failPanel(ctx, 'window_unreadable');
-  if (windowAction({ window: dateWindow, arrival: args.arrival, panelShown: true }) === 'move') {
+  if (windowAction({ window: dateWindow, arrival: args.arrival, panelShown: true }) === 'move' ||
+      (args.through && !windowCovers(dateWindow, args.through))) {
     await setQuickWindow(page, args.arrival);
     const moved = await driveQuickSearch(quickActions(page, args.lastName), {
       ready: () => waitForPanel(page),
@@ -691,7 +692,7 @@ async function searchGuest(ctx) {
     state = moved.result;
     dateWindow = state.panel ? await readWindow(page) : null;
     result.completeness = guestSearchCompleteness(args, dateWindow);
-    if (!state.panel || !dateWindow || !windowCovers(dateWindow, args.arrival)) {
+    if (!state.panel || !windowCovers(dateWindow, args.arrival) || (args.through && !windowCovers(dateWindow, args.through))) {
       return failPanel(ctx, 'window_not_covering_arrival');
     }
   }
@@ -736,7 +737,7 @@ export async function searchGuestInCloud(input, { openSession = withCloudReadSes
     }
     await navigate(page, propertyCode, { forceMenu: forceNavigate });
     const result = await search({ page, args: { mode: 'search-guest', lastName: input.lastName, arrival: input.arrival,
-      departure: input.departure ?? null, debugHtml: false }, dir: input.dir, started: Date.now() });
+      departure: input.departure ?? null, through: input.through, debugHtml: false }, dir: input.dir, started: Date.now() });
     return input.propertyCode === undefined ? result : { ...result, propertyCode };
   }, { propertyCode, startScreen: 'OSRESV', headless: true, blockServiceWorkers: true,
     prepareContext: (context) => guard(context, propertyCode),

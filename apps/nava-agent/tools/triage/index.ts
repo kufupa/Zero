@@ -1,3 +1,4 @@
+import { arrivalWindow, normalizeReservationReference } from '../../src/reservation-reference.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,18 +46,6 @@ async function savedRead(property: string, confirmation: string, context: ToolCo
   );
 }
 
-async function savedReadWithSuffix(property: string, confirmation: string, context: ToolContext, view: 'shallow' | 'record',
-  hints: { guestName?: string; arrivalDate?: string; departureDate?: string } = {}) {
-  let result: Record<string, unknown> = await savedRead(property, confirmation, context, view, hints);
-  if (result.outcome === 'read_failed' && result.issue === 'CONFIRMATION_NOT_FOUND' && /^\d{8}1$/.test(confirmation)) {
-    const alternative = `${confirmation.slice(0, -1)}-1`;
-    const retried: Record<string, unknown> = await savedRead(property, alternative, context, view, hints);
-    if (retried.outcome === 'ok') return { result: retried, confirmation: alternative };
-    result = retried;
-  }
-  return { result, confirmation };
-}
-
 function uniqueRecordField(result: Record<string, unknown>, name: string): string | undefined {
   const record = obj(result.record) ? result.record : {};
   const details = obj(record.details) ? record.details : {};
@@ -97,23 +86,40 @@ function singleNameRefusal(result: Record<string, unknown>, name: string): ToolR
 
 export async function searchReservations(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (!obj(input) || !keys(input, ['property_code', 'criteria']) || !str(input.property_code) || !obj(input.criteria) ||
-      !keys(input.criteria, ['reservation_id', 'guest_name', 'guest_first_name', 'guest_name_is_surname', 'arrival_date', 'departure_date'])) return fail('INVALID_INPUT', 'Property and valid search criteria are required.');
-  const { reservation_id: id, guest_name: name, guest_first_name: first, guest_name_is_surname: confirmedSurname, arrival_date: arrival, departure_date: departure } = input.criteria;
-  if ((id !== undefined && !str(id)) || (name !== undefined && !str(name)) ||
+      !keys(input.criteria, ['reservation_id', 'guest_name', 'guest_first_name', 'guest_name_is_surname', 'arrival_date', 'departure_date', 'near_arrival'])) return fail('INVALID_INPUT', 'Property and valid search criteria are required.');
+  const { reservation_id: reference, guest_name: name, guest_first_name: first, guest_name_is_surname: confirmedSurname, arrival_date: arrival, departure_date: departure, near_arrival: near } = input.criteria;
+  const id = str(reference) ? normalizeReservationReference(reference) : undefined;
+  if ((reference !== undefined && !str(reference)) || (name !== undefined && !str(name)) ||
       (first !== undefined && !str(first)) ||
+      (near !== undefined && (typeof near !== 'boolean' || (near && (!date(arrival) || !name || id)))) ||
       (confirmedSurname !== undefined && (typeof confirmedSurname !== 'boolean' || !name)) ||
       (arrival !== undefined && !date(arrival)) || (departure !== undefined && !date(departure))) return fail('INVALID_INPUT', 'Invalid search criterion.');
   const property = input.property_code;
   const names = name ? guestSearchNames(name, confirmedSurname === true, first) : [];
   if (name && !names.length) return fail('INPUT_GAP', 'Provide a guest name.');
+  if (near && date(arrival) && name) {
+    const window = arrivalWindow(arrival);
+    const result = await searchBySurname(property, name, window.from, undefined, context, window.to);
+    if (!result.ok || !obj(result.data) || !obj(result.data.native) || !Array.isArray(result.data.native.rows)) return result;
+    const rows = result.data.native.rows.filter(obj).filter(row => str(row.lastName) &&
+      normalizeSurname(row.lastName) === normalizeSurname(name) && date(row.arrival) &&
+      row.arrival >= window.from && row.arrival <= window.to);
+    const narrowed = rows.length > 1 && str(first) ? rows.filter(row => str(row.firstName) &&
+      normalizeSurname(row.firstName) === normalizeSurname(first)) : rows;
+    const candidates = (narrowed.length ? narrowed : rows).map(row => ({
+      reservation_id: row.confirmation, first_name: row.firstName, last_name: row.lastName,
+      arrival_date: row.arrival, departure_date: row.departure, status: row.status,
+    }));
+    return ok({outcome: result.data.outcome, candidates});
+  }
   if (!id) return name ? searchGuestNames(property, names, arrival, departure, context) : fail('INPUT_GAP', 'Provide a reservation identifier or surname.');
   if (!/^(?:\d+-\d+|\d{6,10})$/.test(id)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
   return execute(context, async () => {
-    const {result, confirmation} = await savedReadWithSuffix(property, id, context, departure || name ? 'record' : 'shallow', { arrivalDate: arrival, departureDate: departure });
+    const result = await savedRead(property, id, context, departure || name ? 'record' : 'shallow', { arrivalDate: arrival, departureDate: departure });
     if (result.outcome === 'ok') {
       const refusal = await departureRefusal(result, departure) ?? (names.length > 1 ?
         singleNameRefusal(result, names[0]) ?? singleNameRefusal(result, names[1]) : surnameRefusal(result, name));
-      return refusal ?? ok({ outcome: 'candidates', candidates: [{ reservation_id: confirmation, native: result.shallow }], completeness: result.completeness });
+      return refusal ?? ok({ outcome: 'candidates', candidates: [{ reservation_id: id, native: result.shallow }], completeness: result.completeness });
     }
     if (result.outcome === 'read_failed' && ['AMBIGUOUS_CONFIRMATION', 'CONFIRMATION_HINT_UNVERIFIED', 'CONFIRMATION_HINT_MISMATCH', 'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_NOT_FOUND'].includes(String(result.issue))) {
       return ok({ outcome: result.issue === 'CONFIRMATION_NOT_FOUND' ? 'not_found_in_searched_range' : 'ambiguous_or_incomplete', native: result });
@@ -141,7 +147,7 @@ async function searchGuestNames(property: string, names: string[], arrival: stri
   return ok({ ...second.data, searched_names: names.slice(0, 2) });
 }
 
-function searchBySurname(property: string, surname: string, arrival: string | undefined, departure: string | undefined, context: ToolContext): Promise<ToolResult> {
+function searchBySurname(property: string, surname: string, arrival: string | undefined, departure: string | undefined, context: ToolContext, through?: string): Promise<ToolResult> {
   if (surname.includes(',')) return Promise.resolve(fail('UNSUPPORTED_CRITERIA', 'Surname search requires the surname alone.'));
   return execute(context, async () => {
     const dir = await mkdtemp(join(tmpdir(), 'nava-hms-read-'));
@@ -153,7 +159,7 @@ function searchBySurname(property: string, surname: string, arrival: string | un
           if (!identity || typeof operation !== 'function') throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
           return operation(page, identity);
         }, { ...options, credentialLease: context.credentialLease }) : undefined;
-      const result: Record<string, unknown> = await searchGuestInCloud({ propertyCode: property, lastName: surname, arrival, departure, dir }, { signal: context.signal, ...(openSession ? { openSession } : {}) });
+      const result: Record<string, unknown> = await searchGuestInCloud({ propertyCode: property, lastName: surname, arrival, departure, dir, through }, { signal: context.signal, ...(openSession ? { openSession } : {}) });
       const { screenshots: _screenshots, unreadableRows: _unreadableRows, ...publicResult } = result;
       if (!['ok', 'ambiguous_capped'].includes(String(result.outcome))) return fail('HMS_SEARCH_INCOMPLETE', 'Native surname search failed or returned unreadable rows.', true);
       return ok({ outcome: result.outcome === 'ambiguous_capped' ? 'incomplete' : 'candidates', native: publicResult });
@@ -253,14 +259,15 @@ export async function stageRead(input: unknown, context: ToolContext): Promise<T
 export async function readReservation(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (!obj(input) || !keys(input, ['property_code', 'reservation_id', 'arrival_date', 'departure_date', 'last_name']) ||
       !str(input.property_code) || !str(input.reservation_id)) return fail('INVALID_INPUT', 'Property and reservation identifier are required.');
-  const { property_code: property, reservation_id: id, arrival_date: arrival, departure_date: departure, last_name: surname } = input;
+  const { property_code: property, reservation_id: reference, arrival_date: arrival, departure_date: departure, last_name: surname } = input;
+  const id = normalizeReservationReference(reference);
   if ((arrival !== undefined && !date(arrival)) || (departure !== undefined && !date(departure)) ||
       (surname !== undefined && !str(surname)) || (arrival && departure && departure < arrival)) {
     return fail('INVALID_INPUT', 'Use a valid arrival and departure in YYYY-MM-DD order and a nonblank surname, when known.');
   }
   if (!/^(?:\d+-\d+|\d{6,10})$/.test(id)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
   return execute(context, async () => {
-    const {result} = await savedReadWithSuffix(property, id, context, 'record', { arrivalDate: arrival, departureDate: departure });
+    const result = await savedRead(property, id, context, 'record', { arrivalDate: arrival, departureDate: departure });
     if (result.outcome === 'ok') {
       return await departureRefusal(result, departure) ?? surnameRefusal(result, surname) ?? ok(result);
     }

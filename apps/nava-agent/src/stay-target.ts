@@ -1,3 +1,4 @@
+import { normalizeReservationReference } from './reservation-reference.js';
 import { z } from 'zod';
 import { isDeepStrictEqual } from 'node:util';
 import { selectedStay } from '../tools/amend/index.js';
@@ -8,7 +9,7 @@ import type { ProposalDraft } from './schema.js';
 const confirmation = z.string().regex(/^\d{6,10}-\d{1,10}$/);
 export const targetLookup = z.discriminatedUnion('kind', [
   z.object({kind:z.literal('surname'),surname:z.string().trim().min(1).max(256).regex(/^[^\r\n,]+$/)}).strict(),
-  z.object({kind:z.literal('confirmation'),confirmation,arrival_date:z.string().date().optional()}).strict(),
+  z.object({kind:z.literal('confirmation'),confirmation:z.string().transform(normalizeReservationReference).pipe(confirmation),arrival_date:z.string().date().optional()}).strict(),
 ]);
 export const targetInput = z.object({expected_revision:z.number().int().positive(),lookup:targetLookup}).strict();
 export const targetSelection = z.object({

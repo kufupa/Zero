@@ -12,6 +12,7 @@ export const schemas = {
       guest_first_name: { ...string, description: 'Given name, if available, used as an alternate surname when the first surname search is empty.' },
       guest_name_is_surname: { type: 'boolean', description: 'Required true for a surname containing spaces, and only when the source identifies the entire value as the surname (e.g. De Koker).' },
       arrival_date: string,
+      near_arrival: {type: 'boolean', description: 'Search original arrival ±3 days by exact guest surname; use guest_first_name to narrow multiple hits.'},
       departure_date: string,
     }, []),
   }, ['property_code', 'criteria']),

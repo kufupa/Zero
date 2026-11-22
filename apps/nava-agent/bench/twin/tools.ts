@@ -1,3 +1,4 @@
+import {arrivalWindow, normalizeReservationReference} from '../../src/reservation-reference.js';
 import type {CaseCard, TwinEnvelope} from '../types.js';
 import {
   extractSenderHost,
@@ -89,16 +90,22 @@ function fieldMap(stay: Record<string, unknown> | null): Array<{name: string; ty
   }));
 }
 
-function matchReservation(stay: Record<string, unknown>, criteria: Record<string, unknown>): boolean {
-  const confirmation = String(stay.confirmation ?? stay.confirmationnumber ?? '');
-  const rid = criteria.reservation_id != null ? String(criteria.reservation_id) : '';
-  if (rid && !matchesId(rid, confirmation)) return false;
-  const name = (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/\s+/g, ' ');
+const name = (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/\s+/g, ' ');
+
+function reservationNames(stay: Record<string, unknown>) {
   const full = name(stay.guestfullname ?? stay.guest_name);
   const parts = full.split(' ');
   const nativeParts = full.split(/\s*[,/]\s*/);
-  const last = name(stay.last_name ?? stay.lastName) || (nativeParts.length > 1 ? nativeParts[0] : parts.at(-1)) || '';
-  const first = name(stay.first_name ?? stay.firstName) || (nativeParts.length > 1 ? nativeParts[1] : parts.slice(0, -1).join(' '));
+  const last = name(stay.last_name ?? stay.lastName ?? stay.lastname) || (nativeParts.length > 1 ? nativeParts[0] : parts.at(-1)) || '';
+  const first = name(stay.first_name ?? stay.firstName ?? stay.firstname) || (nativeParts.length > 1 ? nativeParts[1] : parts.slice(0, -1).join(' '));
+  return {full, first, last};
+}
+
+function matchReservation(stay: Record<string, unknown>, criteria: Record<string, unknown>): boolean {
+  const confirmation = String(stay.confirmation ?? stay.confirmationnumber ?? '');
+  const rid = typeof criteria.reservation_id === 'string' ? normalizeReservationReference(criteria.reservation_id) : '';
+  if (rid && !matchesId(rid, confirmation)) return false;
+  const {full, first, last} = reservationNames(stay);
   const surname = name(criteria.last_name ?? criteria.guest_name);
   const given = name(criteria.guest_first_name);
   if (surname.includes('/') && criteria.guest_name_is_surname !== true) {
@@ -243,6 +250,7 @@ function readReservation(stays: Stays, input: Record<string, unknown>): TwinEnve
     outcome: 'ok',
     id: null,
     tool: 'read',
+    shallow: {confirmation: found.confirmation},
     twin_coverage: 'observed',
     documents_observed: found.documents !== null,
     record: {
@@ -260,6 +268,24 @@ function searchReservations(stays: Stays, input: Record<string, unknown>): TwinE
     return fail('INPUT_GAP', 'Provide a confirmation number or a guest surname.');
   }
   const observed = [...stays.values()];
+  if (criteria.near_arrival === true && !criteria.reservation_id) {
+    const arrival = isoDate(criteria.arrival_date);
+    if (!arrival || typeof criteria.guest_name !== 'string') return fail('INVALID_INPUT', 'Provide surname and original arrival.');
+    const {from, to} = arrivalWindow(arrival);
+    const candidates = observed.flatMap(row => {
+      const {stay} = row;
+      const {first, last} = reservationNames(stay);
+      const arrival_date = isoDate(stay.arrival_date ?? stay.arrivaldate ?? stay.arrival);
+      if (!arrival_date || arrival_date < from || arrival_date > to ||
+          !matchReservation(row.stay, {guest_name: criteria.guest_name, guest_name_is_surname: true})) return [];
+      return [{reservation_id: row.confirmation, arrival_date, departure_date: isoDate(stay.departure_date ?? stay.departuredate ?? stay.departure),
+        first_name: first, last_name: last, status: stay.status}];
+    });
+    const narrowed = candidates.length > 1 && criteria.guest_first_name ?
+      candidates.filter(row => name(row.first_name) === name(criteria.guest_first_name)) : candidates;
+    return candidates.length ? ok({outcome: 'candidates', candidates: narrowed.length ? narrowed : candidates, twin_coverage: 'observed'}) :
+      fail('TWIN_PRE_CUTOFF_STAY_UNAVAILABLE', 'No observed stay matches the requested criteria; absence is unconfirmed.', false, unobserved);
+  }
   let matches = observed.filter(row => matchReservation(row.stay, criteria));
   if (!matches.length && !criteria.reservation_id && criteria.guest_first_name && criteria.guest_name_is_surname !== true) {
     matches = observed.filter(row => matchReservation(row.stay, {...criteria, guest_name: criteria.guest_first_name, guest_first_name: undefined}));
