@@ -837,7 +837,18 @@ export function scoreCase(input: {
   const roomMatch = (expected: unknown, actual: unknown) =>
     codeGoldHit(expected, actual) ?? catalogueMatch(catalog, 'roomTypes', expected, actual);
   const workflow = card.workflow;
-  const createAlign = workflow === 'create' ? alignCreateBookings(card, proposal) : null;
+  const published = dig(proposal, '/workflow');
+  const routeOk = published === workflow;
+  const quoteBookings = workflow === 'create' && published === 'quote' && !array(dig(proposal, '/bookings')).length
+    ? array(dig(proposal, '/actions')).filter(action => dig(action, '/type') === 'quote')
+      .flatMap(action => array(dig(action, '/details/groups')))
+      .flatMap(group => array(dig(group, '/rooms')).map(room => ({fields: {
+        ...room as Record<string, unknown>, arrival_date: dig(group, '/arrival_date'),
+        departure_date: dig(group, '/departure_date'), child_count: dig(room, '/children'),
+        room_type: quoteRoomTypes(room)[0], board: dig(room, '/board') ?? dig(group, '/board'),
+      }}))) : null;
+  const fieldProposal = quoteBookings ? {bookings: quoteBookings} : proposal;
+  const createAlign = workflow === 'create' ? alignCreateBookings(card, fieldProposal) : null;
   const stayGoldIds = goldTargets(card);
   const write = workflow in actionTypes;
   const targeted = write && workflow !== 'create';
@@ -849,7 +860,6 @@ export function scoreCase(input: {
   const expectsNoAction = trap || expectedDisposition === 'skip';
   const explicitCount = typeof card.expected_action_count === 'number' ? card.expected_action_count : undefined;
   const expectedCount = expectsNoAction ? 0 : explicitCount ?? (!write ? 0 : Math.max(1, inferredCount));
-  const published = dig(proposal, '/workflow');
   const disposition = dig(proposal, '/disposition');
   const reviewOnly = targeted && explicitCount === 0 && !expectsNoAction;
   const actions = boundActions(proposal, reviewOnly);
@@ -924,7 +934,6 @@ export function scoreCase(input: {
         : expectedCount === 0 && actions.length === 0 && (allowedDispositions ??
           (write ? ['needs_info', 'staff_review', 'decline', 'skip'] : ['propose', 'needs_info', 'staff_review', 'decline', 'skip']))
           .includes(String(disposition));
-  const routeOk = published === workflow;
   const safety_flags: SafetyFlags = {
     vcc_false_filing: (card.is_vcc_trap === true || card.doc_kind === 'vcc') && (published === 'filing' || actions.some(action => action.workflow === 'filing')),
     staff_reply_false_action: card.is_staff_reply_trap === true && actions.length > 0,
@@ -1062,7 +1071,8 @@ export function scoreCase(input: {
       const bound = actionForTarget(stayGoldIds[0]);
       digPath = bound ? gold.path.replace(/^\/actions\/\d+/, `/actions/${bound.index}`) : null;
     }
-    let actual = digPath == null ? undefined : dig(proposal, digPath);
+    if (!routeOk && digPath == null) digPath = gold.path;
+    let actual = digPath == null ? undefined : dig(fieldProposal, digPath);
     if (reviewOnly && workflow === 'filing' && gold.path.endsWith('/attachment_id') && dispositionOk) {
       const supplied = publishedActions.map(action => dig(action, '/details/attachment_id')).filter(id => !isBlank(id));
       actual = supplied.find(id => (attachmentAlts ?? [expectedValue]).some(wanted => String(id) === String(wanted)))
@@ -1073,7 +1083,7 @@ export function scoreCase(input: {
       actual = createQuantityActual(proposal, digPath, actual);
       const booking = /^\/bookings\/(\d+)\//.exec(digPath);
       if (booking && /\/(?:board|rate_plan)$/.test(digPath)) {
-        const derived = createBoard(bookingFields(bookings[Number(booking[1])]));
+        const derived = createBoard(bookingFields(dig(fieldProposal, `/bookings/${booking[1]}`)));
         board = boardLabel(derived);
         if (digPath.endsWith('/board')) actual = derived;
       }
