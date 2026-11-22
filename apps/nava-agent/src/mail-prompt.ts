@@ -3,7 +3,8 @@ const historyLabel = '[Quoted history; earlier correspondence]';
 const truncated = '\n[Quoted history truncated]';
 
 function compactBody(body: string, subject: string): string {
-  const boundary = /^[ \t]*(?:-{2,}[ \t]*(?:Original Message|Forwarded message)[ \t]*-{2,}[ \t]*$|On[ \t]+[^\r\n]+(?:\r?\n[^\r\n]+){0,2}?[ \t]+wrote:[ \t]*$|From:[ \t]*[^\r\n]+\r?\n(?:[ \t]*\r?\n)*[ \t]*Sent:)/im.exec(body);
+  const replyHeader = /^[ \t]*(?:>[ \t]*)*(?:-{2,}[ \t]*(?:Original Message|Forwarded message)[ \t]*-{2,}[ \t]*$|On[ \t]+[^\r\n]+(?:\r?\n[^\r\n]+){0,2}?[ \t]+wrote:[ \t]*$|\*?From:\*?[ \t]*[^\r\n]+\r?\n(?:[ \t]*\r?\n)*[ \t]*(?:>[ \t]*)*\*?Sent:\*?)/im;
+  const boundary = replyHeader.exec(body);
   const head = boundary ? body.slice(0, boundary.index) : body;
   const quotedLine = /^[ \t]*>.*$/gm;
   const inlineQuotes = head.match(quotedLine) ?? [];
@@ -12,10 +13,19 @@ function compactBody(body: string, subject: string): string {
   const current = head.replace(quotedLine, '').trimEnd();
   if (/^(?:fw|fwd):/i.test(subject.trimStart()) && current.trim().length < 300) return body;
 
-  const history = [...inlineQuotes, ...(boundary ? [body.slice(boundary.index)] : [])].join('\n').trimEnd();
+  let history = [...inlineQuotes, ...(boundary ? [body.slice(boundary.index)] : [])].join('\n').trimEnd();
+  let first = '';
+  if (current.trim().length < 300 || /\b(?:below|attached|trailing\s+(?:mail|email|message|thread))\b/i.test(current)) {
+    const start = boundary ? inlineQuotes.join('\n').length + (inlineQuotes.length ? 1 : 0) + boundary[0].length : 0;
+    const older = boundary ? replyHeader.exec(history.slice(start)) : null;
+    const cut = older ? start + older.index : history.length;
+    first = history.slice(0, cut).trimEnd();
+    history = history.slice(cut);
+  }
+
   const budget = historyLimit - historyLabel.length - 1;
   const excerpt = history.length > budget ? history.slice(0, budget - truncated.length) + truncated : history;
-  return (current ? current + '\n\n' : '') + historyLabel + '\n' + excerpt;
+  return [current, first && '[First quoted message]\n' + first, excerpt && historyLabel + '\n' + excerpt].filter(Boolean).join('\n\n');
 }
 
 // Apply only to model evidence, including copies in historical source events.
