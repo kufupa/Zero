@@ -1,6 +1,6 @@
 import type { ProposalDraft } from './schema.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
-import { createNoteAliases, createReservationNote, createStaffNoteLabels, isCreateRateCode } from '../tools/create/schema.js';
+import { createNonNativeFields, createNoteAliases, createReservationNote, createStaffNoteLabels, isCreateRateCode } from '../tools/create/schema.js';
 import { isEmptyQuoteGroup } from '../tools/quote/schema.js';
 
 export function pointerParts(path: string): string[] | null {
@@ -328,7 +328,7 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
     draft=withCreateNativeFields(createOccupancyFields(expandCreateQuantity(draft)));
     const fieldSpecs=[...draft.field_specs];
     const warnings=[...draft.warnings];
-    const noteAliases = new Set<string>(createNoteAliases);
+    const nonNativeFields = new Set<string>([...createNoteAliases,...createNonNativeFields]);
     const bookings=draft.bookings.map((booking,index)=>{
       if(booking.property_code!=='HRCEN') return booking;
       const fields={...booking.fields};
@@ -337,7 +337,7 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
         if(fields[key]!=null && fields[key]!=='') warnings.push(forRoom+label+': '+String(fields[key]));
       }
       fields.note=createReservationNote(fields);
-      for(const key of createNoteAliases) delete fields[key];
+      for(const key of nonNativeFields) delete fields[key];
       if(typeof fields.billing_reference==='number' && Number.isSafeInteger(fields.billing_reference)) {
         fields.billing_reference=String(fields.billing_reference);
       }
@@ -364,9 +364,9 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
       return {...booking,fields};
     });
     const mapped=(path:string)=>/^\/?bookings\/(\d+)\/fields\/([^/]+)$/.exec(path);
-    const alias=(path:string)=>{const m=mapped(path);return m && bookings[Number(m[1])]?.property_code==='HRCEN' && noteAliases.has(m[2]);};
-    draft={...draft,bookings,warnings,missing:draft.missing.filter(path=>!alias(path)),
-      field_specs:fieldSpecs.filter(spec=>!alias(spec.path))};
+    const nonNative=(path:string)=>{const m=mapped(path);return m && bookings[Number(m[1])]?.property_code==='HRCEN' && nonNativeFields.has(m[2]);};
+    draft={...draft,bookings,warnings,missing:draft.missing.filter(path=>!nonNative(path)),
+      field_specs:fieldSpecs.filter(spec=>!nonNative(spec.path))};
   }
   if(draft.workflow==='quote') draft=withQuoteStaffFields(draft);
   if(draft.workflow==='amend') draft=withAmendSupportedFields(draft);

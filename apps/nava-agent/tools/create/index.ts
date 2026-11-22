@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createNoteAliases, createReservationNote, createStaffNoteLabels, isCreateRateCode, prepareInput, saveInput, type CreateInput } from './schema.js';
+import { createNonNativeFields, createNoteAliases, createReservationNote, createStaffNoteLabels, isCreateRateCode, prepareInput, saveInput, type CreateInput } from './schema.js';
 import { createGoEnabled, createGoRealGuests, hmsSaveEnabled } from '../../src/hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedCreate, type StaffStage } from '../../src/attachment-gate.js';
 
@@ -99,7 +99,7 @@ export function buildRequest(input: CreateInput): { request: NativeRequest; unkn
   const assigned = new Set<string>();
   for (const [field, value] of Object.entries(booking.fields)) {
     if (Object.hasOwn(createStaffNoteLabels,field) || field === 'room_count' || field.startsWith('profile_') || value === null ||
-      (field === 'quantity' && value === 1) || ['note',...createNoteAliases].includes(field) ||
+      (field === 'quantity' && value === 1) || ['note',...createNoteAliases,...createNonNativeFields].includes(field) ||
       (field === 'rate_plan' && !isCreateRateCode(value))) continue;
     const path = Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
     if (!path) { unknown.push(field); continue; }

@@ -26,7 +26,7 @@ const candidate = ({ nativeId, firstName, lastName, email, phoneNumber, city, co
 
 // An optional, encrypted diagnostic for an unsaved Labtest Prepare. The dialog
 // handlers remain unchanged: this only observes a failure before the page closes.
-function prepareDialogDiagnostic(page, publicKey) {
+function prepareDialogDiagnostic(page, publicKey, target) {
   let activeTool = null, nativeDialog = null;
   const onDialog = dialog => {
     try { nativeDialog ||= { tool: activeTool, type: dialog.type(), text: dialog.message().slice(0, 4096) }; } catch {}
@@ -64,7 +64,7 @@ function prepareDialogDiagnostic(page, publicKey) {
                 }
               } catch { unreadableFrames++; }
             }
-            const plaintext = Buffer.from(JSON.stringify({ tool: request.tool, nativeDialog, windowCount: count,
+            const plaintext = Buffer.from(JSON.stringify({ target, tool: request.tool, nativeDialog, windowCount: count,
               unreadableFrames, skippedFrames, framesExamined: frames.length, framesTruncated: allFrames.length > frames.length,
               windowsTruncated: count > windows.length, windows }));
             const key = randomBytes(32), iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -239,27 +239,37 @@ async function call(runTool, tool, args = {}, accepted = ['updated_unsaved', 'un
 async function selectGuest(runTool, guest, commit, requireExplicitGuestSelection = false, allowRealGuest = false, expectedGuest) {
   const field = guest.profileId != null ? 'profileId' : 'lastName';
   const query = field === 'profileId' ? String(guest.profileId) : guest.search.lastName;
-  const found = await call(runTool, 'searchGuestProfiles', { field, query }, ['matches', 'no_match']);
-  let all = found.candidates || [];
-  if (found.hasMoreLoaded) {
-    all = [];
-    for (let offset = 0; offset < found.coverage.loaded; offset += 50) {
-      const inspected = await call(runTool, 'inspectGuestProfileCandidates', { searchId: found.searchId, offset, limit: 50 }, ['current']);
-      all.push(...inspected.candidates);
+  const search = async (field, query) => {
+    const result = await call(runTool, 'searchGuestProfiles', { field, query }, ['matches', 'no_match']);
+    if (!result.hasMoreLoaded) return { result, rows: result.candidates || [] };
+    const rows = [];
+    for (let offset = 0; offset < result.coverage.loaded; offset += 50) {
+      const inspected = await call(runTool, 'inspectGuestProfileCandidates', { searchId: result.searchId, offset, limit: 50 }, ['current']);
+      rows.push(...inspected.candidates);
     }
+    return { result, rows };
+  };
+  const matchesName = item => same(item.lastName, guest.search.lastName) &&
+    (!guest.search.firstName || same(item.firstName, guest.search.firstName));
+  let { result: found, rows: all } = await search(field, query);
+  if (!commit && field === 'lastName' && text(guest.search.firstName) &&
+      found.coverage?.possiblyTruncated && !all.some(matchesName)) {
+    const refined = await search('firstName', guest.search.firstName);
+    if (refined.rows.some(matchesName)) ({ result: found, rows: all } = refined);
   }
   if (guest.search?.email && !found.correlation?.verifiedFields?.includes('emailaddress')) {
     stop('needs_input', 'guest_email_unverified', { guestCandidates: all.map(candidate), guestCoverage: found.coverage, guestCorrelation: found.correlation });
   }
   const matches = all.filter((item) => field === 'profileId' ? item.nativeId === query :
-    same(item.lastName, guest.search.lastName) && (!guest.search.firstName || same(item.firstName, guest.search.firstName)) &&
+    matchesName(item) &&
     (!guest.search.email || (found.correlation?.verifiedFields?.includes('emailaddress') && same(item.email, guest.search.email))));
   if (matches.length !== 1 || (field !== 'profileId' && found.coverage?.possiblyTruncated)) {
     const sameSurname = field !== 'profileId' && all.some((item) => same(item.lastName, guest.search.lastName));
     const issue = matches.length || found.coverage?.possiblyTruncated ? 'guest_ambiguous'
       : sameSurname ? 'guest_choice_required' : 'guest_not_found';
     stop('needs_input', issue,
-      { guestSearchOutcome: found.outcome, guestCandidates: all.map(candidate), guestCoverage: found.coverage, guestCorrelation: found.correlation });
+      { guestSearchOutcome: found.outcome, guestCandidates: [...new Set([...matches, ...all])].map(candidate),
+        guestCoverage: found.coverage, guestCorrelation: found.correlation });
   }
   if (!commit && requireExplicitGuestSelection && field !== 'profileId' && !text(guest.search?.firstName)) {
     stop('needs_input', 'guest_choice_required', {
@@ -516,8 +526,8 @@ export async function createReservation(input, options = {}) {
   try {
     await withSession(async ({ page, runTool, labtestPreimage, createAuthority }) => {
       const diagnosticKey = process.env.NAVA_CREATE_DIALOG_DIAGNOSTIC_PUBLIC_KEY_B64;
-      const diagnostic = !commit && process.env.NAVA_CREATE_PREPARE_ONLY === '1' &&
-        isLabtestGuest(expectedGuest) && diagnosticKey ? prepareDialogDiagnostic(page, diagnosticKey) : null;
+      const diagnostic = !commit && process.env.NAVA_CREATE_PREPARE_ONLY === '1' && diagnosticKey
+        ? prepareDialogDiagnostic(page, diagnosticKey, { guest: expectedGuest, arrival: stay.arrival, rate: room.ratePlan }) : null;
       if (diagnostic) runTool = diagnostic.wrap(runTool);
       try {
       state.preimage = labtestPreimage;
