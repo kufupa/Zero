@@ -238,21 +238,25 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
 
 /** HRCEN requested rate/room wording → native code Prepare accepts. Codes pass through; unknown wording stays for staff. */
 export function hrcenCode(kind:'rate_plan'|'room_type',value:unknown,board:unknown):string|null {
-  if(typeof value!=='string' || !value.trim() || /^[A-Z0-9]{1,12}$/.test(value.trim())) return null;
+  if(typeof value!=='string' || !value.trim()) return null;
   const text=value.toLowerCase(), meal=String(board ?? '').toUpperCase();
   const plan=/\bdbb\b|dinner/.test(text) || meal==='DBB' ? 'DBB' : /\bro\b|room only/.test(text) || meal==='RO' ? 'RO' : 'BB';
   if(kind==='rate_plan') {
+    if(/\bgds government\b/.test(text)) return plan==='RO' ? null : plan==='DBB' ? 'NGDGDB' : 'NGDGB';
+    if(/\bed rate\b|\beducational\b/.test(text)) return 'EDU';
+    if(/^[A-Z0-9]{1,12}$/.test(value.trim()) && value.trim()!=='BAR') return null;
     if(/\bgov/.test(text)) return {BB:'NGOVB',DBB:'NGOVDB',RO:'NGOVRO'}[plan];
     if(/\bcomp\b|complimentary/.test(text)) return {BB:'CMPBB',DBB:'CMPDBB',RO:'CMPRO'}[plan];
-    if(/\bbar\b|best available|rack/.test(text)) return plan==='RO' ? 'BARRO' : 'BAR';
-    if(/corporate|negotiated|contract/.test(text)) return plan==='RO' ? 'NCORRO' : 'NCOR1B';
+    if(/\bbar\b|best available|rack/.test(text)) return plan==='DBB' ? null : plan==='RO' ? 'BARRO' : 'BAR';
+    if(/corporate|negotiated|contract/.test(text)) return plan==='DBB' ? null : plan==='RO' ? 'NCORRO' : 'NCOR1B';
     return null;
   }
+  if(/^[A-Z0-9]{1,12}$/.test(value.trim()) && !/^(?:DELUXE|DLX|LUX|LUXURY)$/.test(value.trim())) return null;
   const bed=/twin/.test(text) ? 'TWN' : /king/.test(text) ? 'KNG' : 'QN';
   if(/suite/.test(text)) return 'SUITE';
-  if(/lux/.test(text)) return 'LUXKNG';
-  if(/exec/.test(text)) return 'EXKNG';
   if(/deluxe|\bdlx\b/.test(text)) return `DLX${bed}`;
+  if(/\blux(ury)?\b/.test(text)) return 'LUXKNG';
+  if(/exec/.test(text)) return 'EXKNG';
   if(/standard|single|double|queen|twin|king|\bstd\b/.test(text)) return {TWN:'STWN',KNG:'SKNG',QN:'STQN'}[bed];
   return null;
 }
@@ -267,11 +271,13 @@ export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; dr
       for(const key of ['rate_plan','room_type'] as const) {
         const code=hrcenCode(key,fields[key],fields.board);
         if(code) fields[key]=code;
+        else if(key==='rate_plan' && /\bdbb\b|dinner/i.test(`${fields.board ?? ''} ${fields[key] ?? ''}`)
+          && /\bbar\b|best available|rack|corporate|negotiated|contract|\bNCOR1B\b/i.test(String(fields[key] ?? ''))) fields[key]=null;
       }
       const rate=String(fields.rate_plan ?? '');
       const track=rate.startsWith('NGOV')?'GOV':rate.startsWith('NCOR')?'COR':
         !fields.agency_id && !fields.agency_name && !fields.organization_id && !fields.organization_name && ['BAR','BARRO'].includes(rate)?'BAR':null;
-      for(const [key,value] of [['guarantee_type',fields.agency_id||fields.agency_name?'GTDAGT':'DEPREQ'],['track',track],['source_of_business','EMA'],['room_type','STQN']] as const) {
+      for(const [key,value] of [['guarantee_type',String(fields.agency_id ?? '').trim()?'GTDAGT':null],['track',track],['source_of_business','EMA']] as const) {
         const current=fields[key];
         if(value===null || (current!=null && (typeof current!=='string' || current.trim()))) continue;
         const path=`/bookings/${index}/fields/${key}`;
@@ -292,6 +298,10 @@ export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; dr
     id: 'quote-input', type: 'quote', booking_ids: [],
     details: {quote_id:'quote-input',property_code:null,groups:[{group_id:'stay-input',arrival_date:null,departure_date:null,rooms:null,room_quantity_and_type:null,occupancy:null,board:null}]},
   }] : draft.actions;
+  if ((draft.workflow === 'cancel' || draft.workflow === 'amend') && draft.disposition === 'propose'
+    && (!draft.bookings.length || draft.bookings.some(booking => !booking.reservation_id?.trim()))) {
+    draft = {...draft, disposition: 'staff_review'};
+  }
   const value = {...draft, actions};
   const seen = new Set<string>();
   const fields: ProposalDraft['field_specs'] = [];

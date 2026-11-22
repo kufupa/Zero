@@ -6,7 +6,7 @@ export type { AgentRuntime, RuntimeDeps, TurnInput } from './loop.js';
 
 const DEFAULT_BASE_URL = 'https://nava.openai.azure.com/openai/v1';
 const DEFAULT_DEPLOYMENT = 'gpt-6-luna';
-const DEFAULT_REASONING = 'low';
+const DEFAULT_REASONING = 'high';
 
 function azureConfig() {
   const baseURL = (process.env.AZURE_OPENAI_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/$/, '');

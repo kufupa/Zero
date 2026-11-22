@@ -24,9 +24,11 @@ const otaChannelDomains = [
   'synxis.com', 'expediapartnercentral.com', 'expedia.com', 'webbeds.com', 'hotelbeds.com',
   'booking.com', 'get-e.com', 'hotels.com', 'agoda.com', 'trip.com', 'traveloka.com',
   'airbnb.com', 'tiket.com', 'travelit.co.za', 'travelit.com', 'tbohelp.zendesk.com',
+  'tbo.com', 'profitroom.com', 'lekkeslaap.co.za', 'expediagroup.com', 'hotelplanner.com',
+  'hbxgroup.com', 'booklogic.net', 'conferma.com', 'ivedo.net', 'myjorney.com',
 ];
 const systemDomains = [
-  'ratetiger.com', 'erevmax.com', 'erevmax.co.uk', 'erevmax.net', 'hospitality.cloud',
+  'guestrevuapp.com', 'ratetiger.com', 'erevmax.com', 'erevmax.co.uk', 'erevmax.net', 'hospitality.cloud',
   'reviewpro.com', 'trustyou.com', 'revinate.com', 'medallia.com', 'tripadvisor.com', 'tvlinc.com',
 ];
 
@@ -37,13 +39,11 @@ export function mailPrefilterRule(message: Email): string | null {
   if (!host) return null;
   const from = (domain: string) => host === domain || host.endsWith('.' + domain);
   const subject = message.subject.trim();
-  // TBO ops staff (e.g. ops.southafrica@) send real agent requests; only TBO system senders are channel noise.
-  if (from('tbo.com') && /^(?:no-?reply|do-?not-?reply|notifications?|alerts?|system|mailer|bookings?)\b/i.test(email)) return 'ota_channel:tbo.com';
+  if (email.startsWith('mailer-daemon@')) return 'system_notice:mailer_daemon';
   const ota = otaChannelDomains.find(from);
   if (ota) return `ota_channel:${ota}`;
   const sys = systemDomains.find(from);
   if (sys) return `system_notice:${sys}`;
-  if (from('profitroom.com')) return /\bdefault contact form\b/i.test(subject) ? null : 'ota_channel:profitroom.com';
   if (/^fortimail-[a-z0-9-]+\.[a-z0-9.-]+$/i.test(host) && /^quarantine\s+summary\b/i.test(subject)) return 'system_notice:fortimail';
   if (email === 'calendar-notification@google.com' && /^(?:Invitation:|Declined:|Canceled event:)/i.test(subject)) return 'system_notice:google_calendar';
   if (email === 'epay-noreply@nedbank.co.za' && /^order\s+confirmation\s+from\s+nedbank\b/i.test(subject) && message.attachments.length === 0) return 'system_notice:nedbank_epay';
