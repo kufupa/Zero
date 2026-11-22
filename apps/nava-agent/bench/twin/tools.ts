@@ -159,8 +159,8 @@ function partyRecords(world: TwinWorld, kind: string): Array<Record<string, unkn
     kind === 'ar_account' ? 'arAccounts' :
     null;
   if (!key) return [];
-  return catalogueRecords(catalogs[key]).map(object).filter(row =>
-    beforeCutoff(row.capturedAt ?? row.captured_at ?? world.catalog.captured_at ?? world.catalog.capturedAt, world.cutoff));
+  // Treat the directory as static reference data; rarely, it may expose parties created after the case.
+  return catalogueRecords(catalogs[key]).map(object);
 }
 
 /**
