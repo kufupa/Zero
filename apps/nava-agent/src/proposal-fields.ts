@@ -271,7 +271,7 @@ export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; dr
       const rate=String(fields.rate_plan ?? '');
       const track=rate.startsWith('NGOV')?'GOV':rate.startsWith('NCOR')?'COR':
         !fields.agency_id && !fields.agency_name && !fields.organization_id && !fields.organization_name && ['BAR','BARRO'].includes(rate)?'BAR':null;
-      for(const [key,value] of [['guarantee_type',fields.agency_id?'GTDAGT':fields.agency_name?null:'DEPREQ'],['track',track],['source_of_business','EMA'],['room_type','STQN']] as const) {
+      for(const [key,value] of [['guarantee_type',fields.agency_id||fields.agency_name?'GTDAGT':'DEPREQ'],['track',track],['source_of_business','EMA'],['room_type','STQN']] as const) {
         const current=fields[key];
         if(value===null || (current!=null && (typeof current!=='string' || current.trim()))) continue;
         const path=`/bookings/${index}/fields/${key}`;
