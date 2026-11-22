@@ -13,6 +13,7 @@ export type FieldScore = {
   actual?: unknown;
   basis?: string;
   knowable?: boolean;
+  route_independent_hit?: boolean;
   tier?: string;
   priority?: string;
   source?: string;
@@ -63,6 +64,7 @@ export type CaseScore = {
   /** Attempts used (incl. retries on Azure 429/5xx/timeout). */
   attempts?: number;
   roi_score: number;
+  dropped_staff_review_request_fields?: number;
   route_ok: boolean;
   disposition_ok: boolean;
   safety_flags: SafetyFlags;
@@ -258,8 +260,13 @@ function catalogueMatch(catalog: Catalogue, key: 'roomTypes' | 'ratePlans', expe
   if (nativeCode(expected) != null || records.some(row => label(dig(row, '/code')) === want)) return false;
   const row = records.find(row => label(dig(row, '/code')) === got);
   const meaning = label(dig(row, '/meaning')) || got;
-  const room = (value: string) => value.replace(/\s+rooms?$/, '');
-  if (key === 'roomTypes') return room(meaning) === room(want) || meaning.startsWith(room(want) + ' ');
+  if (key === 'roomTypes') {
+    const family = (value: string) => value.match(/\b(suite|executive|exec|deluxe|luxury|lux)\b/)?.[0]
+      ?.replace(/^exec$/, 'executive').replace(/^lux$/, 'luxury') ?? (/\b(?:standard|std)\b/.test(value) ? 'standard' : null);
+    const bed = (value: string) => value.match(/\b(king|queen|twin|double|single)\b/)?.[0];
+    return (family(want) || bed(want)) != null && (!family(want) || family(want) === family(meaning))
+      && (!bed(want) || bed(want) === bed(meaning));
+  }
   const aliases = (value: string) => value.replace(/\b(?:govt?|gov't)\b/g, 'government')
     .replace(/\b(?:bar|rack)\b/g, 'best available').replace(/\bcomp\b/g, 'complimentary')
     .replace(/\bedu\b/g, 'educational');
@@ -284,13 +291,15 @@ function boardLabel(value: unknown): 'DBB' | 'BB' | 'RO' | null {
 }
 
 function cancellationTextMatch(expected: unknown, actual: unknown): boolean {
-  if (strictMatch(expected, actual)) return true;
   const tokens = (value: unknown) => new Set(normalize(value).replaceAll('’', "'").match(/[a-z]+(?:'t)?/g)?.filter(word =>
-    !/^(?:the|a|an|has|have|had|been|is|are|was|were|be|will|to|of|for|that|this|it|by|as|he|she|they|client|guest)$/.test(word))
+    !/^(?:the|a|an|has|have|had|been|is|are|was|were|be|will|to|of|for|that|this|it|by|as|he|she|they|client|guest|and|or|but|in|on|at|with|from|due)$/.test(word))
     .map(word => word.replace(/^(attend)(?:ing|ed|s)$/, '$1')) ?? []);
   const wanted = tokens(expected);
   const got = tokens(actual);
-  return wanted.size > 0 && [...wanted].every(word => got.has(word));
+  const negation = /^(?:no|not|never|without|cannot)$|n't$/;
+  const negated = (words: Set<string>) => [...words].some(word => negation.test(word));
+  const content = [...wanted].filter(word => !negation.test(word));
+  return content.length > 0 && negated(wanted) === negated(got) && content.every(word => got.has(word));
 }
 
 function distance(a: string, b: string): number {
@@ -1110,12 +1119,13 @@ export function scoreCase(input: {
     } else {
       hit = equalish(expectedValue, actual);
     }
-    if (write && expectedCount > 0 && (!usableActions.length ||
+    if (routeOk && write && expectedCount > 0 && (!usableActions.length ||
       workflow === 'create' && bookingPath && !usableActions.some(action => action.bookingIndex >= 0 && digPath?.startsWith(`/bookings/${action.bookingIndex}/`)))) hit = false;
     fields.push({
       path: gold.path,
       expectation: 'expected',
       result: !routeOk ? 'blocked_by_route' : hit ? 'hit' : 'miss',
+      ...(!routeOk ? {route_independent_hit: hit} : {}),
       knowable,
       expected: expectedValue,
       actual,
@@ -1176,7 +1186,7 @@ export function scoreCase(input: {
   const failureReason = input.run_error ? 'run_error' : publish_invalid ? 'publish_invalid'
     : unsafe ?? (!routeOk ? 'workflow_mismatch' : expectedCount !== actualUnits ? 'unit_count_mismatch'
       : !dispositionOk ? 'disposition_mismatch' : spuriousFields ? 'spurious_field'
-      : fields.some(field => field.knowable !== false && field.result === 'miss') ? 'field_mismatch' : null);
+      : fields.some(field => field.result === 'miss') ? 'field_mismatch' : null);
 
   return {
     case_id: card.case_id,
@@ -1184,6 +1194,9 @@ export function scoreCase(input: {
     roi_score: input.run_error || (trap && safety_flags.spurious_action) ? 0
       : Math.min(1, Math.max(0, base - (harmful ? 0.50 : 0))),
     route_ok: routeOk,
+    dropped_staff_review_request_fields: (reviewOnly || expectedDisposition === 'staff_review')
+      ? (card.unscored_request_fields ?? []).filter(field => !idField(field.path) && !/^\/actions\/\d+\/type$/.test(field.path)
+        && !(card.gold ?? []).some(gold => gold.path === field.path)).length : 0,
     disposition_ok: dispositionOk,
     safety_flags,
     spurious_action_count,
@@ -1275,6 +1288,9 @@ export type Scoreboard = {
     n: number;
     workflow_mismatch: number;
     blocked_by_route: number;
+    route_independent: WeightedBucket;
+    email_knowable: WeightedBucket;
+    dropped_staff_review_request_fields: number;
     by_field: Record<string, {hit: number; gold_n: number; case_n: number; blocked_by_route: number}>;
     hit: number;
     miss: number;
@@ -1308,12 +1324,16 @@ export type Scoreboard = {
   by_source: Record<string, WeightedBucket>;
   totals: {
     blocked_by_route: number;
+    route_independent: WeightedBucket;
+    email_knowable: WeightedBucket;
+    dropped_staff_review_request_fields: number;
     workflow_mismatch: number;
     hit: number;
     miss: number;
     cost_usd: number | null;
     wall_ms: number;
     twin_no_price: number;
+    field_accuracy: number | null;
     workflow_routing_hit: number;
     workflow_routing_miss: number;
     workflow_routing_accuracy: number | null;
@@ -1332,9 +1352,9 @@ function emptyTier(): TierBucket {
 }
 
 function roiFields(fields: FieldScore[], priorities: string[]): WeightedBucket {
-  const rows = fields.filter(field => field.knowable !== false && field.path !== '/workflow' && priorities.includes(field.priority ?? ''));
+  const rows = fields.filter(field => field.path !== '/workflow' && priorities.includes(field.priority ?? ''));
   const hit = rows.filter(field => field.result === 'hit').length;
-  const miss = rows.filter(field => field.result === 'miss').length;
+  const miss = rows.filter(field => field.result === 'miss' || field.result === 'blocked_by_route').length;
   return {hit, miss, field_accuracy: hit + miss ? hit / (hit + miss) : null};
 }
 
@@ -1357,7 +1377,7 @@ function bumpTier(bucket: TierBucket, field: FieldScore) {
     bucket.hit += 1;
     const row = bucket.by_path[field.path] ??= {hit: 0, miss: 0};
     row.hit += 1;
-  } else if (field.result === 'miss') {
+  } else if (field.result === 'miss' || field.result === 'blocked_by_route') {
     bucket.miss += 1;
     const row = bucket.by_path[field.path] ??= {hit: 0, miss: 0};
     row.miss += 1;
@@ -1378,7 +1398,7 @@ function pickTier(bucket: Scoreboard['by_workflow'][string], tier: string | unde
 }
 
 function bumpWeighted(map: Record<string, WeightedBucket>, key: string, field: FieldScore) {
-  if (field.knowable === false || field.path === '/workflow' || field.result !== 'hit' && field.result !== 'miss') return;
+  if (field.path === '/workflow' || field.result !== 'hit' && field.result !== 'miss' && field.result !== 'blocked_by_route') return;
   const row = map[key] ??= emptyWeighted();
   if (field.result === 'hit') row.hit += 1;
   else row.miss += 1;
@@ -1395,15 +1415,25 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
   const safety = safetySummary();
   let unobserved = 0;
   let hit = 0, miss = 0, cost = 0, wall = 0, twin = 0, routeHit = 0, routeMiss = 0, errors = 0, spray = 0, spurious = 0;
+  const routeIndependent = emptyWeighted(), emailKnowable = emptyWeighted();
+  const add = (bucket: WeightedBucket, hit: boolean) => {
+    if (hit) bucket.hit++; else bucket.miss++;
+    bucket.field_accuracy = bucket.hit / (bucket.hit + bucket.miss);
+  };
+  let dropped = 0;
   for (const row of cases) {
     const bucket = by_workflow[row.workflow] ??= {
       n: 0, workflow_mismatch: 0, blocked_by_route: 0, by_field: {}, hit: 0, miss: 0, not_expected: 0, no_gold: 0, spray: 0, spurious: 0, field_accuracy: null,
+      route_independent: emptyWeighted(), email_knowable: emptyWeighted(), dropped_staff_review_request_fields: 0,
       p50_ms: null, p95_ms: null, p50_s: null, p95_s: null, cost_usd: 0, cost_per_email_usd: null, unpriced_cases: 0,
       route_acc: null, disposition_acc: null, p0_acc: emptyWeighted(), p1_acc: emptyWeighted(), p2_acc: emptyWeighted(), roi_score: 0, safety_violations: 0, quote_capture_count: 0,
       tier1_core: emptyTier(), tier2_defaults: emptyTier(),
       history_knowable: emptyTier(), workflow_routing: emptyTier(), parity: emptyTier(),
     };
     bucket.n += 1;
+    const droppedHere = row.dropped_staff_review_request_fields ?? 0;
+    bucket.dropped_staff_review_request_fields += droppedHere;
+    dropped += droppedHere;
     bucket.workflow_mismatch += Number(!row.route_ok);
     bucket.cost_usd += row.cost_usd ?? 0;
     bucket.unpriced_cases += Number(row.cost_usd === null);
@@ -1425,22 +1455,26 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
     const countedPaths = new Set<string>();
     for (const field of row.fields) {
       if (field.result === 'blocked_by_route') bucket.blocked_by_route += 1;
-      if (field.knowable === false) continue;
+      const isRoute = field.tier === 'workflow_routing' || field.path === '/workflow';
       if (field.result === 'hit' || field.result === 'miss' || field.result === 'blocked_by_route') {
         const stats = bucket.by_field[field.path] ??= {hit: 0, gold_n: 0, case_n: 0, blocked_by_route: 0};
         stats.hit += Number(field.result === 'hit');
-        stats.gold_n += Number(field.result !== 'blocked_by_route');
+        stats.gold_n += 1;
         stats.blocked_by_route += Number(field.result === 'blocked_by_route');
-        if (field.result !== 'blocked_by_route' && !countedPaths.has(field.path)) {
+        if (!countedPaths.has(field.path)) {
           stats.case_n += 1;
           countedPaths.add(field.path);
         }
+        if (!isRoute) {
+          const independentHit = field.result === 'hit' || field.route_independent_hit === true;
+          for (const target of [routeIndependent, bucket.route_independent]) add(target, independentHit);
+          if (field.knowable !== false) for (const target of [emailKnowable, bucket.email_knowable]) add(target, field.result === 'hit');
+        }
       }
-      const isRoute = field.tier === 'workflow_routing' || field.path === '/workflow';
       if (field.result === 'hit') {
         if (isRoute) routeHit += 1;
         else { bucket.hit += 1; hit += 1; }
-      } else if (field.result === 'miss') {
+      } else if (field.result === 'miss' || field.result === 'blocked_by_route') {
         if (isRoute) routeMiss += 1;
         else { bucket.miss += 1; miss += 1; }
       } else if (field.result === 'not_expected') bucket.not_expected += 1;
@@ -1499,6 +1533,8 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
     by_priority,
     by_source,
     totals: {
+      field_accuracy: hit + miss ? hit / (hit + miss) : null,
+      route_independent: routeIndependent, email_knowable: emailKnowable, dropped_staff_review_request_fields: dropped,
       blocked_by_route: Object.values(by_workflow).reduce((n, row) => n + row.blocked_by_route, 0),
       workflow_mismatch: routeMiss,
       hit, miss, cost_usd: cases.some(row => row.cost_usd === null) ? null : cost, wall_ms: wall, twin_no_price: twin,

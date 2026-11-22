@@ -1,6 +1,7 @@
 import type {CaseCard, TwinEnvelope} from '../types.js';
 import {
   extractSenderHost,
+  distinctivePartyTokens,
   searchPartyWithFallback,
   resolvePartySelection,
   type LearnedSenderHit,
@@ -8,12 +9,11 @@ import {
 import {isoDate, observeStays} from './backdate.js';
 import {anchorPdfs, beforeCutoff, quoteKey, rows, type TwinWorld} from './world.js';
 
-// Same entity key as the native party lookup's reservation identity matching.
-function partyKey(value: unknown, kind: string): string {
+// Ignore legal suffixes and punctuation; keep commercial name words.
+function partyKey(value: unknown): string {
   const tokens = String(value ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase('en-US')
     .match(/[\p{L}\p{N}]+/gu) ?? [];
   const suffixes = new Set(['pty', 'ltd', 'limited', 'inc', 'llc', 'cc', 'plc']);
-  if (kind === 'agency') for (const word of ['travel', 'travels', 'tour', 'tours', 'agency', 'agencies']) suffixes.add(word);
   while (tokens.length > 1 && suffixes.has(tokens.at(-1) ?? '')) tokens.pop();
   return tokens.join('');
 }
@@ -36,7 +36,7 @@ function twinLearnedSender(world: TwinWorld, host: string, kind: 'agency' | 'org
       counted.add(seen);
       const names = matches.get(domain) ?? new Map();
       matches.set(domain, names);
-      const key = partyKey(name, kind);
+      const key = partyKey(name);
       const best = names.get(key) ?? {name, support: 0};
       best.support++;
       names.set(key, best);
@@ -45,7 +45,7 @@ function twinLearnedSender(world: TwinWorld, host: string, kind: 'agency' | 'org
   for (const [, names] of [...matches].sort(([a], [b]) => b.length - a.length)) {
     const [best, next] = [...names.values()].sort((a, b) => b.support - a.support);
     if (!best || best.support < 2 || next && next.support === best.support) continue;
-    const hit = partyRecords(world, kind).find(row => partyKey(row.meaning ?? row.name, kind) === partyKey(best.name, kind));
+    const hit = partyRecords(world, kind).find(row => partyKey(row.meaning ?? row.name) === partyKey(best.name));
     return {host, kind, ...best, nativeId: hit ? String(hit.nativeId ?? hit.code ?? '') || null : null};
   }
   return null;
@@ -159,15 +159,8 @@ function partyRecords(world: TwinWorld, kind: string): Array<Record<string, unkn
     kind === 'ar_account' ? 'arAccounts' :
     null;
   if (!key) return [];
-  const names = new Set(world.anchors.flatMap(anchor => world.partyStates(anchor).map(stay =>
-    kind === 'agency' ? stay.ta1 ?? stay.agency_text
-      : kind === 'organization' ? stay.company ?? stay.company_text : stay.ar_account))
-    .concat(world.profiles.map(profile => profile[key] ?? profile[kind]))
-    .map(value => partyKey(value, kind)).filter(Boolean));
-  // A later snapshot can still supply current IDs/names for historically seen parties.
   return catalogueRecords(catalogs[key]).map(object).filter(row =>
-    beforeCutoff(row.capturedAt ?? row.captured_at ?? world.catalog.captured_at ?? world.catalog.capturedAt, world.cutoff)
-    || [row.meaning ?? row.name, row.code, row.nativeId].some(value => names.has(partyKey(value, kind))));
+    beforeCutoff(row.capturedAt ?? row.captured_at ?? world.catalog.captured_at ?? world.catalog.capturedAt, world.cutoff));
 }
 
 /**
@@ -204,6 +197,7 @@ async function searchParties(world: TwinWorld, input: Record<string, unknown>, c
         }
       }
     } else {
+      const partial = distinctivePartyTokens(term).length > 0, queryKey = partyKey(term);
       for (const row of parties) {
         const id = String(row.nativeId ?? row.code ?? row.id ?? '');
         if (!id) continue;
@@ -211,9 +205,9 @@ async function searchParties(world: TwinWorld, input: Record<string, unknown>, c
         const nameLower = name.toLowerCase();
         const code = String(row.code ?? '').toLowerCase();
         const hay = field === 'profile_id' ? id.toLowerCase() : `${nameLower} ${code}`;
-        const nameKey = partyKey(name, kind);
-        const queryKey = partyKey(term, kind);
-        if (!q || hay.includes(q) || (queryKey && nameKey.includes(queryKey)) || (code && q === code)) {
+        const nameKey = partyKey(name);
+        if (q === id.toLowerCase() || q === code && !!code || q === nameLower && !!nameLower ||
+          partial && (hay.includes(q) || !!queryKey && nameKey.includes(queryKey))) {
           batch.push({nativeId: id, code: row.code ?? null, displayName: row.meaning ?? row.name ?? row.label ?? null, name: row.meaning ?? row.name ?? row.label ?? null, kind});
         }
       }
