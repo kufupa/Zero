@@ -198,7 +198,7 @@ async function setDates(page, input) {
   }
 }
 
-async function setGuests(page, input) {
+export async function setGuests(page, input) {
   await openPicker(page, 'guests');
   const picker = page.locator('.x-guestpicker:visible').last();
   const adults = picker.locator('input[name="adults"]:visible');

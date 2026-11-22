@@ -8,6 +8,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { isAvailabilityReadRequest, installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { withCloudReadSession, verifyCloudProperty } from './cloud-session.mjs';
+import { setGuests as applyGuests } from './hotel-availability.mjs';
 import { getPropertyRegistration, PROPERTY_REGISTRY } from './property-registry.mjs';
 import { profileFor } from './property-profile.mjs';
 import { availabilityDetailsScope, isReviewedAvailabilityDetailsInquiry, isReviewedRoomInformationRequest } from './quote-availability-policy.mjs';
@@ -232,19 +233,7 @@ export async function setArrivalDate(page, iso) {
   await range.press('Tab');
 }
 
-export async function applyGuests(page, room) {
-  await page.locator('input[name="guests"]:visible').click();
-  await page.locator('input[name="adults"]:visible').fill(String(room.adults));
-  await page.locator('input[name="children"]:visible').fill(String(room.children));
-  await page.locator('input[name="children"]:visible').press('Tab');
-  const ages = page.locator('input[role="combobox"][name^="uxcombobox-"]:visible');
-  if (await ages.count() !== room.children) throw new Error('CHILD_AGE_CONTROL_COUNT_MISMATCH');
-  for (let i=0; i<room.children; i++) {
-    await ages.nth(i).locator('xpath=ancestor::table[1]').locator('.x-form-arrow-trigger').click();
-    await page.locator('[role="option"]:visible').filter({ hasText: new RegExp(`^${room.childAges[i]}$`) }).click();
-  }
-  await page.locator('a[id$="-applyBtn"]:visible').click();
-}
+export { applyGuests };
 
 export async function search(page) {
   // HMS uses anchors without a button role; the hidden companion Search is
@@ -449,9 +438,9 @@ export function pickerFilter(kind,reference) {
   return filter;
 }
 
-export async function resolveReference(page,kind,reference) {
+export async function resolveReference(page,kind,reference,byName=false) {
   const config=contextControls[kind];
-  const {name:filterName,value:filterValue}=pickerFilter(kind,reference);
+  const {name:filterName,value:filterValue}=byName ? {name:config.nameFilter,value:reference.name} : pickerFilter(kind,reference);
   await expandCriteria(page);
   const input=page.locator(`input[name="${config.field}"]:visible`);
   await input.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger').click();
@@ -482,6 +471,8 @@ export async function resolveReference(page,kind,reference) {
   } catch(error) {
     error.phase=`${kind}_picker`;
     if (await popup.isVisible()) await popup.locator('a.x-btn').filter({hasText:/^Cancel$/}).click();
+    if (!byName && kind==='organization' && reference.nativeId && reference.name && error.message==='REFERENCE_NOT_FOUND')
+      return resolveReference(page,kind,reference,true);
     throw error;
   }
 }
@@ -619,10 +610,13 @@ export async function searchCalendar(page, request, room, criteriaCheckpoint=asy
   const origin=new URL(page.url()).origin;
   let expectedStart=request.arrivalDate;
   for (let index=0;index<3;index++) {
-    const pending=page.waitForResponse(r=>isAvailabilityReadRequest({method:r.request().method(),url:r.url()},origin),{timeout:45000});
+    const pending=page.waitForRequest(r=>isAvailabilityReadRequest({method:r.method(),url:r.url()},origin),{timeout:45000});
     pending.catch(()=>{});
-    const [response]=await clock.time('grid',()=>Promise.all([pending,index===0?search(page):page.locator('a.x-btn[data-qtip="Page Right"]:visible').click()]));
-    if(!response.ok())throw new Error(`SEARCH_HTTP_${response.status()}`);
+    const response=await clock.time('grid',async()=>{
+      const [read]=await Promise.all([pending,index===0?search(page):page.locator('a.x-btn[data-qtip="Page Right"]:visible').click()]);
+      return read.response();
+    });
+    if(!response?.ok())throw new Error(`SEARCH_HTTP_${response?.status()??'MISSING'}`);
     const endpoint=new URL(response.url()).pathname;
     const criteria=projectCriteria(response.request().postDataJSON());
     assertApplied(request,room,criteria,{resolvedContext,startDate:expectedStart,strategy,roomCodes,rateCodes});
