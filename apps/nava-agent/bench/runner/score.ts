@@ -1102,13 +1102,13 @@ export function scoreCase(input: {
         && strictMatch(expectedValue, dig(proposal, digPath.replace(/_name$/, '_id'))));
     } else if (/\/(arrival_date|departure_date)$/.test(gold.path)) {
       hit = strictMatch(expectedValue, actual);
-    } else if ((workflow === 'create' || workflow === 'quote') && gold.path.endsWith('/room_type')) {
+    } else if ((workflow === 'create' || workflow === 'quote' || workflow === 'amend') && gold.path.endsWith('/room_type')) {
       if (workflow === 'quote' && digPath && /\/rooms\/\d+\/room_type$/.test(digPath)) {
         const candidates = quoteRoomTypes(dig(proposal, digPath.replace(/\/room_type$/, '')));
         actual = candidates.find(roomType => roomMatch(expectedValue, roomType)) ?? candidates[0];
       }
       hit = codeGoldHit(expectedValue, actual) ?? roomMatch(expectedValue, actual);
-    } else if (workflow === 'create' && gold.path.endsWith('/rate_plan')) {
+    } else if ((workflow === 'create' || workflow === 'amend') && gold.path.endsWith('/rate_plan')) {
       hit = codeGoldHit(expectedValue, actual) ?? rateMatch(expectedValue, actual, board);
     } else if ((workflow === 'create' || workflow === 'quote') && gold.path.endsWith('/board')) {
       const meal = boardLabel(expectedValue);
