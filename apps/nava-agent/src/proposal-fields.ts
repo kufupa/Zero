@@ -1,5 +1,6 @@
 import type { ProposalDraft } from './schema.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
+import { createNoteAliases, createReservationNote, createStaffNoteLabels, isCreateRateCode } from '../tools/create/schema.js';
 import { isEmptyQuoteGroup } from '../tools/quote/schema.js';
 
 export function pointerParts(path: string): string[] | null {
@@ -80,7 +81,8 @@ function createOccupancyFields(draft: ProposalDraft): ProposalDraft {
 
 export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
   if(draft.workflow!=='create' || !['propose','needs_info','staff_review'].includes(draft.disposition)) return draft;
-  const fieldSpecs=[...draft.field_specs];
+  const fieldSpecs=draft.field_specs.map(spec=>Object.hasOwn(createStaffNoteLabels,spec.path.split('/').at(-1) ?? '')
+    ? {...spec,required:false} : spec);
   const bookings=draft.bookings.map((booking,index)=>{
     const fields={...booking.fields};
     if(index===0 && draft.actions.some(action=>action.type==='create')) {
@@ -109,7 +111,7 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
     ] as const) {
       const path=`/bookings/${index}/fields/${key}`;
       const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
-      if(key==='note' && !Object.hasOwn(fields,'note') && typeof fields.reservation_note==='string') fields.note=fields.reservation_note;
+      if(key==='note' && typeof fields.reservation_note==='string') fields.note=createReservationNote({note:fields.note,reservation_note:fields.reservation_note});
       if(!Object.hasOwn(fields,key)) fields[key]=createFieldDefault(key,fields);
       if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,required,control};
       else fieldSpecs.push({path,label,editable:true,required,control,provenance:'unknown',error:null,options:[],evidence:[]});
@@ -250,6 +252,8 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
           add(`${root}/${key}`,label,control,required);
         }
         if(Object.hasOwn(room,'board')) add(`${root}/board`,'Room meal plan','text',false);
+        if(Object.hasOwn(room,'room_type')) add(root+'/room_type','Requested room type','text',false);
+        if(Object.hasOwn(room,'rate_preference')) add(root+'/rate_preference','Requested rate','text',false);
         return room;
       });
       return {...group,rooms};
@@ -290,26 +294,57 @@ export function hrcenCode(kind:'rate_plan'|'room_type',value:unknown,board:unkno
   return null;
 }
 
+export function createTrackDefault(fields: Record<string,unknown>): string | null {
+  const rate=String(fields.rate_plan ?? '');
+  return rate.startsWith('NGOV')?'GOV':rate.startsWith('NCOR')?'COR':
+    !fields.agency_id && !fields.agency_name && !fields.organization_id && !fields.organization_name && ['BAR','BARRO'].includes(rate)?'BAR':null;
+}
+
+function expandCreateQuantity(draft: ProposalDraft): ProposalDraft {
+  const [first]=draft.bookings;
+  const count=first?.fields.quantity;
+  if(draft.bookings.length!==1 || typeof count!=='number' || !Number.isInteger(count) || count<2 || count>8 ||
+    !draft.actions.some(action=>action.type==='create' && action.booking_ids.includes(first.id))) return draft;
+  const {quantity:_quantity,...fields}=first.fields;
+  const bookings=Array.from({length:count},(_,index)=>({...first,id:index===0?first.id:first.id+':'+index,fields:{...fields}}));
+  const paths=(path:string)=>/^\/?bookings\/0\/fields\/quantity$/.test(path) ? [] :
+    /^\/?bookings\/0\//.test(path) ? bookings.map((_,index)=>path.replace('bookings/0/', 'bookings/'+index+'/')) : [path];
+  return {...draft,bookings,missing:draft.missing.flatMap(paths),
+    actions:draft.actions.map(action=>action.type==='create'?{...action,booking_ids:action.booking_ids.flatMap(id=>
+      id===first.id?bookings.map(booking=>booking.id):[id])}:action),
+    field_specs:draft.field_specs.flatMap(spec=>paths(spec.path).map(path=>({...spec,path})))};
+}
+
 export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:string): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
   if(draft.workflow==='create') {
-    draft=withCreateNativeFields(createOccupancyFields(draft));
+    draft=withCreateNativeFields(createOccupancyFields(expandCreateQuantity(draft)));
     const fieldSpecs=[...draft.field_specs];
+    const warnings=[...draft.warnings];
+    const noteAliases = new Set<string>(createNoteAliases);
     const bookings=draft.bookings.map((booking,index)=>{
       if(booking.property_code!=='HRCEN') return booking;
       const fields={...booking.fields};
+      const forRoom=draft.bookings.length>1 ? 'Room '+(index+1)+': ' : '';
+      for(const [key,label] of Object.entries(createStaffNoteLabels)) {
+        if(fields[key]!=null && fields[key]!=='') warnings.push(forRoom+label+': '+String(fields[key]));
+      }
+      fields.note=createReservationNote(fields);
+      for(const key of createNoteAliases) delete fields[key];
       if(typeof fields.billing_reference==='number' && Number.isSafeInteger(fields.billing_reference)) {
         fields.billing_reference=String(fields.billing_reference);
       }
       for(const key of ['rate_plan','room_type'] as const) {
+        const requested=fields[key];
         const code=hrcenCode(key,fields[key],fields.board);
         if(code) fields[key]=code;
         else if(key==='rate_plan' && /\bdbb\b|dinner/i.test(`${fields.board ?? ''} ${fields[key] ?? ''}`)
           && /\bbar\b|best available|rack|corporate|negotiated|contract|\bNCOR1B\b/i.test(String(fields[key] ?? ''))) fields[key]=null;
+        if(key==='rate_plan' && requested!=null && requested!=='' && !isCreateRateCode(fields[key])) {
+          warnings.push(forRoom+'Requested rate: '+String(requested)+'. Select an Infor rate plan.');
+          fields[key]=null;
+        }
       }
-      const rate=String(fields.rate_plan ?? '');
-      const track=rate.startsWith('NGOV')?'GOV':rate.startsWith('NCOR')?'COR':
-        !fields.agency_id && !fields.agency_name && !fields.organization_id && !fields.organization_name && ['BAR','BARRO'].includes(rate)?'BAR':null;
-      for(const [key,value] of [['track',track],['source_of_business','EMA']] as const) {
+      for(const [key,value] of [['track',createTrackDefault(fields)],['source_of_business','EMA']] as const) {
         const current=fields[key];
         if(value===null || (current!=null && (typeof current!=='string' || current.trim()))) continue;
         const path=`/bookings/${index}/fields/${key}`;
@@ -320,7 +355,10 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
       }
       return {...booking,fields};
     });
-    draft={...draft,bookings,field_specs:fieldSpecs};
+    const mapped=(path:string)=>/^\/?bookings\/(\d+)\/fields\/([^/]+)$/.exec(path);
+    const alias=(path:string)=>{const m=mapped(path);return m && bookings[Number(m[1])]?.property_code==='HRCEN' && noteAliases.has(m[2]);};
+    draft={...draft,bookings,warnings,missing:draft.missing.filter(path=>!alias(path)),
+      field_specs:fieldSpecs.filter(spec=>!alias(spec.path))};
   }
   if(draft.workflow==='quote') draft=withQuoteStaffFields(draft);
   if(draft.workflow==='amend') draft=withAmendSupportedFields(draft);

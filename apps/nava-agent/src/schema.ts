@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { isEmptyQuoteGroup, quoteInput as nativeGroupedQuote, type QuoteInput } from '../tools/quote/schema.js';
+import { hrcenCode } from './proposal-fields.js';
+import { CENTURION_RATE_CATALOGUE } from '../../server-pilot/src/hms/centurion-rate-catalogue.js';
 
 const id = z.string();
 const json: z.ZodType<null | boolean | number | string | unknown[] | Record<string, unknown>> = z.lazy(() => z.union([z.null(), z.boolean(), z.number(), z.string(), z.array(json), z.record(json)]));
@@ -49,7 +51,9 @@ export const groupedQuoteRequest = nativeGroupedQuote.strip().extend({
   board, organization_id:partyField, organization_name:partyField, agency_id:partyField, agency_name:partyField,
   party_name:nativeGroupedQuote.shape.party_name.nullish().catch(null),
   groups:z.preprocess(value=>Array.isArray(value) ? value.filter(group=>!isEmptyQuoteGroup(group)) : value,
-    z.array(nativeGroup.strip().extend({board,rooms:z.array(nativeGroup.shape.rooms.element.strip().extend({board})).min(1)})).min(1)),
+    z.array(nativeGroup.strip().extend({board,rooms:z.array(nativeGroup.shape.rooms.element.strip().extend({
+      board,room_type:partyField,rate_preference:partyField,
+    })).min(1)})).min(1)),
 })
   .refine(quote=>new Set(quote.groups.map(group=>group.group_id)).size===quote.groups.length,{message:'group ids must be unique'})
   .refine(({groups})=>groups.every(group=>calendarDate.safeParse(group.arrival_date).success
@@ -60,13 +64,23 @@ export const groupedQuoteRequest = nativeGroupedQuote.strip().extend({
       ...(organization_id && organization_name ? {organization:{nativeId:organization_id,name:organization_name}} : {}),
       ...(agency_id && agency_name ? {bookingAgency:{nativeId:agency_id,name:agency_name}} : {}),
     }} : {}),
-    groups:groups.map(({board:groupBoard,rooms,...group})=>({...group,rooms:rooms.map(({board:roomBoard,...room})=>{
+    groups:groups.map(({board:groupBoard,rooms,...group})=>({...group,rooms:rooms.map(({board:roomBoard,room_type,rate_preference,...room})=>{
       const meal=roomBoard ?? groupBoard ?? board;
+      const hrcen=quote.property_code==='HRCEN';
+      const roomCode=hrcen && room_type && /^(?:(?:standard|deluxe|exec(?:utive)?|lux(?:ury)?|single)(?: (?:queen|king|twin))?(?: room)?|suite)$/i.test(room_type)
+        ? hrcenCode('room_type',room_type,meal) : null;
+      const roomCodes=hrcen && room_type && /^(?:STQN|STWN|SKNG|DLXQN|DLXTWN|DLXKNG|EXKNG|LUXKNG|SUITE)$/.test(room_type)
+        ? [room_type] : /^(?:standard|deluxe)(?: room)?$/i.test(room_type ?? '') && roomCode
+          ? (roomCode.startsWith('DLX')?['DLXQN','DLXTWN','DLXKNG']:['STQN','STWN','SKNG']) : roomCode ? [roomCode] : [];
+      const rateCode=hrcen ? hrcenCode('rate_plan',rate_preference,meal) ??
+        (rate_preference && Object.hasOwn(CENTURION_RATE_CATALOGUE,rate_preference) ? rate_preference : null) : null;
       const bases=room.required?.mealPlanBases;
       const roomOnly=meal && /^(?:ro|room only|room_only)$/i.test(meal);
       const breakfast=!meal || /\b(?:bb|dbb|breakfast|dinner)\b/i.test(meal) || /^b&b$/i.test(meal);
       const dinner=(basis:string)=>/^(?:dbb|dinner_bed_breakfast|dinner[, ]+bed)/i.test(basis);
       return {...room,required:{...room.required,
+        ...(!room.required?.roomCodes?.length && roomCodes.length ? {roomCodes} : {}),
+        ...(!room.required?.rateCodes?.length && rateCode ? {rateCodes:[rateCode]} : {}),
         ...(roomOnly ? {mealPlanBases:['room_only']} : bases?.length ? {mealPlanBases:bases.map(basis=>dinner(basis)?'breakfast':basis)} :
           breakfast ? {mealPlanBases:['breakfast']} : {}),
       }};

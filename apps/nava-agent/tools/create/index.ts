@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { setTimeout as delay } from 'node:timers/promises';
-import { prepareInput, saveInput, type CreateInput } from './schema.js';
+import { createNoteAliases, createReservationNote, createStaffNoteLabels, isCreateRateCode, prepareInput, saveInput, type CreateInput } from './schema.js';
 import { createGoEnabled, createGoRealGuests, hmsSaveEnabled } from '../../src/hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedCreate, type StaffStage } from '../../src/attachment-gate.js';
 
@@ -72,7 +72,7 @@ const fieldPaths: Record<string, readonly string[]> = {
   room_type: ['room', 'roomType'], room_type_for_charge: ['room', 'roomTypeForCharge'], rate_plan: ['room', 'ratePlan'],
   guarantee_type: ['guaranteeType'], source_of_business: ['sourceOfBusiness'], reason_for_stay: ['reasonForStay'],
   track: ['track'], market_segment: ['marketSegment'], guest_opt_in: ['guestoptin4'],
-  reservation_note: ['note'], note: ['note'], billing_reference: ['billingReference'], commission_percent: ['taCommission'],
+  billing_reference: ['billingReference'], commission_percent: ['taCommission'],
   organization_id: ['parties', 'organizationId'], organization_name: ['parties', 'organizationName'],
   agency_id: ['parties', 'agencyId'], agency_name: ['parties', 'agencyName'],
   ar_account_id: ['parties', 'arAccountId'], ar_account_name: ['parties', 'arAccountName'],
@@ -98,7 +98,9 @@ export function buildRequest(input: CreateInput): { request: NativeRequest; unkn
   const unknown: string[] = [];
   const assigned = new Set<string>();
   for (const [field, value] of Object.entries(booking.fields)) {
-    if (field === 'room_count' || field === 'board' || field.startsWith('profile_') || value === null) continue;
+    if (Object.hasOwn(createStaffNoteLabels,field) || field === 'room_count' || field.startsWith('profile_') || value === null ||
+      (field === 'quantity' && value === 1) || ['note',...createNoteAliases].includes(field) ||
+      (field === 'rate_plan' && !isCreateRateCode(value))) continue;
     const path = Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
     if (!path) { unknown.push(field); continue; }
     const key = path.join('.');
@@ -112,6 +114,8 @@ export function buildRequest(input: CreateInput): { request: NativeRequest; unkn
     }
     target[path[path.length - 1]] = value;
   }
+  const note = createReservationNote(booking.fields);
+  if (note !== null) request.note = note;
   const firstName = booking.fields.first_name;
   const lastName = booking.fields.last_name;
   const expectedGuest = typeof firstName === 'string' && typeof lastName === 'string' && firstName && lastName
@@ -306,7 +310,11 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       await api.withCloudCredentialLease(request.propertyCode, run, { databaseUrl: leaseDatabase(), readOnly: true, signal: context.signal });
     const trackChoices = object(result.trackChoices) && result.trackChoices.property_code === request.propertyCode
       ? result.trackChoices : {status:'unavailable',property_code:request.propertyCode,items:[],coverage:null};
-    const data = bounded({ native: result, unsupportedFields: built.unknown, guest_candidates:guestChoices(result),
+    const missing = result.outcome === 'prepared' ? [] : [
+      ['room.roomType',request.room.roomType],['room.ratePlan',request.room.ratePlan],
+      ['guaranteeType',request.guaranteeType],['track',request.track],
+    ].flatMap(([key,value])=>value==null || value==='' ? [key] : []);
+    const data = bounded({ native: result, missing, unsupportedFields: built.unknown, guest_candidates:guestChoices(result),
       rate_choices:rateChoices, room_choices:roomChoices, track_choices:trackChoices });
     if (built.unknown.length || result.outcome !== 'prepared') return fail('CREATE_PREPARE_INCOMPLETE', result.issue ?? 'Native create is incomplete.', 'known', data);
     return success(data);

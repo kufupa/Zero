@@ -10,6 +10,9 @@ const labels = new Map([
   ['stay.childCount', 'child count'], ['room.roomType', 'room type'], ['room.roomTypeForCharge', 'charged room type'],
   ['room.ratePlan', 'rate plan'], ['room.ratePlanCriteria', 'rate plan'], ['room.rateAvailability', 'rate availability'],
   ['guaranteeType', 'guarantee type'], ['guaranteeType.staging', 'guarantee type'], ['sourceOfBusiness', 'booking source'],
+  ['track', 'booking track'], ['room_type', 'room type'], ['rate_plan', 'rate plan'], ['guarantee_type', 'guarantee type'],
+  ['parties.organizationId', 'company'], ['parties.agencyId', 'booking agency'], ['parties.arAccountId','A/R account'],
+  ['cms.send','confirmation email or turn off CMS'], ['note','reservation note (up to 2,000 characters)'],
 ]);
 const messages = new Map([
   ['guest_ambiguous', 'More than one Infor guest profile matched. Select the correct profile.'],
@@ -28,27 +31,40 @@ const messages = new Map([
   ['rate_availability_unverified', 'Infor could not verify availability for this rate.'],
   ['HMS_BROWSER_HOLD', 'Infor is still holding a session for this guest and arrival. Wait for it to close before preparing again.'],
   ['INVALID_CREATE_TARGET', 'Check the guest first name, last name, and arrival date.'],
+  ['CREATE_AVAILABILITY_INPUT_INCOMPLETE','Fill in the stay details before checking availability.'],
+  ['confirmation_details_or_real_guest_required','Enter the confirmation email or turn off CMS for this stay.'],
+  ['guarantee_not_supported_yet','Select a supported guarantee type.'],
+  ['invalid_field_type','Some reservation details need correcting.'],
+  ['requested_fields_not_supported','Infor cannot save some of these reservation details.'],
+  ['HMS_RESPONSE_UNVERIFIED','Infor could not confirm the selected details. Check the room, rate and guarantee.'],
 ]);
 const optionalIdentifier = identifier.optional().catch(undefined);
+const identifiers = z.array(identifier).catch([]);
 const nativeRejection = z.object({
-  issue: optionalIdentifier, field: optionalIdentifier, missing: z.array(identifier).catch([]),
+  issue: optionalIdentifier, field: optionalIdentifier, missing: identifiers, invalidFields:identifiers,
+  unsupportedFields:z.array(z.object({field:identifier})).catch([]),
   ratePlanIssue: z.object({ issue: optionalIdentifier }).optional().catch(undefined),
+  detail:z.object({issue:optionalIdentifier,field:optionalIdentifier,missing:identifiers}).optional().catch(undefined),
 });
 export const prepareRejection = z.object({ issues: z.array(identifier).max(2), fields: z.array(identifier).max(12) }).strict();
 type PrepareRejection = z.infer<typeof prepareRejection>;
 
 export function readPrepareRejection(data: unknown, code: string | undefined): PrepareRejection {
-  const result = z.object({ native: nativeRejection.optional() }).safeParse(data);
+  const result = z.object({ native: nativeRejection.optional(), missing:identifiers, unsupportedFields:identifiers }).safeParse(data);
   const native = result.success ? result.data.native : undefined;
-  const issues = [native?.issue, native?.ratePlanIssue?.issue].filter((issue): issue is string => issue !== undefined);
+  const issues = [native?.issue, native?.ratePlanIssue?.issue, native?.detail?.issue].filter((issue): issue is string => issue !== undefined);
+  const unsupported = result.success ? result.data.unsupportedFields : [];
   if (!issues.length && code && messages.has(code)) issues.push(code);
-  const fields = [native?.field, ...(native?.missing ?? [])].filter((field): field is string => field !== undefined);
-  return { issues: [...new Set(issues)], fields: [...new Set(fields)].slice(0, 12) };
+  const fields = [native?.field, native?.detail?.field, ...(native?.missing ?? []), ...(native?.detail?.missing ?? []),
+    ...(native?.invalidFields ?? []), ...(native?.unsupportedFields.map(field=>field.field) ?? []), ...(result.data?.missing ?? []), ...unsupported]
+    .filter((field): field is string => field !== undefined);
+  return { issues: [...new Set(issues)].slice(0,2), fields: [...new Set(fields)].slice(0,12) };
 }
 
 export function describePrepareRejection({ issues, fields }: PrepareRejection): string {
-  const reasons = issues.map(issue => messages.get(issue) ?? `Infor rejected Prepare (${issue}).`);
-  if (fields.length) reasons.push(`Check: ${[...new Set(fields.map(field => labels.get(field) ?? field))].join(', ')}.`);
+  const reasons = issues.map(issue => messages.get(issue) ?? 'Infor could not complete Prepare.');
+  const readable = fields.map(field=>labels.get(field) ?? field.replace(/^.*\./,'').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/_/g,' ').toLowerCase());
+  if (readable.length) reasons.push('Fill in or correct: '+[...new Set(readable)].join(', ')+'.');
   return reasons.join(' ') || 'HMS Prepare did not complete.';
 }
 
@@ -69,7 +85,7 @@ const createObserved=z.object({
   arrival:z.string().optional(),departure:z.string().optional(),adults:z.union([z.string(),z.number()]).optional(),
   childAges:z.array(z.number()).optional(),roomType:z.string().optional(),roomTypeForCharge:z.string().optional(),
   ratePlan:z.string().optional(),guaranteeType:z.string().optional(),sourceOfBusiness:z.string().optional(),
-  track:z.string().optional(),mealPlan:z.string().optional(),
+  track:z.string().optional(),mealPlan:z.string().optional(),note:z.string().optional(),
   guest:z.object({nativeId:z.string(),firstName:z.string(),lastName:z.string(),email:z.string().nullable().optional()}).optional().catch(undefined),
   organization:observedParty,agency:observedParty,arAccount:observedParty,
   price:nativePrice.optional(),

@@ -4,7 +4,7 @@ import { sql, uid, json } from './db.js';
 import { proposalDraft } from './schema.js';
 import { priorQuotedRateChoices, proposalWire } from './runtime.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
-import { editablePointer, pointerParts, validChildAges, withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
+import { createTrackDefault, editablePointer, pointerParts, validChildAges, withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
 import { attachmentCheckPath, hasBoundCreateGuest, invalidGuestSelection, profileReview, profileReviewFor, requiresStaffAttachmentCheck, selectedCreateGuest, selectedStageSource, staffAttachmentsChecked } from './attachment-gate.js';
 import { staffPrepareOnly } from './hms-mode.js';
 import { targetSelection, withAmendRoomTypeField } from './stay-target.js';
@@ -157,6 +157,16 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
       if(!draft.field_specs.includes(spec)) draft.field_specs.push(spec);
       spec.provenance='staff';
       changes.push({change:item,...modified});
+    }
+    if(p.workflow==='create') for(const [index,booking] of draft.bookings.entries()) {
+      const root='/bookings/'+index+'/fields/';
+      if(booking.property_code!=='HRCEN' || booking.fields.track || !changes.some(({change})=>change.path===root+'rate_plan')) continue;
+      const spec=draft.field_specs.find(f=>f.path===root+'track');
+      const track=createTrackDefault(booking.fields);
+      if(track && spec && spec.provenance!=='staff' && !spec.evidence.length && !spec.error) {
+        booking.fields.track=track;
+        spec.provenance='default';
+      }
     }
     const countChange=input.changes.find(change=>change.path==='/bookings/0/fields/room_count');
     const clonedFromFirst:string[]=[];
