@@ -17,6 +17,7 @@ export function azureReplayModel(model: string, effort: string, options: {fetche
       return [];
     }));
     let response: Response;
+    const throttleDeadline = Date.now() + 5 * 60_000;
     for (let attempt = 0; ; attempt++) {
       response = await fetcher(`${base}/responses`, {
         method: 'POST',
@@ -29,13 +30,18 @@ export function azureReplayModel(model: string, effort: string, options: {fetche
           }))} : {}),
         }),
       });
-      if (response.ok || attempt === 3 || (response.status !== 429 && (response.status < 500 || response.status >= 600))) break;
+      const throttled = response.status === 429;
+      if (response.ok || (!throttled && (attempt >= 3 || response.status < 500 || response.status >= 600))) break;
       const retry = response.headers.get('retry-after');
       const msHeader = response.headers.get('retry-after-ms');
       const requested = msHeader ? Number(msHeader) : retry ? (/^\d+(?:\.\d+)?$/.test(retry)
         ? Number(retry) * 1000 : Date.parse(retry) - Date.now()) : 0;
+      const backoff = Math.min(30_000, 500 * 2 ** attempt);
+      const retryAfter = Number.isFinite(requested) ? requested : 0;
+      const delay = (throttled ? Math.max(backoff, retryAfter) : Math.min(30_000, Math.max(backoff, retryAfter))) + Math.random() * 500;
+      if (throttled && Date.now() + delay >= throttleDeadline) break;
       await response.body?.cancel();
-      await wait(Math.min(30_000, Math.max(Number.isFinite(requested) ? requested : 0, 500 * 2 ** attempt)) + Math.random() * 500);
+      await wait(delay);
     }
     if (!response.ok) {
       await response.body?.cancel();
