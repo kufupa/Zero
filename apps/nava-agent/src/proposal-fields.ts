@@ -297,7 +297,15 @@ export function hrcenCode(kind:'rate_plan'|'room_type',value:unknown,board:unkno
 export function createTrackDefault(fields: Record<string,unknown>): string | null {
   const rate=String(fields.rate_plan ?? '');
   return rate.startsWith('NGOV')?'GOV':rate.startsWith('NCOR')?'COR':
-    !fields.agency_id && !fields.agency_name && !fields.organization_id && !fields.organization_name && ['BAR','BARRO'].includes(rate)?'BAR':null;
+    ['BAR','BARRO'].includes(rate)?'BAR':rate==='NGDS3B'?'GDSN':rate==='NG156B'?'COR':
+    ['CMPBB','CMPDBB','CMPRO'].includes(rate)?'COM':null;
+}
+
+function createGuaranteeDefault(fields: Record<string,unknown>): string | null {
+  if(fields.agency_id || fields.agency_name) return null;
+  if(fields.rate_plan==='NG156B' && fields.organization_id) return 'GTDCMP';
+  if(fields.rate_plan==='CMPBB' && !fields.organization_id && !fields.organization_name) return 'CNFREC';
+  return null;
 }
 
 function expandCreateQuantity(draft: ProposalDraft): ProposalDraft {
@@ -344,7 +352,7 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
           fields[key]=null;
         }
       }
-      for(const [key,value] of [['track',createTrackDefault(fields)],['source_of_business','EMA']] as const) {
+      for(const [key,value] of [['track',createTrackDefault(fields)],['guarantee_type',createGuaranteeDefault(fields)],['source_of_business','EMA']] as const) {
         const current=fields[key];
         if(value===null || (current!=null && (typeof current!=='string' || current.trim()))) continue;
         const path=`/bookings/${index}/fields/${key}`;
