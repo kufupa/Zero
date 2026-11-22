@@ -24,7 +24,7 @@ const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,100}$/.test(error?.message || ''
 const candidate = ({ nativeId, firstName, lastName, email, phoneNumber, city, country }) =>
   ({ nativeId, firstName, lastName, email, phoneNumber, city, country });
 
-// An optional, encrypted diagnostic for an unsaved Labtest Prepare. The dialog
+// An optional, encrypted diagnostic for unsaved Prepare. The dialog
 // handlers remain unchanged: this only observes a failure before the page closes.
 function prepareDialogDiagnostic(page, publicKey, target) {
   let activeTool = null, nativeDialog = null;
@@ -668,6 +668,13 @@ export async function createReservation(input, options = {}) {
           }
           output.applied.guaranteeType = state.guarantee.actual.display;
           if (!commit && state.rateAvailabilityRequired) await new Promise(resolve => setTimeout(resolve, 1000));
+          if (!commit && input.guaranteeType === 'DEPREQ') {
+            const message = page.locator('.x-message-box:visible');
+            if (await message.count() === 1 && /^0\s+OK$/.test((await message.innerText()).trim())) {
+              await message.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ }).click({ timeout: 3000 });
+              await message.waitFor({ state: 'hidden', timeout: 3000 });
+            }
+          }
         }
       } else if (!commit && isSupportedLabtestGuarantee(input.guaranteeType)) {
         missing.push('guaranteeType.staging');
