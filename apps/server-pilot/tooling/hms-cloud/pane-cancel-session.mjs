@@ -21,6 +21,7 @@ const day = (value) => {
 const name = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200 &&
   value === value.trim() && !/[\p{Cc}]/u.test(value);
 const READ_BUDGET_MS = 15 * 60_000;
+const PREVIEW_DIALOG_BUDGET_MS = 60_000;
 const COMMIT_BUDGET_MS = 20 * 60_000;
 const neverDispatchedCancelProofs = new WeakMap();
 const lookupOptions = (firstName, lastName, arrival) => {
@@ -254,10 +255,12 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
       if (input.mode === 'commit' && (remaining < 1 || !continuationAllowed())) {
         return { outcome: 'not_dispatched', requestDispatched: false, dispatchCallbacksDrained: true };
       }
-      const opened = await open(page, expected, input.mode === 'commit' ? {
-        timeoutMs: remaining, continuationAllowed, awaitChargeApproval: awaitCharge,
-        prepareChargeWithAuthority: prepareCharge, bindDepositReceived: input.bindDepositReceived === true,
-      } : {});
+      const opened = await open(page, expected, {
+        timeoutMs: input.mode === 'commit' ? remaining : Math.min(remaining, PREVIEW_DIALOG_BUDGET_MS),
+        continuationAllowed,
+        ...(input.mode === 'commit' ? { awaitChargeApproval: awaitCharge,
+          prepareChargeWithAuthority: prepareCharge, bindDepositReceived: input.bindDepositReceived === true } : {}),
+      });
       if (input.mode === 'preview' && opened.outcome === 'fee_dialog_pending' &&
           opened.cancellationSaveDispatched === false && opened.chargeApproved === false && opened.chargeDispatched === false) {
         return { outcome: 'preview_ok', expected, feeDialogPending: true,

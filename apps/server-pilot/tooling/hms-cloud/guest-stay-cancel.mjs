@@ -208,7 +208,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
   prepareChargeWithAuthority, continuationAllowed = () => true, bindDepositReceived = false } = {}) {
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED', requestDispatched: false,
     dialogOpenRequestDispatched: false, cancellationSaveDispatched: false, chargeApproved: false, chargeDispatched: false };
-  let armed = false, dialogOpenDispatched = false, nativeDialog = null, response = null, authorizedRequest;
+  let armed = false, dialogOpenDispatched = false, nativeDialog = null, response = null, policyResponse = null, authorizedRequest;
   let fence, scope, interactionStarted = false, openedReady = false, baselineVerified = false;
   let preChargeStarted = false, preChargeText = null, seenChargeText = null;
   const blocked = [];
@@ -228,7 +228,9 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     quarantine: () => { fence?.quarantine(); scope?.close(); },
     result: (reason, dialog) => ({ outcome: preChargeStarted ? 'fee_accepted_unconfirmed' :
       (preChargeText ?? seenChargeText) || (dialog && /penalt|fee|charge|deposit/i.test(dialog.message)) ? 'fee_dialog_pending' :
-      dialogOpenDispatched ? 'uncertain' : dialog ? 'unexpected_dialog' : 'not_dispatched', issue: reason,
+      dialogOpenDispatched ? 'uncertain' : dialog ? 'unexpected_dialog' : 'not_dispatched',
+    issue: reason !== 'ACTION_TIMEOUT' || !interactionStarted ? reason : !response ? 'CANCEL_DIALOG_OPEN_TIMEOUT' :
+      !policyResponse ? 'CANCEL_POLICY_RESPONSE_TIMEOUT' : 'CANCEL_DIALOG_READY_TIMEOUT',
     requestDispatched: false, dialogOpenRequestDispatched: dialogOpenDispatched, cancellationSaveDispatched: false,
     httpStatus: response?.status() || null, nativeDialog,
     chargeApproved: preChargeStarted, chargeDispatched: false,
@@ -294,16 +296,17 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     });
     action.check();
     usedPages.add(page);
-    const pending = page.waitForResponse((item) => item.request() === authorizedRequest, { timeout: timeoutMs }).catch(() => null);
+    const pending = page.waitForResponse((item) => item.request() === authorizedRequest,
+      { timeout: timeoutMs }).then(item => { response = item; }).catch(() => {});
     const policyPending = page.waitForResponse((item) => matchesPolicyRead(item.request()),
-      { timeout: timeoutMs }).catch(() => null);
+      { timeout: timeoutMs }).then(item => { policyResponse = item; }).catch(() => {});
     action.check();
     armed = true;
     interactionStarted = true;
-    await cancel.click({ timeout: timeoutMs, noWaitAfter: true });
+    // Record View's split pane can cover the toolbar button even when it is visible.
+    await cancel.press('Enter', { timeout: timeoutMs });
     action.check();
-    response = await pending;
-    const policyResponse = await policyPending;
+    await Promise.all([pending, policyPending]);
     const policy = policyResponse?.status() === 200 ? await policyResponse.json().catch(() => null) : null;
     action.check();
     armed = false;
