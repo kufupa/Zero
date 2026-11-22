@@ -1,77 +1,22 @@
 # PRODUCT.md — Nava reservationist (Centurion)
 
-Ship mode (owner, 2026-11-18): working product end to end, fast. The owner's latest message wins over this file.
+The owner's latest message wins over this file. Staff-facing name: **Nava**; never show the model name to staff.
 
-Staff-facing name: **Nava**. Never show the model name to staff.
+Nava is an AI reservationist for Legacy Hotels Centurion (HRCEN; Da Vinci later). Staff stay in classic Outlook: a VSTO pane (`apps/mail` `/outlook-pane`), with the same `NavaPane` in nava-admin webmail. Nava reads the selected email, prefills, and runs deterministic Infor HMS Cloud tools. HMS is the system of record; staff approve every write. Never make staff run scripts or see raw technical errors.
 
-## What this is
+**Every write workflow:** Nava prefills from the email → staff can edit every field → **Prepare** stages it in HMS unsaved and shows HMS's result (price, policy) → staff **Go** → Save → fresh readback.
 
-Nava is an AI reservationist for Legacy Hotels Centurion (HRCEN). Da Vinci (HRDAV) comes later.
+1. **Triage**: classify inbound mail; keep per-stay actions and genuine second asks.
+2. **Quote**: contract/BAR rates → cover email + PDF + Excel; fully booked → one-line decline.
+3. **Create**: existing or new guest profile; stay, room, rate plan, meal plan, agency/organization, A/R / billing ref, guarantee, note, CMS; HMS prices it before Go; multi-room = sequential creates under one Go.
+4. **Amend**: find the confirmation, change what was asked; HMS reprices before Go.
+5. **Cancel**: find the confirmation, cancel with a reason; show HMS policy/fee; Nava never posts fees.
+6. **Filing**: file the voucher/POP PDF into the stay's Documents; staff can pick the stay.
 
-- Staff stay in classic Outlook. A VSTO add-in hosts a WebView2 pane (`apps/mail` `/outlook-pane`), and the same `NavaPane` renders in the nava-admin webmail panel. Every pane feature ships on both surfaces.
-- Nava reads the selected email, prefills, and runs deterministic Infor HMS Cloud tools (Playwright, `apps/server-pilot/tooling/hms-cloud/`).
-- HMS is the system of record. Staff approve every write.
+CMS confirmation is a staff tick box (default on). Nava never sends email itself. HMS supplies rates and availability; Nava prefills deterministically from HMS directories and memory and never invents rate math.
 
-## Who it is for
+**Front door:** skip mail by **sender domain only** from OTA/channel systems (Booking.com, Expedia, SynXis, Travelit, TBO, Profitroom, WebBeds, Trip.com, Tiket, LekkeSlaap, RateTiger/eRevMax, TvlInc, H-Pay, HotelPlanner…; list lives in code). Never filter on body text. Hotel self-mail "Pre Stay … Confirmation No <conf>" is about an existing booking: never offer Create.
 
-Centurion reservations staff.
+**Writes:** real-guest writes only on staff Go; agents never press Go on a real guest. HMS reads, unsaved staging and Labtest writes (Proof Labtest guest, 2027+ stays, CMS off) are always allowed. Uncertain Save: never blind-retry; re-read HMS first.
 
-- Never ask them to run scripts or terminals.
-- Never show raw technical errors.
-
-## Core workflows (all in scope now, built in parallel)
-
-Recreate what a reservationist does in HMS, field for field, and nothing more. Every write workflow follows the same steps:
-
-1. Nava prefills from the email.
-2. Staff can edit every field Nava has a tool for.
-3. **Prepare** stages the change in HMS and shows HMS's result without saving.
-4. Staff **Go** → Save → fresh readback.
-
-The workflows:
-
-1. **Triage**: classify inbound mail. Keep per-stay actions and genuine second asks.
-2. **Quote**: organization/agency contract rates, which cover most bookings.
-   - Output is a cover email + PDF + Excel. BAR B&B; dinner is a hotel-specific add-on.
-   - Never name unrelated third-party organizations in a reply body; confirming the requesting client's own verified `Organization` back to a direct corporate booker is allowed.
-   - Fully booked → one-line decline. Offer an alternative only if staff pick "Use this".
-   - Price in the background when the email opens (reads only).
-3. **Create**: uses an existing HMS guest profile, or creates one when the guest has none.
-   - Staff confirm stay, room, rate plan, meal plan, booking agency/organization, A/R account / billing reference, guarantee, note and CMS.
-   - HMS prices the stay (Check Availability), and Nava shows that price before Go.
-   - Missing profile → Nava prefills a new Guest Profile from the email and creates it from the pane on the staff's own click (the same click that checks the price). Staff never go to HMS for a profile.
-     - When HMS has likely matches, or raises its duplicate question, Nava ranks the matches and staff pick one or choose New. It never creates a duplicate silently.
-   - Typed nightly rate: on the property's override rate codes staff may type the nightly rate, and a quote row staff priced by hand carries its rate into Create. Nava stages it, shows HMS's total before Go, requires a note saying who approved it, and reads the rate back after Save.
-   - Multi-room = sequential single-room creates (1–8 rooms) under one Go.
-4. **Amend**: find the confirmation, then change what the guest asked for: dates/nights, room type, room type for charge, adults/children and ages, rate plan, booking agency/organization, reservation note, billing reference, guest/booker details, and CMS. HMS reprices, and Nava shows the new price and the common rate options before Go.
-5. **Cancel**: find the confirmation and cancel with a reason. Show HMS cancellation policy details before Go when available. If HMS reports a fee after Save, show the amount and tell staff to post it in HMS if the hotel charges it. Nava does not post the fee.
-6. **Filing**: file the selected voucher/POP PDF into the stay's Documents. Staff can search for and choose the stay when extraction misses it.
-
-**CMS confirmation (Create and Amend)** is a staff control: a tick box (default on), a CMS message ID and a recipient email, all editable. HMS sends its confirmation only when staff leave it ticked. Nava never sends email itself; it saves unsent drafts.
-
-**Deferred (later scope):** typed rates on Amend and complimentary (zero-rate) stays until typed rates on Create are proven live, folio billing/refunds and an Auto-Transfer Playwright writer (surface memory hint badge only), native groups and XLSX imports, new OCR.
-
-HMS supplies live booking, rate, and availability facts, and staff decide. Don't invent fake rate math or credit-eligibility rules; DO deterministically prefill Organization/Agency -> A/R Account, billing reference, guarantee, and Reservation Note payer routing from verified HMS memory and directories (never prefill a post-checkout `Refund Account` on new stays).
-
-## Front door
-
-- **Skip** OTA, channel, automated and spam mail. Travel-agent mail stays in scope.
-- Generalise; don't overfit. Owner exact-host exclusions (Profitroom, Tiket.com, RateTiger, H-Pay `hospitality.cloud`) are in the [asks log](PRODUCT-ASKS-HISTORY.md#asks-logged), 2026-10-14. Travelit and TBO stay in scope.
-
-**Pre-stay self-mail (owner rule):** mail the hotel's own mailbox sends to itself, titled "Pre Stay : Property … Confirmation No <conf> <name>", is about an **existing** booking. Never offer Create for it. Build it as a general rule (own mailbox + pre-stay subject + confirmation number), not a Centurion string match. Keep any separate current ask in the same mail.
-
-## Pane
-
-One primary action per step. No dead controls. Use Infor HMS field labels across panes, contracts, and prompts (`Organization`, `Meal Plan`, `Room Type for Charge`, `Primary Booking Agency`). The layout may be redesigned (see `AGENTS.md`).
-
-## Rules
-
-- **Privacy:** guest data may be stored, logged and used in tests and LLM chats (PIA/GDPR, NDAs and zero-retention providers cover this). Never send credentials or secrets to external services.
-- **Writes:** real-guest writes happen only when staff click Go in the pane, and agents never press Go on a real guest. Labtest writes (Proof Labtest guest, 2027+ stays, CMS off) and HMS reads/unsaved staging on real guests are always allowed. No write flags or canary gates: once a workflow is deployed, staff can use it.
-- **Uncertain Save:** never blind-retry. Re-read HMS first.
-
-Everything else on how to work is in `AGENTS.md` (ship mode).
-
-## Done
-
-The product is done when staff can do all six workflows from the pane on deployed main, and the scoreboard (real corpus emails replayed through the pane API path) shows, per workflow: e2e completion %, field accuracy against what staff did, p50/p95 latency and $/email. Accuracy improves after launch. Working e2e comes first.
+**Done:** staff can run all six workflows from the pane on deployed main, measured by the scoreboard (real emails replayed through the pane API path: e2e completion, field accuracy vs what staff did in HMS). How to work lives in `AGENTS.md`.

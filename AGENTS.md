@@ -17,7 +17,7 @@ Ship a working Nava for Centurion staff, covering all six workflows, and measure
 1. Agents never press staff Go on a real guest. Real-guest writes happen only when staff click Go in the pane.
 2. After an uncertain Save, never blind-retry. Re-read HMS first, because double bookings kill the pilot.
 
-Plus infra hygiene: secrets stay out of git and external services. Tests may INSERT their own rows into pilot RDS, or backfill by running the real pipeline over historical emails. Log the row IDs and delete them later. No schema changes and no edits to existing rows. No destructive DB/volume ops without the owner. GitHub Actions stay reserved for the Outlook installer.
+Plus infra hygiene: secrets stay out of git and external services. Guest data (PII) may be stored, logged, quoted and used in tests and approved LLM chats; don't anonymize it. Tests may INSERT their own rows into pilot RDS, or backfill by running the real pipeline over historical emails. Log the row IDs and delete them later. No schema changes and no edits to existing rows. No destructive DB/volume ops without the owner. GitHub Actions stay reserved for the Outlook installer.
 
 ## Banned (these burned days)
 
