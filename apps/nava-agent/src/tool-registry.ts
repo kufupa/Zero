@@ -10,6 +10,7 @@ import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, 
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, targetLookup } from './stay-target.js';
+import { mailPrompt } from './mail-prompt.js';
 import { samePartyName } from './party-matching.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
@@ -260,7 +261,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         AND received_at <= ${thread.selected_received_at ?? null}::timestamptz ORDER BY received_at,id`;
       const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
       const sourceInput=source?.payload;
-      response=result({...thread,messages:messages.map(m=>m.payload),...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {})});
+      response=result(mailPrompt({...thread,messages:messages.map(m=>m.payload),...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {})}));
     } else if (name==='hms_quote') {
       const q=schemas.hms_quote.parse(input);
       if(session.mode==='historical') response=failure('HISTORICAL_HMS_UNAVAILABLE','Historical sessions cannot access live HMS.');

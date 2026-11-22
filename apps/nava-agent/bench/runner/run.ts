@@ -6,6 +6,7 @@ import {RuntimeLoop, type ModelCall} from '../../src/agent-runtime/loop.js';
 import {azureReplayModel} from './azure.js';
 import type {RuntimeDeps, RuntimeState, ToolDefinition} from '../../src/agent-runtime/loop.js';
 import {tools as baselineTools} from '../../src/schema.js';
+import {mailPrompt} from '../../src/mail-prompt.js';
 import {initialSkillContext} from '../../src/initial-skill-context.js';
 import {tools as triageTools} from '../../tools/triage/index.js';
 import {tools as quoteTools} from '../../tools/quote/index.js';
@@ -272,6 +273,7 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   callModel: ModelCall;
 }): Promise<CaseScore> {
   const {mail, skillConfig, skillContext, tokens, profile, started, directEvidence} = options;
+  const promptMail = mailPrompt(mail);
   const twin = createTwin(card, {worldDir: options.worldDir, property: mail.property_code, threadSenders: options.threadSenders});
   const state: RuntimeState = {
     threadId: card.case_id,
@@ -328,7 +330,7 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
       const {name, input} = toolUse;
       let result: {ok: boolean; data: unknown; error: {code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain'} | null};
       if (name === 'mail_read_thread') {
-        result = {ok: true, data: mail, error: null};
+        result = {ok: true, data: promptMail, error: null};
       } else if (name === 'skill_read') {
         result = await skillRead(input, {sessionId: card.case_id, mode: 'historical', skillConfig});
       } else if (name === 'proposal_publish') {
@@ -380,7 +382,7 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   const prefix = `nava-mail-event:${opaqueId} Read the selected thread and handle its request.`;
   let nudge = prefix;
   if (directEvidence) {
-    const evidence = JSON.stringify(redactToolData(mail)).replaceAll('<', '\\u003c');
+    const evidence = JSON.stringify(redactToolData(promptMail)).replaceAll('<', '\\u003c');
     nudge += `\n<untrusted_mail_evidence>\n${evidence}\n</untrusted_mail_evidence>`;
   }
   let run_error: string | undefined;
