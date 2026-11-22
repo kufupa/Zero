@@ -700,8 +700,14 @@ function indexedFields(fields: GoldField[], prefix: RegExp) {
   return [...rows].sort(([a], [b]) => a - b);
 }
 
+function quoteRoomValue(group: unknown, room: unknown, path: string): unknown {
+  const value = dig(room, path);
+  return path === '/board' && isBlank(value) ? dig(group, '/board') : value;
+}
+
 function quotePaths(fields: GoldField[], proposal: unknown, roomMatch: (expected: unknown, actual: unknown) => boolean) {
   const paths = new Map<string, string>();
+  const quantities = new Map<string, unknown>();
   for (const [action, actionFields] of indexedFields(fields, /^\/actions\/(\d+)(\/.*)$/)) {
     const groups = indexedFields(actionFields, /^\/details\/groups\/(\d+)(\/.*)$/);
     const root = `/actions/${action}/details/groups`;
@@ -709,16 +715,45 @@ function quotePaths(fields: GoldField[], proposal: unknown, roomMatch: (expected
     const candidates = groups.map(([, gold]) => actualGroups.map(actual => {
       const rooms = indexedFields(gold, /^\/rooms\/(\d+)(\/.*)$/);
       const actualRooms = array(dig(actual, '/rooms'));
+      const matchesField = (f: GoldField, got: unknown) => {
+        const value = quoteRoomValue(actual, got, f.path);
+        if (f.path === '/room_type') return quoteRoomTypes(got).some(type => roomMatch(f.value, type));
+        if (f.path === '/board') return (boardLabel(f.value) ?? label(f.value)) === (boardLabel(value) ?? label(value));
+        return strictMatch(f.value, value);
+      };
       const weights = rooms.map(([, room]) => actualRooms.map(got => room.reduce((total, f) =>
-        total + Number(f.expectation === 'expected' && (f.path === '/room_type'
-          ? quoteRoomTypes(got).some(roomType => roomMatch(f.value, roomType)) : strictMatch(f.value, dig(got, f.path)))), 0)));
+        total + Number(f.expectation === 'expected' && matchesField(f, got)), 0)));
       const roomMatches = alignRows(weights, actualRooms.length);
-      const roomScore = roomMatches.reduce((total, match, i) => total + (weights[i]?.[match] ?? 0), 0);
+      let roomScore = roomMatches.reduce((total, match, i) => total + (weights[i]?.[match] ?? 0), 0);
+      const reconciled = new Map<number, unknown>();
+      // Compare totals only for unambiguous pools of interchangeable rooms within this group.
+      const quantity = (value: unknown) => {
+        const n = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
+        return Number.isSafeInteger(n) && n > 0 ? n : NaN;
+      };
+      const expected = rooms.map(([, room]) => room.find(f => f.expectation === 'expected' && f.path === '/quantity'));
+      const compatible = rooms.map(([, room]) => actualRooms.flatMap((got, index) =>
+        room.every(f => f.expectation !== 'expected' || f.path === '/quantity' || matchesField(f, got)) ? [index] : []));
+      for (const [i, choices] of compatible.entries()) {
+        if (!choices.length || !expected[i]) continue;
+        const peers = compatible.flatMap((other, j) => other.some(k => choices.includes(k)) ? [j] : []);
+        if (peers.length === choices.length || peers.some(j => !expected[j] || choices.join() !== compatible[j].join())) continue;
+        const spec = (room: unknown) => [quoteRoomTypes(room).map(label).sort(), dig(room, '/adults'),
+          dig(room, '/children'), dig(room, '/child_ages'), boardLabel(quoteRoomValue(actual, room, '/board')) ??
+          label(quoteRoomValue(actual, room, '/board'))];
+        if (choices.some(j => JSON.stringify(spec(actualRooms[j])) !== JSON.stringify(spec(actualRooms[choices[0]])))) continue;
+        const wanted = peers.reduce((sum, j) => sum + quantity(expected[j]?.value), 0);
+        const supplied = choices.reduce((sum, j) => sum + quantity(dig(actualRooms[j], '/quantity') ?? 1), 0);
+        if (wanted !== supplied) continue;
+        roomScore += rooms[i][1].filter(f => f.expectation === 'expected').length - (weights[i]?.[roomMatches[i]] ?? 0);
+        roomMatches[i] = choices[0];
+        reconciled.set(i, expected[i]?.value);
+      }
       const dates = gold.filter(f => f.expectation === 'expected' && /^\/(arrival|departure)_date$/.test(f.path));
       const datesHit = dates.filter(f => f.expectation === 'expected' && strictMatch(f.value, dig(actual, f.path))).length;
       const other = gold.filter(f => f.expectation === 'expected' && !/^\/(?:rooms\/|(?:arrival|departure)_date$)/.test(f.path)
         && equalish(f.value, dig(actual, f.path))).length;
-      return {weight: 2 * datesHit + roomScore + other, rooms, roomMatches};
+      return {weight: 2 * datesHit + roomScore + other, rooms, roomMatches, reconciled};
     }));
     const matches = alignRows(candidates.map(row => row.map(candidate => candidate.weight)), actualGroups.length);
     for (const [i, [index, gold]] of groups.entries()) {
@@ -733,10 +768,11 @@ function quotePaths(fields: GoldField[], proposal: unknown, roomMatch: (expected
         for (const field of roomFields) {
           paths.set(`${src}/rooms/${room}${field.path}`, `${dst}/rooms/${candidate.roomMatches[j]}${field.path}`);
         }
+        if (candidate.reconciled.has(j)) quantities.set(`${src}/rooms/${room}/quantity`, candidate.reconciled.get(j));
       }
     }
   }
-  return paths;
+  return {paths, quantities};
 }
 
 function selectedPdfRows(card: CaseCard): unknown[] {
@@ -829,7 +865,8 @@ export function scoreCase(input: {
   const normalized = input.normalize === false
     ? {proposal_raw: input.proposal_raw ?? input.proposal, proposal: input.proposal, publish_invalid: input.publish_invalid}
     : normalizePublishedProposal(input.proposal, input.partyReads ?? []);
-  const proposal = mergeQuoteRooms(input.run_error || normalized.publish_invalid ? null : normalized.proposal);
+  const staged = input.run_error || normalized.publish_invalid ? null : normalized.proposal;
+  const proposal = card.workflow === 'quote' ? staged : mergeQuoteRooms(staged);
   const proposal_raw = normalized.proposal_raw;
   const publish_invalid = normalized.publish_invalid;
   const fields: FieldScore[] = [];
@@ -973,11 +1010,14 @@ export function scoreCase(input: {
       digPath = remapCreatePath(gold.path, createAlign.map);
     }
     if (quoteAlign && /^\/actions\/\d+\/details\/groups\/\d+\//.test(gold.path)) {
-      digPath = quoteAlign.get(gold.path) ?? null;
+      digPath = quoteAlign.paths.get(gold.path) ?? null;
     }
 
+    const quoteBoard = quoteAlign && digPath && /\/groups\/\d+\/rooms\/\d+\/board$/.test(digPath)
+      ? quoteRoomValue(dig(proposal, digPath.replace(/\/rooms\/\d+\/board$/, '')),
+        dig(proposal, digPath.replace(/\/board$/, '')), '/board') : undefined;
     if (gold.expectation === 'not_expected') {
-      const actual = digPath == null ? undefined : dig(proposal, digPath);
+      const actual = quoteBoard ?? (digPath == null ? undefined : dig(proposal, digPath));
       if (!isBlank(actual)) {
         fields.push({
           path: gold.path,
@@ -1072,7 +1112,7 @@ export function scoreCase(input: {
       digPath = bound ? gold.path.replace(/^\/actions\/\d+/, `/actions/${bound.index}`) : null;
     }
     if (!routeOk && digPath == null) digPath = gold.path;
-    let actual = digPath == null ? undefined : dig(fieldProposal, digPath);
+    let actual = quoteAlign?.quantities.get(gold.path) ?? quoteBoard ?? (digPath == null ? undefined : dig(fieldProposal, digPath));
     if (reviewOnly && workflow === 'filing' && gold.path.endsWith('/attachment_id') && dispositionOk) {
       const supplied = publishedActions.map(action => dig(action, '/details/attachment_id')).filter(id => !isBlank(id));
       actual = supplied.find(id => (attachmentAlts ?? [expectedValue]).some(wanted => String(id) === String(wanted)))
