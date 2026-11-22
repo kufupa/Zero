@@ -28,7 +28,7 @@ export const schemas = {
   hms_search_parties: object({ property_code: string,
     kind: { type: 'string', enum: ['guest', 'organization', 'agency', 'ar_account'] },
     field: { type: 'string', enum: ['last_name', 'first_name', 'email', 'phone', 'profile_id', 'name'] },
-    query: string,
-    sender_host: { ...string, description: 'From-domain host for party_sender_map lookup (optional).' },
+    query: { ...string, description: 'Sourced party name, or omit for an agency or organization lookup by sender domain only.' },
+    sender_host: { ...string, description: 'Sender email domain, used to look up a party before native search.' },
   }, ['property_code', 'kind', 'field']),
 };

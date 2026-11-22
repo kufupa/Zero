@@ -11,7 +11,7 @@ import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource,
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, targetLookup } from './stay-target.js';
 import { mailPrompt } from './mail-prompt.js';
-import { samePartyName } from './party-matching.js';
+import { normalizePartyName } from './party-matching.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
@@ -101,26 +101,30 @@ function readProfileId(booking:Booking,values:unknown[]):string|null {
   }
   return ids.size===1 ? [...ids][0] : null;
 }
+const partyCandidate=z.object({nativeId:z.string().min(1),name:z.string().min(1)});
 const partyRead=z.object({
-  input:z.object({kind:z.enum(['agency','organization']),field:z.literal('name'),query:z.string(),property_code:z.string()}),
-  response:z.object({ok:z.literal(true),data:z.object({native:z.object({
-    outcome:z.literal('matches'),criteria:z.object({query:z.string()}),coverage:z.object({possiblyTruncated:z.literal(false)}),
-    candidates:z.array(z.object({nativeId:z.string().min(1),name:z.string().min(1)})),
-  })})}),
+  input:z.object({kind:z.enum(['agency','organization']),field:z.literal('name'),property_code:z.string()}),
+  response:z.object({ok:z.literal(true),data:z.object({
+    native:z.object({candidates:z.array(partyCandidate)}),
+    selection:z.union([partyCandidate,z.literal('none')]),
+  })}),
 });
-function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],kind:'agency'|'organization'):{nativeId:string;name:string}|null {
+function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],kind:'agency'|'organization') {
   if(typeof name!=='string' || !name.trim()) return null;
-  const choices=new Map<string,{nativeId:string;name:string}>();
+  const ids=new Set<string>();
+  let nativeName:string|null=null;
+  const key=normalizePartyName(name);
   for(const value of values) {
     const read=partyRead.safeParse(value);
     if(!read.success || read.data.input.kind!==kind || read.data.input.property_code!==propertyCode) continue;
-    const {input,response}=read.data, native=response.data.native;
-    if(!samePartyName(input.query,native.criteria.query,kind) || native.candidates.length!==1) continue;
-    const candidate=native.candidates[0];
-    if(!samePartyName(name,input.query,kind) && !samePartyName(name,candidate.name,kind)) continue;
-    choices.set(candidate.nativeId,candidate);
+    const {native,selection}=read.data.response.data;
+    for(const candidate of native.candidates) {
+      if(!key || key!==normalizePartyName(candidate.name)) continue;
+      nativeName ??= candidate.name;
+      if(selection!=='none' && selection.nativeId===candidate.nativeId) ids.add(candidate.nativeId);
+    }
   }
-  return choices.size===1 ? [...choices.values()][0] : null;
+  return nativeName === null ? null : {name:nativeName,nativeId:ids.size===1 ? [...ids][0] : null};
 }
 function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
   const fieldSpecs=[...draft.field_specs];
@@ -130,13 +134,13 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
   function bind(original:Record<string,unknown>,propertyCode:string|null,root:string):Record<string,unknown> {
     const fields={...original};
     for(const kind of ['agency','organization'] as const) {
-      if(fields[`${kind}_id`] != null && fields[`${kind}_id`]!=='') continue;
-      const choice=readPartyChoice(propertyCode,fields[`${kind}_name`],values,kind);
+      const nameKey=`${kind}_name`, idKey=`${kind}_id`;
+      const choice=readPartyChoice(propertyCode,fields[nameKey],values,kind);
+      if(nameKey in fields || choice) fields[nameKey]=choice?.name ?? null;
+      if(idKey in fields || choice) fields[idKey]=choice?.nativeId ?? null;
       if(!choice) continue;
-      fields[`${kind}_id`]=choice.nativeId;
-      // Keep sourced entity-literal name when present; only fill from HMS when blank.
-      if(fields[`${kind}_name`] == null || fields[`${kind}_name`]==='') fields[`${kind}_name`]=choice.name;
       for(const [suffix,label] of [['id',kind==='agency'?'Booking agency ID':'Company ID'],['name',kind==='agency'?'Booking agency':'Company']] as const) {
+        if(suffix==='id' && !choice.nativeId) continue;
         const path=`${root}/${kind}_${suffix}`;
         const spec=fieldSpecs.findIndex(field=>field.path===path || field.path===path.slice(1));
         if(spec>=0) fieldSpecs[spec]={...fieldSpecs[spec],path,provenance:'hms',editable:true,error:null};

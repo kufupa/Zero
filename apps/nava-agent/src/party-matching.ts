@@ -6,13 +6,18 @@ const aliases = [
 
 export const PARTY_STOPWORDS = new Set([
   'travel', 'travels', 'tours', 'tour', 'agency', 'agent', 'agents', 'company',
-  'group', 'services', 'service', 'solutions', 'holdings', 'pty', 'ltd', 'limited',
+  'group', 'stores', 'services', 'service', 'solutions', 'holdings', 'pty', 'ltd', 'limited',
   'south', 'africa', 'african', 'hotel', 'hotels', 'booking', 'bookings',
   'local', 'district', 'metropolitan', 'municipality', 'municipal', 'department',
   'national', 'provincial', 'office', 'the', 'and', 'for', 'of', 'sa',
 ]);
 
-export const normalizePartyName = (value:string) => value.trim().replace(/\s+/g,' ').toLowerCase();
+const partyNameParts = (value:string) => value.toLowerCase().split(/\bt\s*\/\s*a\b/).map(part =>
+  part.replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+    .replace(/(?:\s+(?:pty|ltd|limited|cc))+$/, ''),
+).filter(Boolean);
+
+export const normalizePartyName = (value:string) => partyNameParts(value).join(' ');
 
 export function partyAcronym(value:string):string {
   return value.split(/[^a-z0-9]+/i).filter(Boolean).map(part=>part[0]??'').join('').toLowerCase();
@@ -25,16 +30,17 @@ export function distinctivePartyTokens(value:string):string[] {
 export function partySearchQueries(name:string, kind:string):string[] {
   const normalized=normalizePartyName(name);
   const group=kind==='organization' ? aliases.find(names=>names.some(item=>normalizePartyName(item)===normalized)) : undefined;
-  const out=[name,...(group ? group.filter(item=>normalizePartyName(item)!==normalized) : [])];
+  const out=[name, normalized, ...partyNameParts(name), ...(group ?? [])];
   const acr=partyAcronym(name);
   if(kind==='organization' && acr.length>=3 && acr.length<=6 && name.trim().includes(' ')) out.push(acr.toUpperCase());
-  const distinctive=distinctivePartyTokens(name);
-  if(distinctive.length===1 && distinctive[0] && distinctive[0]!==normalized) out.push(distinctive[0]);
-  return [...new Set(out)];
+  const tokens = [...new Set(distinctivePartyTokens(name))].sort((a,b) => b.length-a.length);
+  return [...new Set([...out, ...tokens.slice(0, 2)].filter(Boolean))];
 }
 
-export function samePartyName(left:string,right:string,kind:string):boolean {
-  return partySearchQueries(left,kind).some(item=>normalizePartyName(item)===normalizePartyName(right));
+function samePartyName(left:string,right:string,kind:string):boolean {
+  const a = normalizePartyName(left), b = normalizePartyName(right);
+  return !!a && (a === b || kind === 'organization' && aliases.some(names =>
+    names.some(name => normalizePartyName(name) === a) && names.some(name => normalizePartyName(name) === b)));
 }
 
 export type LearnedSenderHit = { host: string; kind: 'agency' | 'organization'; name: string; nativeId: string | null; support: number };
@@ -54,17 +60,24 @@ export function extractSenderHost(senderHost: unknown, query: string): string | 
 export async function searchPartyWithFallback(query: string, kind: string,
   search: (term: string) => Promise<Record<string, unknown>>,
   history: () => Promise<LearnedSenderHit | null>) {
-  const terms = query ? partySearchQueries(query, kind) : [];
+  const company = kind === 'organization' || kind === 'agency';
+  const learned = company ? await history() : null;
+  const preferred = learned && (!query || samePartyName(query, learned.name, kind)) ? learned : null;
+  const queries = query ? company ? partySearchQueries(query, kind) : [query] : [];
+  const terms = [...new Set([
+    ...(preferred ? [preferred.name] : []), ...queries,
+    ...(learned && !preferred ? [learned.name] : []),
+  ])];
   const coverage = {possiblyTruncated: false};
   let result: Record<string, unknown> = {outcome: 'no_match', candidates: [], coverage};
   for (const term of terms) {
     result = await search(term);
     if (result.outcome !== 'no_match' || Array.isArray(result.candidates) && result.candidates.length ||
         !(typeof result.coverage === 'object' && result.coverage !== null &&
-          'possiblyTruncated' in result.coverage && result.coverage.possiblyTruncated === false)) return {result, learned: null};
+          'possiblyTruncated' in result.coverage && result.coverage.possiblyTruncated === false)) {
+      return {result, learned: preferred ?? (learned?.name === term ? learned : null)};
+    }
   }
-  const learned = await history();
-  if (learned && !terms.some(term => normalizePartyName(term) === normalizePartyName(learned.name))) result = await search(learned.name);
   return {result, learned};
 }
 
