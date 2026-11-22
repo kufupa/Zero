@@ -43,7 +43,7 @@ function selectedPdfs(attachments: unknown[]) {
 }
 
 export function withFilingSourceFields(draft: ProposalDraft, selectedMessagePayload: unknown): ProposalDraft {
-  if (draft.workflow !== 'filing' || draft.disposition !== 'propose' || draft.actions.length !== 1) return draft;
+  if (draft.workflow !== 'filing' || !['propose','staff_review'].includes(draft.disposition) || draft.actions.length !== 1) return draft;
   const source = sourceMessage.safeParse(selectedMessagePayload);
   if (!source.success) return draft;
   const [action] = draft.actions;

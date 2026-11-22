@@ -9,7 +9,7 @@ import { normalizeProposalFields } from './proposal-fields.js';
 import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
-import { lookupStay, targetLookup } from './stay-target.js';
+import { lookupStay, lookupExactStay, targetLookup, targetSelection } from './stay-target.js';
 import { mailPrompt } from './mail-prompt.js';
 import { normalizePartyName } from './party-matching.js';
 
@@ -242,7 +242,21 @@ async function selectedMail(sessionId:string) {
   return row;
 }
 
-async function baselineDispatch(sessionId:string,name:string,input:unknown,toolEvent:string,emit:RegistryDeps['emit'],fence?:LeaseFence,signal?:AbortSignal) {
+function filingJobs(draft:ProposalDraft):ProposalDraft[] {
+  if(draft.workflow!=='filing' || draft.actions.length<2) return [draft];
+  return draft.actions.map((action,actionIndex)=>{
+    const bookingIndex=draft.bookings.findIndex(booking=>action.booking_ids.length===1 && action.booking_ids[0]===booking.id);
+    const field_specs=draft.field_specs.flatMap(field=>{
+      const path=field.path.startsWith('/') ? field.path : '/'+field.path;
+      const match=/^\/(actions|bookings)\/(\d+)(\/.*)$/.exec(path);
+      return !match ? [field] : Number(match[2])===(match[1]==='actions'?actionIndex:bookingIndex)
+        ? [{...field,path:`/${match[1]}/0${match[3]}`}] : [];
+    });
+    return {...draft,actions:[action],bookings:bookingIndex<0?[]:[draft.bookings[bookingIndex]],field_specs};
+  });
+}
+
+async function baselineDispatch(sessionId:string,name:string,input:unknown,toolEvent:string,emit:RegistryDeps['emit'],fence?:LeaseFence,signal?:AbortSignal,nativeAdmission?:NativeAdmission) {
   const [session]=await sql`SELECT s.*,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.id=${sessionId} OR s.managed_session_id=${sessionId}`;
   if (!session) return failure('SESSION_NOT_FOUND','Session is not registered.');
   await emit(session.id,'tool_started',{tool:name,tool_event_id:toolEvent});
@@ -286,12 +300,58 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
       }
     } else if (name==='proposal_publish') {
       const draft:ProposalDraft=schemas.proposal_publish.parse(input);
+      const source=staffPrepareOnly() && ['quote','filing'].includes(draft.workflow)
+        ? await sql.begin('read only',tx=>selectedStageSource(tx,session.id)) : undefined;
+      const selected=source?.success ? (await sql`SELECT payload FROM nava_agent.mail_message
+        WHERE thread_id=${session.thread_id} AND source_message_id=${source.data.source_message_id}`)[0]?.payload : undefined;
+      if(draft.workflow==='quote' && source?.success && selected) {
+        const text=[selected.subject,selected.body,selected.body_text].filter(value=>typeof value==='string').join('\n');
+        if(!/\b(?:da\s*vinci|hdav\w*|(?:legacy|davinci) hotel and suites)\b/i.test(text)) {
+          draft.actions=draft.actions.map((action,index)=>{
+            if(action.type!=='quote' || !action.details || typeof action.details!=='object' || Array.isArray(action.details) ||
+              action.details.property_code!=null || draft.field_specs.some(field=>
+                field.path.replace(/^\//,'')===`actions/${index}/details/property_code` && (field.error || field.evidence.length))) return action;
+            return {...action,details:{...action.details,property_code:source.data.property_code}};
+          });
+        }
+      }
       const hasNeedsInfoAction = draft.actions.some(action => action.type === 'needs_info');
       const needsInfoType = draft.disposition === 'needs_info' && ['quote','create','amend','cancel'].includes(draft.workflow) ? draft.workflow : null;
+      if (needsInfoType) draft.actions = draft.actions.map(action => action.type === 'needs_info' ? {...action,type:needsInfoType} : action);
+      const jobs:{draft:ProposalDraft; selection?:z.infer<typeof targetSelection>}[]=[];
+      for(let job of filingJobs(draft)) {
+        let selection:z.infer<typeof targetSelection>|undefined;
+        if(job.workflow==='filing' && selected && source?.success && ['propose','staff_review'].includes(job.disposition)) {
+          const filing=await loadFilingModule();
+          if(filing?.withFilingSourceFields) job=proposalDraft.parse(filing.withFilingSourceFields(job,selected));
+          const [booking]=job.bookings;
+          const attachment=job.field_specs.find(field=>field.path==='/actions/0/details/attachment_id');
+          const lookup=targetLookup.safeParse({kind:'confirmation',confirmation:booking?.reservation_id ?? booking?.fields.confirmation_number});
+          const propertyCode=source.data.property_code;
+          const fileId=attachment?.evidence[0]?.attachment_id;
+          const file=selected.attachments?.find((item:{id?:string})=>item.id===fileId);
+          const evidence=[file?.name,file?.extracted_text,...(attachment?.options.length===1
+            ? [selected.subject,selected.body_text] : [])].filter(value=>typeof value==='string').join('\n');
+          const references=new Set(evidence.match(/\b\d{6,10}-\d{1,10}\b/g) ?? []);
+          const exact=lookup.data?.kind==='confirmation' ? lookup.data : undefined;
+          if(nativeAdmission && booking && job.bookings.length===1 && job.actions[0]?.booking_ids[0]===booking.id &&
+            job.disposition!=='needs_info' && fileId && exact && references.size===1 && references.has(exact.confirmation) &&
+            (!booking.property_code || booking.property_code===propertyCode)) {
+            try {
+              const found=await nativeAdmission.withRead(propertyCode,signal,credentialLease=>
+                lookupExactStay(exact,booking.id,{propertyCode,credentialLease,signal:credentialLease.signal}));
+              selection=targetSelection.safeParse(z.object({selection:z.unknown()}).safeParse(found.data).data?.selection).data;
+            } catch { signal?.throwIfAborted(); }
+          }
+          if(selection) job={...job,disposition:'propose',reason:null,bookings:[{...booking,fields:{...booking.fields,confirmation_number:selection.confirmation},property_code:selection.property_code,
+            reservation_id:selection.confirmation,current_state:selection.current_state}]};
+          else if(job.disposition==='propose') job={...job,disposition:'staff_review'};
+        }
+        jobs.push({draft:job,selection});
+      }
       if (hasNeedsInfoAction && !needsInfoType) response=failure('INVALID_ACTION_TYPE','needs_info is a disposition, not an action. Put it in disposition; use the actual requested action type, or leave actions empty if unknown.');
       else if(draft.workflow!=='quote' && draft.native_result!==null) response=failure('NATIVE_RESULT_MISMATCH','Only an independently captured native result may be published.');
       else response=await sql.begin(async tx=>{
-        if (needsInfoType) draft.actions = draft.actions.map(action => action.type === 'needs_info' ? {...action,type:needsInfoType} : action);
           if(fence) { const rows=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${session.id} AND worker_id=${fence.workerId} AND lease_epoch=${fence.epoch}::bigint AND lease_until>clock_timestamp() FOR UPDATE`; if(!rows.length) throw new Error('LEASE_LOST'); }
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:quote:'+session.id},0))`;
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${toolEvent},0))`;
@@ -310,9 +370,8 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           if(!same.equal || draft.workflow!=='quote') return failure('NATIVE_RESULT_MISMATCH','native_result must equal an actual quote capture for this session and request.');
         }
         const incomplete=draft.workflow==='quote' && merged.incomplete;
-        let staffDraft=proposalDraft.parse({...draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})});
         let partyReads: Array<{input: unknown; response: unknown}> = [];
-        if(staffPrepareOnly() && ['create','quote'].includes(staffDraft.workflow)) {
+        if(staffPrepareOnly() && ['create','quote'].includes(draft.workflow)) {
           partyReads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
             FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
               AND c.kind='tool_call' AND c.payload->>'tool_use_id'=r.payload->>'tool_event_id'
@@ -320,30 +379,29 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
               AND r.sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0)
             ORDER BY r.sequence`;
         }
-        if(staffPrepareOnly() && draft.workflow==='filing' && draft.disposition==='propose') {
-          const filing=await loadFilingModule();
-          const source=await selectedStageSource(tx,session.id);
-          if(filing?.withFilingSourceFields && source.success) {
-            const [selected]=await tx`SELECT payload FROM nava_agent.mail_message
-              WHERE thread_id=${session.thread_id} AND source_message_id=${source.data.source_message_id}`;
-            staffDraft=proposalDraft.parse(filing.withFilingSourceFields(staffDraft,selected?.payload));
+        const proposals=[];
+        for(const job of jobs) {
+          let staffDraft=proposalDraft.parse({...job.draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})});
+          if(staffPrepareOnly() && session.mode==='live') {
+            staffDraft=withTriageLookupFields(staffDraft);
           }
+          // Staff-prepare create/quote: party bind + normalize via shared pure fn. Else normalize only
+          // (avoid forcing profile_create_new outside staff-prepare).
+          const normalized=staffPrepareOnly()
+            ? stagePublishedDraft(staffDraft,partyReads)
+            : normalizeProposalFields(staffDraft);
+          if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
+          proposals.push({current:normalized.draft,selection:job.selection});
         }
-        if(staffPrepareOnly() && session.mode==='live') {
-          staffDraft=withTriageLookupFields(staffDraft);
-        }
-        // Staff-prepare create/quote: party bind + normalize via shared pure fn. Else normalize only
-        // (avoid forcing profile_create_new outside staff-prepare).
-        const normalized=staffPrepareOnly()
-          ? stagePublishedDraft(staffDraft,partyReads)
-          : normalizeProposalFields(staffDraft);
-        if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
-        const current=normalized.draft;
-        const id=uid('proposal');
-        await tx`INSERT INTO nava_agent.proposal(id,thread_id,session_id,revision,workflow,phase,original,current,execution) VALUES (${id},${session.thread_id},${session.id},1,${draft.workflow},'ready',${json(current)},${json(current)},${json({publish_event_id:toolEvent,native_quote_event_ids:captures.map(capture=>capture.payload.tool_event_id)})})`;
+        const ids:string[]=[];
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
-        await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'proposal',${json({proposal_id:id,workflow:draft.workflow,revision:1,fields:{bookings:current.bookings,actions:current.actions}})})`;
-        return result({proposal_id:id,revision:1,phase:'ready'});
+        for(const {current,selection} of proposals) {
+          const id=uid('proposal');
+          await tx`INSERT INTO nava_agent.proposal(id,thread_id,session_id,revision,workflow,phase,original,current,execution) VALUES (${id},${session.thread_id},${session.id},1,${draft.workflow},'ready',${json(current)},${json(current)},${json({publish_event_id:toolEvent,...(selection?{staff_stay_selection:selection}:{}),native_quote_event_ids:captures.map(capture=>capture.payload.tool_event_id)})})`;
+          await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'proposal',${json({proposal_id:id,workflow:draft.workflow,revision:1,fields:{bookings:current.bookings,actions:current.actions}})})`;
+          ids.push(id);
+        }
+        return result({proposal_id:ids[0],revision:1,phase:'ready'});
       });
     } else if (name==='reply_draft') {
       const draft=schemas.reply_draft.parse(input);
@@ -597,7 +655,7 @@ export class ToolRegistry {
       if(!request.success || (context.propertyCode && context.propertyCode!==request.data.property_code)) return {kind:'result',result:failureObject('PROPERTY_MISMATCH','Requested property is missing or differs from the thread.')};
       return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await this.deps.native.withRead(request.data.property_code,context.signal,lease=>baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,lease.signal),undefined,undefined,'short','prefill')))};
     }
-    return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,context.signal)))};
+    return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,context.signal,this.deps.native)))};
   }
 
   async createGuestProfile(input:{propertyCode:string;guest:{firstName:string;lastName:string;mobile:string;email?:string};attemptId:string},

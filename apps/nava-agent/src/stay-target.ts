@@ -54,6 +54,11 @@ export async function lookupStay(lookup:z.infer<typeof targetLookup>, bookingId:
       {...context,staffStage:{...context.staffStage,workflow:'triage'}});
     return result.ok ? {...result,data:{kind:'surname',...z.record(z.unknown()).parse(result.data)}} : result;
   }
+  return lookupExactStay(lookup,bookingId,context);
+}
+
+export async function lookupExactStay(lookup:Extract<z.infer<typeof targetLookup>,{kind:'confirmation'}>, bookingId:string,
+  context:Pick<StaffNativeContext,'propertyCode'|'credentialLease'|'signal'>):Promise<ToolResult> {
   const {withSavedStayAgentSession}=await import(new URL('../../server-pilot/tooling/hms-cloud/saved-stay-agent-session.mjs',import.meta.url).href);
   const raw=await withSavedStayAgentSession(
     ({runTool}:{runTool:(input:Record<string,unknown>)=>Promise<unknown>})=>runTool({tool:'read',confirmation:lookup.confirmation,
