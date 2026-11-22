@@ -27,7 +27,7 @@ export type CreateInput = z.infer<typeof prepareInput>;
 
 export const createStaffNoteLabels: Readonly<Record<string,string>> = {
   guest_name:'Guest name from email', guest_phone:'Guest phone', booker_email:'Booker email', booker_phone:'Booker phone',
-  passport_number:'Passport number', board:'Requested meal plan (set by the rate)',
+  title:'Guest title from email', passport_number:'Passport number', board:'Requested meal plan (set by the rate)',
 };
 export function isCreateRateCode(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Z0-9]{1,12}$/.test(value);
