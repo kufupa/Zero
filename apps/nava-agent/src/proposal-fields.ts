@@ -83,7 +83,7 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
   const fieldSpecs=[...draft.field_specs];
   const bookings=draft.bookings.map((booking,index)=>{
     const fields={...booking.fields};
-    if(index===0) {
+    if(index===0 && draft.actions.some(action=>action.type==='create')) {
       fields.room_count=draft.bookings.length;
       const path='/bookings/0/fields/room_count';
       if(!fieldSpecs.some(spec=>spec.path===path)) fieldSpecs.unshift({path,label:'Number of rooms (1–8)',editable:true,required:true,control:'number',provenance:'staff',error:null,options:[],evidence:[]});
@@ -93,6 +93,7 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
       ['source_of_business','Booking source',true,'combobox'], ['track','Track',true,'combobox'],
       ['guarantee_type','Guarantee type',true,'text'], ['guest_profile_id','Guest profile ID',false,'text'],
       ['first_name','Guest first name',true,'text'], ['last_name','Guest last name',true,'text'],
+      ['arrival_date','Arrival',true,'date'], ['departure_date','Departure',true,'date'],
       ['guest_email','Guest email',false,'text'],
       ['profile_create_new','Create a new Guest Profile, even if Infor finds the same name',false,'checkbox'],
       ['profile_mobile','New Guest Profile mobile',false,'text'], ['profile_email','New Guest Profile email',false,'text'],
@@ -296,6 +297,9 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
     const bookings=draft.bookings.map((booking,index)=>{
       if(booking.property_code!=='HRCEN') return booking;
       const fields={...booking.fields};
+      if(typeof fields.billing_reference==='number' && Number.isSafeInteger(fields.billing_reference)) {
+        fields.billing_reference=String(fields.billing_reference);
+      }
       for(const key of ['rate_plan','room_type'] as const) {
         const code=hrcenCode(key,fields[key],fields.board);
         if(code) fields[key]=code;
@@ -305,7 +309,7 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
       const rate=String(fields.rate_plan ?? '');
       const track=rate.startsWith('NGOV')?'GOV':rate.startsWith('NCOR')?'COR':
         !fields.agency_id && !fields.agency_name && !fields.organization_id && !fields.organization_name && ['BAR','BARRO'].includes(rate)?'BAR':null;
-      for(const [key,value] of [['guarantee_type',String(fields.agency_id ?? '').trim()?'GTDAGT':null],['track',track],['source_of_business','EMA']] as const) {
+      for(const [key,value] of [['track',track],['source_of_business','EMA']] as const) {
         const current=fields[key];
         if(value===null || (current!=null && (typeof current!=='string' || current.trim()))) continue;
         const path=`/bookings/${index}/fields/${key}`;
