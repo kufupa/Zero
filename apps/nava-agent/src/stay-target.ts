@@ -8,7 +8,7 @@ import type { ProposalDraft } from './schema.js';
 
 const confirmation = z.string().regex(/^\d{6,10}-\d{1,10}$/);
 export const targetLookup = z.discriminatedUnion('kind', [
-  z.object({kind:z.literal('surname'),surname:z.string().trim().min(1).max(256).regex(/^[^\r\n,]+$/)}).strict(),
+  z.object({kind:z.literal('surname'),surname:z.string().trim().min(1).max(256).regex(/^[^\r\n,]+$/),arrival_date:z.string().date().optional(),departure_date:z.string().date().optional()}).strict(),
   z.object({kind:z.literal('confirmation'),confirmation:z.string().transform(normalizeReservationReference).pipe(confirmation),arrival_date:z.string().date().optional()}).strict(),
 ]);
 export const targetInput = z.object({expected_revision:z.number().int().positive(),lookup:targetLookup}).strict();
@@ -50,7 +50,7 @@ export function withAmendRoomTypeField(draft:ProposalDraft,execution:unknown):Pr
 
 export async function lookupStay(lookup:z.infer<typeof targetLookup>, bookingId:string, context:StaffNativeContext):Promise<ToolResult> {
   if(lookup.kind==='surname') {
-    const result=await stageRead({workflow:'triage',booking:{id:bookingId},action:{type:'triage',details:{lookup:{guest_name:lookup.surname}}}},
+    const result=await stageRead({workflow:'triage',booking:{id:bookingId},action:{type:'triage',details:{lookup:{guest_name:lookup.surname,arrival_date:lookup.arrival_date,departure_date:lookup.departure_date}}}},
       {...context,staffStage:{...context.staffStage,workflow:'triage'}});
     return result.ok ? {...result,data:{kind:'surname',...z.record(z.unknown()).parse(result.data)}} : result;
   }

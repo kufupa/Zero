@@ -327,10 +327,6 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
     details: {quote_id:'quote-input',property_code: draft.field_specs.some(field =>
       /(?:^|\/)property_code$/.test(field.path) && (field.error || field.evidence.length)) ? null : quoteProperty ?? null,groups:[{group_id:'stay-input',arrival_date:null,departure_date:null,rooms:null,room_quantity_and_type:null,occupancy:null,board:null}]},
   }] : draft.actions;
-  if ((draft.workflow === 'cancel' || draft.workflow === 'amend') && draft.disposition === 'propose'
-    && (!draft.bookings.length || draft.bookings.some(booking => !booking.reservation_id?.trim()))) {
-    draft = {...draft, disposition: 'staff_review'};
-  }
   const value = {...draft, actions};
   const seen = new Set<string>();
   const fields: ProposalDraft['field_specs'] = [];

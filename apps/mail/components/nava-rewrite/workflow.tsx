@@ -960,7 +960,7 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay,createdStays
     {proposal.stay_target_selected && <p>Selected: {booking.reservation_id} · {String(booking.current_state?.first_name ?? '')} {String(booking.current_state?.last_name ?? '')} · arrival {String(booking.current_state?.arrival_date ?? '')}</p>}
     {!proposal.stay_target_selected && booking.reservation_id && <p>Confirmation from the request: {booking.reservation_id}. Check and select the stay below.</p>}
     <PaneField label="Guest surname" control="text" value={surname} disabled={locked} onChange={value=>{setSurname(value);setChanged(true);}} />
-    <button type="button" disabled={locked || !surname.trim()} onClick={()=>{setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'surname',surname:surname.trim()});}}>Search by surname</button>
+    <button type="button" disabled={locked || !surname.trim()} onClick={()=>{setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'surname',surname:surname.trim(),...(arrivalDate ? {arrival_date:arrivalDate} : {})});}}>Search by surname</button>
     <PaneField label="Exact confirmation number" control="text" value={confirmation} disabled={locked} hint="Include the suffix, for example 1234567890-1." onChange={value=>{setConfirmation(value);setArrivalDate('');setChanged(true);}} />
     <PaneField label="Current arrival date (optional)" control="date" value={arrivalDate} disabled={locked} onChange={value=>{setArrivalDate(value);setChanged(true);}} />
     <button type="button" disabled={locked || !exact.test(confirmation.trim())} onClick={()=>{setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'confirmation',confirmation:confirmation.trim(),...(arrivalDate ? {arrival_date:arrivalDate} : {})});}}>Check confirmation</button>
@@ -1230,7 +1230,7 @@ export function workflowPrimaryAction({ proposal, drafts, busy, onStage, onRecon
   const mutableWorkflow = proposal.workflow === 'triage' || proposal.workflow === 'create' || proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing';
   if (!mutableWorkflow) return undefined;
   if (proposal.workflow !== 'triage' && !hasActionToPrepare(proposal)) return undefined;
-  if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel') && !proposal.stay_target_selected) return undefined;
+  if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing') && !proposal.stay_target_selected) return undefined;
   if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing') && proposal.stage?.state === 'target') return undefined;
   if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: proposal.workflow === 'triage' ? 'Look up in Infor' : proposal.workflow === 'create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) ? 'Go: Create Guest Profile & check price' : 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
   return undefined;

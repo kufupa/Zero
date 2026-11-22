@@ -19,7 +19,7 @@ type Go = {
   (request: GoRequest & { createProfile: true }): Promise<AcceptedStage>;
   (request: GoRequest & { createProfile?: undefined }): Promise<AcceptedGo>;
 };
-export type StayLookup = { kind: 'surname'; surname: string } | { kind: 'confirmation'; confirmation: string; arrival_date?: string };
+export type StayLookup = { kind: 'surname'; surname: string; arrival_date?: string } | { kind: 'confirmation'; confirmation: string; arrival_date?: string };
 export type NavaApi = {
   upsertThread: (input: ThreadInput, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
   getThread: (id: string, options?: RequestOptions) => Promise<BoundThreadSnapshot>;

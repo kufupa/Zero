@@ -69,7 +69,7 @@ function createInputs(draft:ProposalDraft, property:string): CreateNativeInput[]
 }
 
 function hasBoundTarget(input:StaffNativeInput,execution:unknown) {
-  if(input.workflow!=='amend' && input.workflow!=='cancel') return true;
+  if(input.workflow!=='amend' && input.workflow!=='cancel' && input.workflow!=='filing') return true;
   return targetIsBound(input.booking,execution);
 }
 
