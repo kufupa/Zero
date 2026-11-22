@@ -85,6 +85,7 @@ export async function rescoreRun(options: ReplayOptions & {runDir: string}) {
       publish_invalid: saved.publish_invalid,
       run_error: saved.run_error,
       model: model ?? 'unknown',
+      worldDir: ruler.world_dir ?? undefined,
     });
     if (saved.cost_usd !== undefined) score.cost_usd = saved.cost_usd;
     score.twin_uncovered = (saved.twin_uncovered ?? []).filter(reason => !reason.startsWith('RUN_ERROR:'));

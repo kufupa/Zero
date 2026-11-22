@@ -1,14 +1,14 @@
 import {execFileSync} from 'node:child_process';
 import {proposalDraft} from '../../src/schema.js';
-import {hrcenCode} from '../../src/proposal-fields.js';
 import {sameQuoteCriteria, stagePublishedDraft} from '../../src/tool-registry.js';
-import {selectedCutoff} from '../twin/world.js';
+import {isoDate} from '../twin/backdate.js';
+import {loadCatalogue, selectedCutoff} from '../twin/world.js';
 import type {CaseCard, GoldField, Workflow} from '../types.js';
 
 export type FieldScore = {
   path: string;
   expectation: GoldField['expectation'];
-  result: 'hit' | 'miss' | 'not_expected' | 'no_gold' | 'skipped' | 'spurious';
+  result: 'hit' | 'miss' | 'not_expected' | 'no_gold' | 'skipped' | 'spurious' | 'blocked_by_route';
   expected?: unknown;
   actual?: unknown;
   basis?: string;
@@ -176,7 +176,7 @@ function normalizeDate(value: unknown): string {
   if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
   const m2 = raw.match(/(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
   if (m2) return `${m2[3]}-${m2[2].padStart(2, '0')}-${m2[1].padStart(2, '0')}`;
-  return raw;
+  return isoDate(raw) ?? raw;
 }
 
 function normalizePerson(value: unknown): string {
@@ -246,24 +246,28 @@ function strictMatch(expected: unknown, actual: unknown): boolean {
 const nativeCode = (value: unknown) => dig(value, '/code') ?? dig(value, '/nativeId') ?? dig(value, '/native_id');
 const label = (value: unknown) => normalize(nativeCode(value) ?? dig(value, '/name') ?? dig(value, '/value') ?? value);
 
-const proseCode = (kind: 'rate_plan' | 'room_type', expected: unknown, actual: unknown, board: unknown) =>
-  typeof expected === 'string' && typeof actual === 'string' && hrcenCode(kind, expected, board) === actual.trim().toUpperCase();
+type Catalogue = Record<string, unknown>;
 
-function roomMatch(expected: unknown, actual: unknown): boolean {
-  if (strictMatch(expected, actual) || proseCode('room_type', expected, actual, null)) return true;
+function catalogueMatch(catalog: Catalogue, key: 'roomTypes' | 'ratePlans', expected: unknown, actual: unknown, board?: unknown): boolean {
   const want = label(expected);
   const got = label(actual);
-  if (want === got) return want !== '';
-  const family = (room: string) => {
-    if (/^(?:stqn|sttw|standard(?: (?:single|double|queen|twin|twin \/ queen))?(?: rooms?)?|(?:single|double|twin)(?: rooms?)?)$/.test(room)) return 'standard';
-    if (/^(?:exec|executive(?: rooms?)?)$/.test(room)) return 'executive';
-    if (/^(?:suit|suite(?: rooms?)?)$/.test(room)) return 'suite';
-  };
-  // A stated native code is exact; a room-use preference can match its available family.
-  if (nativeCode(expected) != null || /^(?:stqn|sttw|exec|suit)$/.test(want) && /^(?:stqn|sttw|exec|suit)$/.test(got)) return false;
-  if (/^(?:standard )?twin(?: rooms?)?$/.test(want) && got === 'stqn'
-    || want === 'stqn' && /^(?:standard )?twin(?: rooms?)?$/.test(got)) return false;
-  return family(want) !== undefined && family(want) === family(got);
+  if (!want || !got) return false;
+  if (want === got) return true;
+  const section = dig(catalog.catalogs ?? catalog, `/${key}`);
+  const records = array(dig(section, '/records') ?? dig(section, '/items') ?? section);
+  if (nativeCode(expected) != null || records.some(row => label(dig(row, '/code')) === want)) return false;
+  const row = records.find(row => label(dig(row, '/code')) === got);
+  const meaning = label(dig(row, '/meaning')) || got;
+  const room = (value: string) => value.replace(/\s+rooms?$/, '');
+  if (key === 'roomTypes') return room(meaning) === room(want) || meaning.startsWith(room(want) + ' ');
+  const aliases = (value: string) => value.replace(/\b(?:govt?|gov't)\b/g, 'government')
+    .replace(/\b(?:bar|rack)\b/g, 'best available').replace(/\bcomp\b/g, 'complimentary')
+    .replace(/\bedu\b/g, 'educational');
+  const meal = boardLabel(expected);
+  const rate = (value: string) => aliases(value).replace(/\b(?:rate|dbb|bb|ro|room only|dinner|breakfast|and)\b/g, ' ').trim().replace(/\s+/g, ' ');
+  const actualMeal = boardLabel(dig(row, '/mealPlan') ?? dig(row, '/rateMealReadbackEvidence/mealPlan'))
+    ?? (/breakfast.*dinner|dinner/.test(meaning) ? 'DBB' : boardLabel(meaning)) ?? boardLabel(board);
+  return !!rate(want) && ` ${rate(meaning)} `.includes(` ${rate(want)} `) && (!meal || meal === actualMeal);
 }
 
 function quoteRoomTypes(room: unknown): unknown[] {
@@ -279,22 +283,6 @@ function boardLabel(value: unknown): 'DBB' | 'BB' | 'RO' | null {
   return null;
 }
 
-function rateMatch(expected: unknown, actual: unknown, board: unknown): boolean {
-  if (strictMatch(expected, actual) || proseCode('rate_plan', expected, actual, board)) return true;
-  const want = label(expected);
-  const got = label(actual);
-  if (!want || !got) return false;
-  if (want === got) return true;
-  if (nativeCode(expected) != null) return false;
-  const family = /\b(?:govt?|government)\b/.test(want) ? /^(?:ngov[\da-z]*|gov(?:t|ernment)\b)/
-    : /\bcorporate\b/.test(want) ? /^(?:ncor[\da-z]*|corporate\b)/
-    : /\b(?:comp|complimentary)/.test(want) ? /^(?:cmp[\da-z]*|comp(?:limentary)?\b)/
-    : /\b(?:ed|edu|educational?)\b/.test(want) ? /^edu\b/
-    : /\b(?:bar|best available|rack)\b/.test(want) ? /^(?:bar[\da-z]*|best available\b)/ : null;
-  const meal = boardLabel(expected);
-  return family !== null && family.test(got) && (!meal || meal === board);
-}
-
 function cancellationTextMatch(expected: unknown, actual: unknown): boolean {
   if (strictMatch(expected, actual)) return true;
   const tokens = (value: unknown) => new Set(normalize(value).replaceAll('’', "'").match(/[a-z]+(?:'t)?/g)?.filter(word =>
@@ -302,10 +290,7 @@ function cancellationTextMatch(expected: unknown, actual: unknown): boolean {
     .map(word => word.replace(/^(attend)(?:ing|ed|s)$/, '$1')) ?? []);
   const wanted = tokens(expected);
   const got = tokens(actual);
-  const negated = (words: Set<string>) => [...words].some(word => /^(?:no|not|never|without|cannot)$|n't$/.test(word));
-  const overlap = [...wanted].filter(word => got.has(word)).length;
-  return wanted.size >= 2 && negated(wanted) === negated(got) &&
-    overlap >= Math.max(2, Math.ceil(wanted.size * 0.60), Math.ceil(got.size * 0.50));
+  return wanted.size > 0 && [...wanted].every(word => got.has(word));
 }
 
 function distance(a: string, b: string): number {
@@ -706,7 +691,7 @@ function indexedFields(fields: GoldField[], prefix: RegExp) {
   return [...rows].sort(([a], [b]) => a - b);
 }
 
-function quotePaths(fields: GoldField[], proposal: unknown) {
+function quotePaths(fields: GoldField[], proposal: unknown, roomMatch: (expected: unknown, actual: unknown) => boolean) {
   const paths = new Map<string, string>();
   for (const [action, actionFields] of indexedFields(fields, /^\/actions\/(\d+)(\/.*)$/)) {
     const groups = indexedFields(actionFields, /^\/details\/groups\/(\d+)(\/.*)$/);
@@ -829,6 +814,7 @@ export function scoreCase(input: {
   publish_invalid?: string | true;
   run_error?: string;
   model?: string;
+  worldDir?: string;
 }): CaseScore {
   const {card, toolCalls, tokens, wall_ms} = input;
   const normalized = input.normalize === false
@@ -838,6 +824,9 @@ export function scoreCase(input: {
   const proposal_raw = normalized.proposal_raw;
   const publish_invalid = normalized.publish_invalid;
   const fields: FieldScore[] = [];
+  const catalog = loadCatalogue(input.worldDir);
+  const roomMatch = (expected: unknown, actual: unknown) =>
+    codeGoldHit(expected, actual) ?? catalogueMatch(catalog, 'roomTypes', expected, actual);
   const workflow = card.workflow;
   const createAlign = workflow === 'create' ? alignCreateBookings(card, proposal) : null;
   const stayGoldIds = goldTargets(card);
@@ -900,19 +889,13 @@ export function scoreCase(input: {
   const actionForTarget = (value: unknown) => matchingActions.find(action => action.targets.length > 0
     && action.targets.every(target => idsEqual(target, value, knownSuffixes)));
   const goldFields = [...(card.gold ?? [])];
-  if (reviewOnly) {
-    for (const field of card.unscored_request_fields ?? []) {
-      if (!idField(field.path) && !/^\/actions\/\d+\/type$/.test(field.path)
-        && !goldFields.some(gold => gold.path === field.path)) goldFields.push(field);
-    }
-  }
   const selectedIds = selectedPdfRows(card).map(row => dig(row, '/id') ?? dig(row, '/attachment_id')).filter(id => !isBlank(id));
   const fallbackAttachment = '/actions/0/details/attachment_id';
   const useSelectedIds = reviewOnly && workflow === 'filing' && selectedIds.length > 0
     && !goldFields.some(field => field.expectation === 'expected' && field.path.endsWith('/attachment_id'));
   if (useSelectedIds) goldFields.push({path: fallbackAttachment, value: selectedIds[0], expectation: 'expected',
     basis: 'selected_pdf', priority: 'P0', source: 'email_explicit'});
-  const quoteAlign = workflow === 'quote' ? quotePaths(goldFields, proposal) : null;
+  const quoteAlign = workflow === 'quote' ? quotePaths(goldFields, proposal, roomMatch) : null;
   const quotePartial = workflow === 'quote' && (expectedCount === 0 || !goldFields.some(field =>
     field.expectation === 'expected' && field.knowable !== false && !field.unobserved_in_twin &&
     !isBlank(field.value) && /\/(?:adults|occupancy)$/.test(field.path)));
@@ -1101,15 +1084,15 @@ export function scoreCase(input: {
       hit = strictMatch(expectedValue, actual) || equalish(expectedValue, actual) || (digPath !== null && /_name$/.test(digPath)
         && strictMatch(expectedValue, dig(proposal, digPath.replace(/_name$/, '_id'))));
     } else if (/\/(arrival_date|departure_date)$/.test(gold.path)) {
-      hit = strictMatch(expectedValue, actual);
+      hit = !isBlank(expectedValue) && normalizeDate(expectedValue) === normalizeDate(actual);
     } else if ((workflow === 'create' || workflow === 'quote' || workflow === 'amend') && gold.path.endsWith('/room_type')) {
       if (workflow === 'quote' && digPath && /\/rooms\/\d+\/room_type$/.test(digPath)) {
         const candidates = quoteRoomTypes(dig(proposal, digPath.replace(/\/room_type$/, '')));
         actual = candidates.find(roomType => roomMatch(expectedValue, roomType)) ?? candidates[0];
       }
-      hit = codeGoldHit(expectedValue, actual) ?? roomMatch(expectedValue, actual);
+      hit = roomMatch(expectedValue, actual);
     } else if ((workflow === 'create' || workflow === 'amend') && gold.path.endsWith('/rate_plan')) {
-      hit = codeGoldHit(expectedValue, actual) ?? rateMatch(expectedValue, actual, board);
+      hit = codeGoldHit(expectedValue, actual) ?? catalogueMatch(catalog, 'ratePlans', expectedValue, actual, board);
     } else if ((workflow === 'create' || workflow === 'quote') && gold.path.endsWith('/board')) {
       const meal = boardLabel(expectedValue);
       hit = (meal !== null && meal === boardLabel(actual)) || equalish(expectedValue, actual);
@@ -1132,7 +1115,7 @@ export function scoreCase(input: {
     fields.push({
       path: gold.path,
       expectation: 'expected',
-      result: hit ? 'hit' : 'miss',
+      result: !routeOk ? 'blocked_by_route' : hit ? 'hit' : 'miss',
       knowable,
       expected: expectedValue,
       actual,
@@ -1290,6 +1273,9 @@ export type Scoreboard = {
   n: number;
   by_workflow: Record<string, {
     n: number;
+    workflow_mismatch: number;
+    blocked_by_route: number;
+    by_field: Record<string, {hit: number; gold_n: number; case_n: number; blocked_by_route: number}>;
     hit: number;
     miss: number;
     not_expected: number;
@@ -1321,6 +1307,8 @@ export type Scoreboard = {
   by_priority: Record<string, WeightedBucket>;
   by_source: Record<string, WeightedBucket>;
   totals: {
+    blocked_by_route: number;
+    workflow_mismatch: number;
     hit: number;
     miss: number;
     cost_usd: number | null;
@@ -1409,13 +1397,14 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
   let hit = 0, miss = 0, cost = 0, wall = 0, twin = 0, routeHit = 0, routeMiss = 0, errors = 0, spray = 0, spurious = 0;
   for (const row of cases) {
     const bucket = by_workflow[row.workflow] ??= {
-      n: 0, hit: 0, miss: 0, not_expected: 0, no_gold: 0, spray: 0, spurious: 0, field_accuracy: null,
+      n: 0, workflow_mismatch: 0, blocked_by_route: 0, by_field: {}, hit: 0, miss: 0, not_expected: 0, no_gold: 0, spray: 0, spurious: 0, field_accuracy: null,
       p50_ms: null, p95_ms: null, p50_s: null, p95_s: null, cost_usd: 0, cost_per_email_usd: null, unpriced_cases: 0,
       route_acc: null, disposition_acc: null, p0_acc: emptyWeighted(), p1_acc: emptyWeighted(), p2_acc: emptyWeighted(), roi_score: 0, safety_violations: 0, quote_capture_count: 0,
       tier1_core: emptyTier(), tier2_defaults: emptyTier(),
       history_knowable: emptyTier(), workflow_routing: emptyTier(), parity: emptyTier(),
     };
     bucket.n += 1;
+    bucket.workflow_mismatch += Number(!row.route_ok);
     bucket.cost_usd += row.cost_usd ?? 0;
     bucket.unpriced_cases += Number(row.cost_usd === null);
     cost += row.cost_usd ?? 0;
@@ -1433,7 +1422,20 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
       bucket.spray += 1;
       spray += 1;
     }
+    const countedPaths = new Set<string>();
     for (const field of row.fields) {
+      if (field.result === 'blocked_by_route') bucket.blocked_by_route += 1;
+      if (field.knowable === false) continue;
+      if (field.result === 'hit' || field.result === 'miss' || field.result === 'blocked_by_route') {
+        const stats = bucket.by_field[field.path] ??= {hit: 0, gold_n: 0, case_n: 0, blocked_by_route: 0};
+        stats.hit += Number(field.result === 'hit');
+        stats.gold_n += Number(field.result !== 'blocked_by_route');
+        stats.blocked_by_route += Number(field.result === 'blocked_by_route');
+        if (field.result !== 'blocked_by_route' && !countedPaths.has(field.path)) {
+          stats.case_n += 1;
+          countedPaths.add(field.path);
+        }
+      }
       const isRoute = field.tier === 'workflow_routing' || field.path === '/workflow';
       if (field.result === 'hit') {
         if (isRoute) routeHit += 1;
@@ -1497,6 +1499,8 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
     by_priority,
     by_source,
     totals: {
+      blocked_by_route: Object.values(by_workflow).reduce((n, row) => n + row.blocked_by_route, 0),
+      workflow_mismatch: routeMiss,
       hit, miss, cost_usd: cases.some(row => row.cost_usd === null) ? null : cost, wall_ms: wall, twin_no_price: twin,
       workflow_routing_hit: routeHit,
       workflow_routing_miss: routeMiss,

@@ -1,13 +1,13 @@
 import type {CaseCard} from '../types.js';
 import {projectHmsShown} from './backdate.js';
 import {createTwinDispatch} from './tools.js';
-import {loadTwinWorld, type TwinWorld} from './world.js';
+import {loadTwinWorld, type TwinWorld, type ThreadSenders} from './world.js';
 
 export type {TwinWorld};
 export {projectHmsShown, loadTwinWorld};
 
-export function createTwin(caseCard: CaseCard, options: {worldDir?: string; property?: string} = {}) {
-  const world = loadTwinWorld(caseCard, options.worldDir, options.property);
+export function createTwin(caseCard: CaseCard, options: {worldDir?: string; property?: string; threadSenders?: ThreadSenders} = {}) {
+  const world = loadTwinWorld(caseCard, options.worldDir, options.property, options.threadSenders);
   const dispatch = createTwinDispatch(world, caseCard);
   return {
     world,

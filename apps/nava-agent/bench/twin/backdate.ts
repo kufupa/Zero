@@ -20,10 +20,10 @@ export function isoDate(raw: unknown): string | null {
   const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(s);
   if (m) return `${m[3]}-${m[2]}-${m[1]}`;
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-  const native = /^(?:[A-Za-z]{3} )?(\d{2})-([A-Za-z]{3})-(\d{4})$/.exec(s.trim());
+  const native = /^(?:[A-Za-z]{3} )?(\d{1,2})[ -]?([A-Za-z]{3})[ -]?(\d{4})$/.exec(s.trim());
   if (!native) return null;
   const month = 'JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC'.split(' ').indexOf(native[2].toUpperCase());
-  return month < 0 ? null : `${native[3]}-${String(month + 1).padStart(2, '0')}-${native[1]}`;
+  return month < 0 ? null : `${native[3]}-${String(month + 1).padStart(2, '0')}-${native[1].padStart(2, '0')}`;
 }
 
 const pdfCell = (value: unknown) => typeof value === 'string'

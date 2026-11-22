@@ -57,17 +57,25 @@ function optionalJson(path:string):Record<string,unknown> | null {
 export const defaultWorldDir = () => join(process.env.NAVA_BENCH_DATA_ROOT ?? DEFAULT_DATA_ROOT, 'world');
 export const rows = (value: unknown): Record<string,unknown>[] => Array.isArray(value) ? value.map(object) : [];
 
+const catalogCache = new Map<string, Record<string, unknown>>();
+export function loadCatalogue(root = defaultWorldDir()): Record<string, unknown> {
+  const cached = catalogCache.get(root);
+  if (cached) return cached;
+  const catalog = optionalJson(join(root,'catalog.json')) ?? optionalJson(join(root,'catalog/catalog.json'))
+    ?? (resolve(root) === resolve(defaultWorldDir()) ? optionalJson(join(dirname(root),'catalog/catalog.json')) : null) ?? {};
+  catalogCache.set(root, catalog);
+  return catalog;
+}
+
 function loadBase(root:string):BaseWorld {
   const cached=baseCache.get(root);
   if(cached) return cached;
   const anchors=jsonl<TwinAnchor>(join(root,'anchors.jsonl'));
   const profilesFile=optionalJson(join(root,'profiles.json'));
-  const catalog=optionalJson(join(root,'catalog.json')) ?? optionalJson(join(root,'catalog/catalog.json'))
-    ?? (resolve(root) === resolve(defaultWorldDir()) ? optionalJson(join(dirname(root),'catalog/catalog.json')) : null) ?? {};
   const base={
     anchors,
     profiles:Array.isArray(profilesFile?.profiles) ? profilesFile.profiles as TwinProfile[] : [],
-    catalog,
+    catalog: loadCatalogue(root),
   };
   baseCache.set(root,base);
   return base;
@@ -117,6 +125,8 @@ export function verifiedHmsFields(anchor: TwinAnchor, cutoff: number): Record<st
   return Object.keys(fields).length ? fields : null;
 }
 
+export type ThreadSenders = ReadonlyMap<string, {host: string; at: number}>;
+
 export class TwinWorld {
   readonly anchors:TwinAnchor[];
   readonly profiles:TwinProfile[];
@@ -126,7 +136,7 @@ export class TwinWorld {
   readonly coverage={quoteMisses:0};
   readonly propertyCode: string;
 
-  constructor(caseCard:CaseCard, root=defaultWorldDir(), property?:string) {
+  constructor(caseCard:CaseCard, root=defaultWorldDir(), property?:string, readonly threadSenders?: ThreadSenders) {
     const base=loadBase(root);
     this.propertyCode = String(caseCard.property_code ?? caseCard.source?.property_code ?? property ?? 'HRCEN').trim().toUpperCase();
     if (!this.propertyCode) throw new Error('Replay property is empty');
@@ -136,14 +146,21 @@ export class TwinWorld {
     this.cutoff=selectedCutoff(caseCard);
     if (!Number.isFinite(this.cutoff)) throw new Error('CASE_AS_OF_MISSING');
     this.profiles=base.profiles.filter(profile => inProperty(profile) && beforeCutoff(profile.observedAt ?? profile.observed_at, this.cutoff));
-    // Code tables and party directories are property configuration that production always reads live.
+    // Room and rate codes are treated as static; party search applies its own cutoff.
     this.catalog=inProperty(base.catalog) ? base.catalog : {};
     loadQuotes(caseCard.quotes,this.quotes,this.cutoff);
     loadQuotes(object(caseCard.world).quotes,this.quotes,this.cutoff);
     loadQuotes(caseCard.recorded_prices,this.quotes,this.cutoff);
   }
+
+  partyStates(anchor: TwinAnchor) {
+    return [...rows(anchor.captures), {...anchor, captured_at: anchor.captured_at ?? anchor.hms_capture_later}]
+      .filter(row => beforeCutoff(row.captured_at, this.cutoff))
+      .sort((a, b) => Date.parse(String(b.captured_at)) - Date.parse(String(a.captured_at)))
+      .map(row => object(row.hms_fields)).filter(state => Object.keys(state).length);
+  }
 }
 
-export function loadTwinWorld(caseCard:CaseCard,root?:string, property?:string):TwinWorld {
-  return new TwinWorld(caseCard,root,property);
+export function loadTwinWorld(caseCard:CaseCard,root?:string, property?:string, threadSenders?:ThreadSenders):TwinWorld {
+  return new TwinWorld(caseCard,root,property,threadSenders);
 }

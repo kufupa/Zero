@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {mkdir, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {RuntimeLoop, type ModelCall} from '../../src/agent-runtime/loop.js';
@@ -17,7 +17,8 @@ import type {CaseCard} from '../types.js';
 import {rulerStamp, scoreCase, type CaseScore} from './score.js';
 import {applyGoldOverlay, loadReplayGold} from './gold-overlay.js';
 import {loadCaseCards, mapPool, skillsPath, writeBoards, type ReplayOptions} from './artifacts.js';
-import {defaultWorldDir, selectedCutoff} from '../twin/world.js';
+import {extractSenderHost} from '../../src/party-matching.js';
+import {defaultWorldDir, selectedCutoff, type ThreadSenders} from '../twin/world.js';
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
 const SYSTEM = `Read the selected email with mail_read_thread. Use the pinned triage files supplied in the system context, or load triage/SKILL.md and its references with skill_read if they were not supplied. Load the relevant workflow skill and any references not already supplied with skill_read. Handle the selected request using quote, create, amend, cancel, filing or triage as the pinned skills specify. Use only the registered tools. Publish the grounded proposal, with editable field paths for staff and native_result null (the server binds actual quote captures). For uncertain intent, scope or targets, use needs_info or staff_review. Staff runs the native action after review; never call a staging or writing tool. Never send mail, invent missing facts, or treat earlier quoted material as the current ask. End after publishing the proposal. Save is disabled.`;
@@ -266,11 +267,12 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   started: number;
   directEvidence: boolean;
   worldDir: string;
+  threadSenders: ThreadSenders;
   model: string;
   callModel: ModelCall;
 }): Promise<CaseScore> {
   const {mail, skillConfig, skillContext, tokens, profile, started, directEvidence} = options;
-  const twin = createTwin(card, {worldDir: options.worldDir, property: mail.property_code});
+  const twin = createTwin(card, {worldDir: options.worldDir, property: mail.property_code, threadSenders: options.threadSenders});
   const state: RuntimeState = {
     threadId: card.case_id,
     sessionId: card.case_id,
@@ -399,6 +401,7 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
     normalize: false,
     publish_invalid: proposal === null ? publish_invalid : undefined,
     model: options.model,
+    worldDir: options.worldDir,
     run_error,
   });
 }
@@ -409,7 +412,24 @@ export async function runBench(options: ReplayOptions) {
   const worldDir = resolve(options.worldDir ?? defaultWorldDir());
   const concurrency = options.concurrency ?? 20;
   if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 1)) throw new Error('Positive replay case limit required');
-  const cards = (await loadCaseCards(casesDir, options.caseIds)).slice(0, options.limit);
+  const corpus = await loadCaseCards(casesDir);
+  const cards = (options.caseIds ? await loadCaseCards(casesDir, options.caseIds) : corpus).slice(0, options.limit);
+  const threadSenders = new Map<string, {host: string; at: number}>();
+  const threadMail = process.env.NAVA_BENCH_THREAD_MAIL;
+  const remember = (mail?: Record<string, unknown>) => {
+    if (mail?.direction !== 'inbound') return;
+    const thread = String(mail.thread_id ?? '');
+    const host = extractSenderHost(mail.from_address, '');
+    const at = Date.parse(String(mail.received_at ?? mail.timestamp ?? ''));
+    if (thread && host && at < (threadSenders.get(thread)?.at ?? Infinity)) threadSenders.set(thread, {host, at});
+  };
+  if (threadMail) for (const line of (await readFile(threadMail, 'utf8')).split(/\r?\n/)) {
+    if (line.trim()) remember(JSON.parse(line));
+  }
+  for (const card of corpus) {
+    for (const mail of Array.isArray(card.context_before) ? card.context_before : []) remember(mail);
+    remember(card.selected_email as Record<string, unknown> | undefined);
+  }
   if (!cards.length) throw new Error('No replay cases selected');
   const gold = await loadReplayGold({...options, casesDir});
   const model = options.model ?? process.env.NAVA_AGENT_AZURE_DEPLOYMENT ?? 'gpt-6-luna';
@@ -425,7 +445,7 @@ export async function runBench(options: ReplayOptions) {
   await writeFile(join(outDir, 'manifest.json'), JSON.stringify({
     ...ruler, cases_dir: casesDir, case_ids: cards.map(card => card.case_id), concurrency,
     skills_dir: skillConfig.root, direct_evidence: directEvidence, pinned_property: options.property ?? null,
-    provider: 'azure', provenance: ruler,
+    provider: 'azure', provenance: ruler, thread_mail: threadMail ?? null,
   }, null, 2));
   const wallStarted = performance.now();
   const scores = await mapPool(inputs, concurrency, async ({card, scoreCard}) => {
@@ -435,10 +455,10 @@ export async function runBench(options: ReplayOptions) {
     let score: CaseScore;
     try {
       const mail = mailPayload(card, options.property);
-      score = await runCase(card, scoreCard, {mail, skillConfig, skillContext, tokens, profile, started, directEvidence, worldDir, callModel, model});
+      score = await runCase(card, scoreCard, {mail, skillConfig, skillContext, tokens, profile, started, directEvidence, worldDir, threadSenders, callModel, model});
     } catch (error) {
       const run_error = error instanceof Error ? redactPaymentCredentials(error.message) : 'unknown';
-      score = scoreCase({card: scoreCard, proposal: null, toolCalls: [], tokens, wall_ms: Math.round(performance.now() - started), run_error, model});
+      score = scoreCase({card: scoreCard, proposal: null, toolCalls: [], tokens, wall_ms: Math.round(performance.now() - started), run_error, model, worldDir});
     }
     await writeFile(join(outDir, `${card.case_id}.json`), JSON.stringify({...score, profile}));
     return score;
