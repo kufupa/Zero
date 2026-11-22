@@ -283,7 +283,9 @@ function rateMatch(expected: unknown, actual: unknown, board: unknown): boolean 
   if (want === got) return true;
   if (nativeCode(expected) != null) return false;
   const family = /\b(?:govt?|government)\b/.test(want) ? /^(?:ngov[\da-z]*|gov(?:t|ernment)\b)/
-    : /\bcorporate\b/.test(want) ? /^(?:ncor[\da-z]*|corporate\b)/ : null;
+    : /\bcorporate\b/.test(want) ? /^(?:ncor[\da-z]*|corporate\b)/
+    : /\b(?:comp|complimentary)\b/.test(want) ? /^(?:cmp[\da-z]*|comp(?:limentary)?\b)/
+    : /\b(?:bar|best available|rack)\b/.test(want) ? /^(?:bar[\da-z]*|best available\b)/ : null;
   const meal = boardLabel(expected);
   return family !== null && family.test(got) && (!meal || meal === board);
 }

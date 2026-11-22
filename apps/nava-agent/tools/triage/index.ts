@@ -351,8 +351,9 @@ export async function readCatalogue(input: unknown, context: ToolContext): Promi
       try {
         if (kind === 'meal_plan') { sections[kind] = { status: 'unsupported', reason: 'No independent native meal-plan catalogue.' }; continue; }
         const entry = loaded.status === 'available' ? loaded.catalog.catalogs[catalogueKinds[kind]] : undefined;
+        if (entry && (kind === 'organization' || kind === 'agency')) { sections[kind] = { status: 'use_hms_search_parties', count: entry.records?.length ?? null }; continue; }
         if (entry) {
-          sections[kind] = { ...entry, status: loaded.catalog.schemaVersion === 'hms-native-catalogs/v2' && entry.coverage.complete && entry.scope.wholeCatalogComplete ? 'available' : 'partial', captured_at: loaded.catalog.capturedAt };
+          sections[kind] = { ...entry, records: entry.records?.map((r: { code?: unknown; meaning?: unknown }) => ({ code: r.code, meaning: r.meaning })), status: loaded.catalog.schemaVersion === 'hms-native-catalogs/v2' && entry.coverage.complete && entry.scope.wholeCatalogComplete ? 'available' : 'partial', captured_at: loaded.catalog.capturedAt };
           continue;
         }
         const roomRateTool = kind === 'room_type' ? 'searchRoomTypes' : kind === 'rate_plan' ? 'searchRatePlans' : null;

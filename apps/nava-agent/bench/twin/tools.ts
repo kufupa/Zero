@@ -139,9 +139,9 @@ function catalogueSection(catalog: Record<string, unknown>, kind: string): Recor
     const records = catalogueRecords(section);
     if (records.length) {
       const meta = object(section);
+      if (kind === 'organization' || kind === 'agency') return {status: 'use_hms_search_parties', count: records.length};
       return {
-        items: records,
-        records,
+        records: records.map(r => ({code: object(r).code, meaning: object(r).meaning})),
         status: meta.status ?? 'ok',
         scope: meta.scope ?? null,
         coverage: meta.coverage ?? 'complete',
