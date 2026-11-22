@@ -18,7 +18,6 @@ Centurion reservations staff.
 
 - Never ask them to run scripts or terminals.
 - Never show raw technical errors.
-- If something takes more than 30 s, say so in plain language.
 
 ## Core workflows (all in scope now, built in parallel)
 
