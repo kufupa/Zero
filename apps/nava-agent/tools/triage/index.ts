@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { schemas } from './schema.js';
 import { proposalDraft, type ProposalDraft } from '../../src/schema.js';
 import postgres from 'postgres';
-import { extractSenderHost, searchPartyWithFallback, resolvePartySelection, type LearnedSenderHit } from '../../src/party-matching.js';
+import { extractSenderHost, normalizePartyName, searchPartyWithFallback, resolvePartySelection, type LearnedSenderHit } from '../../src/party-matching.js';
 
 export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; asOf?: string; senderEmail?: string; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
 export type ToolResult = { ok: boolean; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } | null };
@@ -386,22 +386,42 @@ const partyFields: Record<string, Record<string, string>> = {
 };
 
 let partySql: ReturnType<typeof postgres> | null | undefined;
-/** Read-only party_sender_map via PARTY_SENDER_DATABASE_URL ?? lease URL. Never writes. */
-async function lookupSenderParty(property: string, host: string, kind: 'agency' | 'organization', asOf?: string): Promise<LearnedSenderHit | null> {
-  // This table stores current aggregates without timestamps; it has no as-of view.
-  if (asOf !== undefined) return null;
+function partyDb() {
   if (partySql === undefined) {
     const url = process.env.PARTY_SENDER_DATABASE_URL ?? process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
     try { partySql = url ? postgres(url, { max: 2 }) : null; } catch { partySql = null; }
   }
-  if (!partySql) return null;
+  return partySql;
+}
+/** Read-only party_sender_map via PARTY_SENDER_DATABASE_URL ?? lease URL. Never writes. */
+async function lookupSenderParty(property: string, host: string, kind: 'agency' | 'organization', asOf?: string): Promise<LearnedSenderHit | null> {
+  // This table stores current aggregates without timestamps; it has no as-of view.
+  if (asOf !== undefined) return null;
+  if (!partyDb()) return null;
   try {
-    const [row] = await partySql<{ name: string; native_id: string | null; support: number }[]>`
+    const [row] = await partySql!<{ name: string; native_id: string | null; support: number }[]>`
       SELECT name, native_id, support FROM party_sender_map
       WHERE property_code = ${property} AND (host = ${host} OR ${host} LIKE '%.' || host)
         AND kind = ${kind === 'agency' ? 'agency' : 'company'} AND support >= 2
       ORDER BY length(host) DESC LIMIT 1`;
     return row?.name ? { host, kind, name: row.name, nativeId: row.native_id ?? null, support: Number(row.support) || 0 } : null;
+  } catch { return null; }
+}
+
+/** Last dated rate plan for a bound party: seeded HMS stays plus staff-saved Creates, strictly before as_of. */
+async function lookupPartyRate(property: string, kind: string, selection: unknown, asOf?: string): Promise<{ rate_plan: string; seen_at: string } | null> {
+  if (!obj(selection) || (kind !== 'organization' && kind !== 'agency') || !partyDb()) return null;
+  const name = normalizePartyName(String(selection.displayName ?? selection.name ?? '')), id = String(selection.nativeId ?? '');
+  const cutoff = asOf ?? new Date().toISOString();
+  try {
+    const [row] = await partySql!<{ rate_plan: string; seen_at: Date }[]>`
+      SELECT rate_plan, seen_at FROM (
+        SELECT rate_plan, arrival_date, seen_at FROM nava_agent.party_rate WHERE property_code = ${property} AND party_kind = ${kind} AND party_name = ${name}
+        UNION ALL
+        SELECT b->'fields'->>'rate_plan', (b->'fields'->>'arrival_date')::date, p.updated_at FROM nava_agent.proposal p, jsonb_array_elements(p.current->'bookings') b
+        WHERE p.workflow = 'create' AND p.phase = 'done' AND b->>'property_code' = ${property} AND ${id} <> '' AND b->'fields'->>${kind + '_id'} = ${id}
+      ) m WHERE rate_plan IS NOT NULL AND seen_at < ${cutoff}::timestamptz ORDER BY arrival_date DESC NULLS LAST, seen_at DESC LIMIT 1`;
+    return row ? { rate_plan: row.rate_plan, seen_at: new Date(row.seen_at).toISOString() } : null;
   } catch { return null; }
 }
 
@@ -424,7 +444,9 @@ export async function searchParties(input: unknown, context: ToolContext): Promi
     const candidates = (Array.isArray(result.candidates) ? result.candidates : []).filter(obj);
     const truncated = !(obj(result.coverage) && result.coverage.possiblyTruncated === false) || !['matches', 'no_match'].includes(String(result.outcome));
     const resolved = resolvePartySelection(kind, candidates, truncated, learned, query);
+    const rateMemory = await lookupPartyRate(property, kind, resolved.selection, context.asOf);
     return ok({
+      ...(rateMemory ? { rate_memory: rateMemory } : {}),
       native: result,
       selection: resolved.selection,
       ambiguity: resolved.ambiguity,

@@ -7,7 +7,7 @@ import {
   type LearnedSenderHit,
 } from '../../src/party-matching.js';
 import {anchorObservations, isoDate, observeStays} from './backdate.js';
-import {anchorPdfs, beforeCutoff, quoteKey, rows, type TwinWorld} from './world.js';
+import {anchorPdfs, beforeCutoff, captureTime, quoteKey, rows, verifiedHmsFields, type TwinWorld} from './world.js';
 
 function twinLearnedSender(world: TwinWorld, asOf: number, host: string, kind: 'agency' | 'organization'): LearnedSenderHit | null {
   const rows: Array<{host: string; name: string; kind: 'agency' | 'organization'}> = [];
@@ -211,7 +211,23 @@ async function searchParties(world: TwinWorld, input: Record<string, unknown>): 
       candidates: batch.slice(0, 25), coverage: {possiblyTruncated: batch.length > 25, source: 'twin'}};
   }, async () => host && (kind === 'agency' || kind === 'organization') ? twinLearnedSender(world, world.cutoff, host, kind) : null);
   const resolved = resolvePartySelection(kind, rows(result.candidates), object(result.coverage).possiblyTruncated !== false, learned, rawQuery);
-  return ok({native: result, ...resolved, ...(learned ? {sender_history: learned} : {})});
+  const rateMemory = twinPartyRate(world, kind, resolved.selection);
+  return ok({...(rateMemory ? {rate_memory: rateMemory} : {}), native: result, ...resolved, ...(learned ? {sender_history: learned} : {})});
+}
+
+/** Prod party_rate mirror: last HMS rate plan of a bound party, from anchors captured strictly before the cutoff. */
+function twinPartyRate(world: TwinWorld, kind: string, selection: unknown): {rate_plan: string; seen_at: string} | null {
+  const name = normalizePartyName(String(object(selection).displayName ?? object(selection).name ?? ''));
+  if (!name || (kind !== 'organization' && kind !== 'agency')) return null;
+  const codes = new Set(catalogueRecords(object(world.catalog.catalogs ?? world.catalog).ratePlans).map(r => String(object(r).code ?? '')));
+  let best: {rate_plan: string; at: number; arrival: string} | null = null;
+  for (const anchor of world.anchors) {
+    const fields = verifiedHmsFields(anchor, world.cutoff), at = Date.parse(String(captureTime(anchor)));
+    const rate = String(fields?.rateplan ?? ''), arrival = isoDate(String(fields?.arrivaldate ?? '').slice(0, 15)) ?? '';
+    if (!fields || !codes.has(rate) || normalizePartyName(String(fields[kind === 'agency' ? 'ta1' : 'company'] ?? '')) !== name) continue;
+    if (!best || arrival > best.arrival || (arrival === best.arrival && at > best.at)) best = {rate_plan: rate, at, arrival};
+  }
+  return best ? {rate_plan: best.rate_plan, seen_at: new Date(best.at).toISOString()} : null;
 }
 
 function quoteFromWorld(world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
