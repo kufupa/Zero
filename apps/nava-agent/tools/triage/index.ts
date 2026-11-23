@@ -7,6 +7,7 @@ import { schemas } from './schema.js';
 import { proposalDraft, type ProposalDraft } from '../../src/schema.js';
 import postgres from 'postgres';
 import { extractSenderHost, searchPartyWithFallback, resolvePartySelection, type LearnedSenderHit } from '../../src/party-matching.js';
+import { lookupSenderPartyMemory } from '../../src/party-memory.js';
 
 export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; asOf?: string; senderEmail?: string; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
 export type ToolResult = { ok: boolean; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } | null };
@@ -113,7 +114,11 @@ export async function searchReservations(input: unknown, context: ToolContext): 
     return ok({outcome: result.data.outcome, candidates});
   }
   if (!id) return name ? searchGuestNames(property, names, arrival, departure, context) : fail('INPUT_GAP', 'Provide a reservation identifier or surname.');
-  if (!/^(?:\d+-\d+|\d{6,10})$/.test(id)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
+  if (!/^(?:\d+-\d+|\d{6,10})$/.test(id)) {
+    // Model sometimes passes "unknown" / a PNR — fall through to name search when surname present.
+    if (name) return searchGuestNames(property, names, arrival, departure, context);
+    return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
+  }
   return execute(context, async () => {
     const result = await savedRead(property, id, context, departure || name ? 'record' : 'shallow', { arrivalDate: arrival, departureDate: departure });
     if (result.outcome === 'ok') {
@@ -130,7 +135,7 @@ export async function searchReservations(input: unknown, context: ToolContext): 
 
 function guestSearchNames(name: string, confirmedSurname: boolean, first?: string): string[] {
   const parts = confirmedSurname ? [name.trim()] : name.split(/[\s/,]+/u).filter(word => word && !/^(mr|mrs|ms|miss|dr)\.?$/i.test(word));
-  const naturalOrder = !confirmedSurname && !/[\/,]/u.test(name) && parts.length === 2;
+  const naturalOrder = !confirmedSurname && !/[/,]/u.test(name) && parts.length === 2;
   return [...new Set([naturalOrder ? parts[1] : parts[0], first, naturalOrder ? parts[0] : parts[1]].filter((value): value is string => !!value))];
 }
 
@@ -393,10 +398,17 @@ const partyFields: Record<string, Record<string, string>> = {
 };
 
 let partySql: ReturnType<typeof postgres> | null | undefined;
-/** Read-only party_sender_map via PARTY_SENDER_DATABASE_URL ?? lease URL. Never writes. */
+/** Sender-party memory first; else read-only party_sender_map. Never writes. */
 async function lookupSenderParty(property: string, host: string, kind: 'agency' | 'organization', asOf?: string): Promise<LearnedSenderHit | null> {
   // This table stores current aggregates without timestamps; it has no as-of view.
   if (asOf !== undefined) return null;
+  if (process.env.DATABASE_URL) {
+    try {
+      const { sql } = await import('../../src/db.js');
+      const learned = await lookupSenderPartyMemory(sql, { propertyCode: property, host, kind });
+      if (learned) return learned;
+    } catch { /* non-fatal; fall through */ }
+  }
   if (partySql === undefined) {
     const url = process.env.PARTY_SENDER_DATABASE_URL ?? process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
     try { partySql = url ? postgres(url, { max: 2 }) : null; } catch { partySql = null; }

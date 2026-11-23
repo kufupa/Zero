@@ -8,7 +8,8 @@ import { claimGoInTransaction, writeEvent } from './session-store.js';
 import { groupedQuoteRequest, proposalDraft, type ProposalDraft, type Workflow } from './schema.js';
 import { createGoEnabled, createGoRealGuests, createPilotRequested, hmsSaveEnabled, isWriteWorkflow, staffPrepareOnly, staffSlotCount } from './hms-mode.js';
 import { missingCreateFields } from './proposal-fields.js';
-import { recordSavedStayMemory } from './party-memory.js';
+import { recordSavedSenderParty, recordSavedStayMemory } from './party-memory.js';
+import { effectiveSenderHost } from './party-matching.js';
 import { stageFeedback } from './prepare-feedback.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, hasBoundCreateGuest, invalidGuestSelection, profileReviewFor, requiresStaffAttachmentCheck, selectedCreateGuest, selectedStageSource, stageSource, staffAttachmentsChecked, type StaffJobBinding } from './attachment-gate.js';
 import { installedStaffTools, type LeaseFence, type RegistryContext, type StaffNativeInput, type ToolRegistry, type ToolResult } from './tool-registry.js';
@@ -193,7 +194,7 @@ export function createPilotOperations(): ProposalOperations | undefined {
           return {ok:false,code:attachmentsUnconfirmed.code};
         }
         const quoteSets=request.workflow==='quote' && p.stage?.revision===p.revision
-          ? {...(p.stage.quote_sets ?? {}),...(p.stage.state==='prepared' && p.stage.quote_id && !p.stage.quote_sets?.[p.stage.quote_id]
+          ? {...p.stage.quote_sets,...(p.stage.state==='prepared' && p.stage.quote_id && !p.stage.quote_sets?.[p.stage.quote_id]
             ? {[p.stage.quote_id]:p.stage} : {})} : {};
         const quotes=draft.success ? draft.data.actions.filter(action=>action.type==='quote') : [];
         if(quotes.length>1) quotes.forEach((action,index)=>{
@@ -348,7 +349,68 @@ async function resumeFilingAfterCreate(tx: postgres.TransactionSql, p: ProposalR
     `Infor Create Go completed. Use this exact readback and selected source for the outstanding voucher or proof of payment Filing; publish a separate Filing proposal with booking.reservation_id set to this confirmation. Staff must review and select the Infor target before Prepare. ${JSON.stringify(readback)}`});
 }
 
+type StayMemoryFlush = {
+  propertyCode: string;
+  agencyId: string | null;
+  organizationId: string | null;
+  agencyName: string | null;
+  organizationName: string | null;
+  fields: Record<string, unknown>;
+  host: string | null;
+};
+
+async function flushStayMemory(rows: StayMemoryFlush[]) {
+  for (const row of rows) {
+    try {
+      await recordSavedStayMemory(sql, {
+        propertyCode: row.propertyCode,
+        agencyId: row.agencyId,
+        organizationId: row.organizationId,
+        fields: row.fields,
+      });
+    } catch { /* memory flywheel non-fatal */ }
+    if (!row.host) continue;
+    try {
+      await recordSavedSenderParty(sql, {
+        propertyCode: row.propertyCode,
+        host: row.host,
+        agencyName: row.agencyName,
+        agencyId: row.agencyId,
+        organizationName: row.organizationName,
+        organizationId: row.organizationId,
+      });
+    } catch { /* sender-party memory non-fatal */ }
+  }
+}
+
+function bookingMemoryFields(booking: {property_code?: unknown; fields: Record<string, unknown>}, host: string | null): StayMemoryFlush {
+  const fields = booking.fields;
+  return {
+    propertyCode: String(booking.property_code ?? '').trim().toUpperCase(),
+    agencyId: typeof fields.agency_id === 'string' ? fields.agency_id : null,
+    organizationId: typeof fields.organization_id === 'string' ? fields.organization_id : null,
+    agencyName: typeof fields.agency_name === 'string' ? fields.agency_name : null,
+    organizationName: typeof fields.organization_name === 'string' ? fields.organization_name : null,
+    fields,
+    host,
+  };
+}
+
+async function selectedMailHost(tx: postgres.TransactionSql, threadId: string): Promise<string | null> {
+  const [row] = await tx`SELECT m.payload FROM nava_agent.mail_thread t JOIN nava_agent.mail_message m
+    ON m.thread_id=t.id AND m.source_message_id=t.selected_message_id WHERE t.id=${threadId}`;
+  const payload = row?.payload;
+  if (!payload || typeof payload !== 'object') return null;
+  const from = (payload as {from?: {email?: unknown}; from_address?: unknown; subject?: unknown; body_text?: unknown; body?: unknown});
+  const email = typeof from.from_address === 'string' ? from.from_address
+    : typeof from.from?.email === 'string' ? from.from.email : null;
+  const body = typeof from.body_text === 'string' ? from.body_text : typeof from.body === 'string' ? from.body : null;
+  const subject = typeof from.subject === 'string' ? from.subject : null;
+  return effectiveSenderHost(email, body, subject);
+}
+
 async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId: string, result: ToolResult) {
+  const pendingMemory: StayMemoryFlush[] = [];
   await sql.begin(async tx => {
     const {p,go}=await lockedProposal(tx,lease,proposalId,executionId);
     const uncertain=!result.ok && (result.error?.outcome==='uncertain' || go.dispatch==='dispatched');
@@ -362,16 +424,8 @@ async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId:
         execution=(execution-'go') || ${json({last_go:completion})}::jsonb,updated_at=now() WHERE id=${p.id}`;
       await resumeFilingAfterCreate(tx,p,data);
       if(draft.success && draft.data.workflow==='create' && data.readback!=null) {
-        for(const booking of draft.data.bookings) {
-          try {
-            await recordSavedStayMemory(tx, {
-              propertyCode: String(booking.property_code ?? '').trim().toUpperCase(),
-              agencyId: typeof booking.fields.agency_id==='string'?booking.fields.agency_id:null,
-              organizationId: typeof booking.fields.organization_id==='string'?booking.fields.organization_id:null,
-              fields: booking.fields,
-            });
-          } catch { /* memory flywheel non-fatal */ }
-        }
+        const host = await selectedMailHost(tx, p.thread_id).catch(() => null);
+        for(const booking of draft.data.bookings) pendingMemory.push(bookingMemoryFields(booking, host));
       }
     } else if(uncertain) {
       await tx`UPDATE nava_agent.proposal SET phase='uncertain',execution=(execution-'go') || ${json({last_go:completion,
@@ -385,6 +439,7 @@ async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId:
       outcome:completion.state,error:result.error ?? null,...(result.ok?{result:result.data}:
         p.workflow==='filing' && !uncertain && result.data ? {native_diagnostics:result.data} : {})});
   });
+  await flushStayMemory(pendingMemory);
 }
 
 export async function runStaffGo(lease: LeaseFence, registry: ToolRegistry, context: {sessionId:string;mode:'live'|'labtest'|'historical';signal:AbortSignal}) {
@@ -438,7 +493,8 @@ export async function runStaffGo(lease: LeaseFence, registry: ToolRegistry, cont
 }
 
 async function finishCreateRoom(lease:LeaseFence,proposalId:string,executionId:string,result:ToolResult) {
-  return sql.begin(async tx=>{
+  const pendingMemory: StayMemoryFlush[] = [];
+  const saving = await sql.begin(async tx=>{
     const {p,go}=await lockedProposal(tx,lease,proposalId,executionId);
     if(!go.rooms) throw new Error('ROOMS_MISSING');
     const index=go.rooms.findIndex(room=>room.state==='dispatched' || room.state==='unattempted');
@@ -465,20 +521,14 @@ async function finishCreateRoom(lease:LeaseFence,proposalId:string,executionId:s
     if(complete) {
       const draft=proposalDraft.safeParse(go.snapshot);
       if(draft.success && draft.data.workflow==='create') {
-        for(const booking of draft.data.bookings) {
-          try {
-            await recordSavedStayMemory(tx, {
-              propertyCode: String(booking.property_code ?? '').trim().toUpperCase(),
-              agencyId: typeof booking.fields.agency_id==='string'?booking.fields.agency_id:null,
-              organizationId: typeof booking.fields.organization_id==='string'?booking.fields.organization_id:null,
-              fields: booking.fields,
-            });
-          } catch { /* memory flywheel non-fatal */ }
-        }
+        const host = await selectedMailHost(tx, p.thread_id).catch(() => null);
+        for(const booking of draft.data.bookings) pendingMemory.push(bookingMemoryFields(booking, host));
       }
     }
     return phase==='saving';
   });
+  await flushStayMemory(pendingMemory);
+  return saving;
 }
 
 export async function runStaffReconcile(lease:LeaseFence,registry:ToolRegistry,signal:AbortSignal) {
