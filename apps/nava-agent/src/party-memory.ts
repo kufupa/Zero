@@ -1,5 +1,6 @@
 /** Party booking memory: high-confidence usual fields from prior same-party stays. */
 import type { ProposalDraft } from './schema.js';
+import { createTrackDefault } from './proposal-fields.js';
 
 /** Empirically gated: rate_plan ≥80% precision on time-gated 358-dev + 188-Nov-test Creates. */
 export const MEMORY_ELIGIBLE_FIELDS = ['rate_plan'] as const;
@@ -115,7 +116,7 @@ export async function recordSavedStayMemory(
   }
 }
 
-/** Prefill silent Create blanks only. Schema enum has no `party_memory` → provenance `default` + evidence quote. */
+/** Prefill silent Create blanks or model defaults (`provenance: 'default'`); never override explicit email evidence. */
 export function applyPartyMemoryToDraft(draft: ProposalDraft, lookupFn: MemoryLookupFn): ProposalDraft {
   if (draft.workflow !== 'create') return draft;
   const fieldSpecs = [...draft.field_specs];
@@ -124,10 +125,12 @@ export function applyPartyMemoryToDraft(draft: ProposalDraft, lookupFn: MemoryLo
     const propertyCode = String(booking.property_code ?? '').trim().toUpperCase();
     if (!propertyCode) return booking;
     for (const sug of lookupFn({propertyCode, agencyId: asId(fields.agency_id), organizationId: asId(fields.organization_id)})) {
-      if (!blank(fields[sug.field])) continue;
       const path = `/bookings/${index}/fields/${sug.field}`;
       const spec = fieldSpecs.findIndex(field => field.path === path || field.path === path.slice(1));
-      if (spec >= 0 && (fieldSpecs[spec].provenance === 'staff' || fieldSpecs[spec].evidence.length || fieldSpecs[spec].error)) continue;
+      const existing = spec >= 0 ? fieldSpecs[spec] : null;
+      const isDefault = existing?.provenance === 'default' && !existing.error;
+      if (!blank(fields[sug.field]) && !isDefault) continue;
+      if (!isDefault && existing && (existing.provenance === 'staff' || existing.evidence.length || existing.error)) continue;
       fields[sug.field] = sug.value;
       const evidence = [{message_id: 'party_memory', attachment_id: null, quote: sug.reason}];
       if (spec >= 0) fieldSpecs[spec] = {...fieldSpecs[spec], path, provenance: 'default', error: null, evidence};
@@ -135,6 +138,19 @@ export function applyPartyMemoryToDraft(draft: ProposalDraft, lookupFn: MemoryLo
         path, label: 'Rate plan', provenance: 'default', editable: true, required: false,
         error: null, control: 'text', options: [], evidence,
       });
+      if (sug.field === 'rate_plan') {
+        const trackPath = `/bookings/${index}/fields/track`;
+        const trackIdx = fieldSpecs.findIndex(field => field.path === trackPath || field.path === trackPath.slice(1));
+        const trackSpec = trackIdx >= 0 ? fieldSpecs[trackIdx] : null;
+        const trackIsDefault = trackSpec?.provenance === 'default' && !trackSpec.error;
+        if ((blank(fields.track) || trackIsDefault) && (trackIsDefault || !trackSpec || (trackSpec.provenance !== 'staff' && !trackSpec.evidence.length && !trackSpec.error))) {
+          const nextTrack = createTrackDefault(fields);
+          if (nextTrack !== (fields.track ?? null)) {
+            fields.track = nextTrack;
+            if (trackIdx >= 0) fieldSpecs[trackIdx] = {...fieldSpecs[trackIdx], path: trackPath, provenance: nextTrack ? 'default' : 'unknown', error: null, evidence: []};
+          }
+        }
+      }
     }
     return {...booking, fields};
   });
