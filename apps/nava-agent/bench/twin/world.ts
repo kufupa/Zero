@@ -336,7 +336,8 @@ function loadBase(root:string):BaseWorld {
         if (path === '/bookings/0/fields/agency_name' && val) ta1 = canonicalName('agencies', val);
         if (path === '/bookings/0/fields/organization_name' && val) company = canonicalName('organizations', val);
       }
-      if (ta1 || company) senderPairs.push({confirmation: cid, host, mailAtMs: asOfMs, sentAtMs: asOfMs, ta1, company});
+      // Only emit dev pairs with an explicit agency_name (gold.json omits unmentioned ta1; never poison directMisses).
+      if (ta1) senderPairs.push({confirmation: cid, host, mailAtMs: asOfMs, sentAtMs: asOfMs, ta1, company});
     }
   }
   const base={
