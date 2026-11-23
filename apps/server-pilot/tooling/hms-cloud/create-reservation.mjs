@@ -24,6 +24,22 @@ const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,100}$/.test(error?.message || ''
 const candidate = ({ nativeId, firstName, lastName, email, phoneNumber, city, country }) =>
   ({ nativeId, firstName, lastName, email, phoneNumber, city, country });
 
+/** Prepare-only: dismiss a single-button informational Ext message box (OK/Continue/Close). Never on commit. */
+export async function dismissInformationalMessageBox(page, notices) {
+  const box = page.locator('.x-message-box:visible');
+  if (await box.count() !== 1) return false;
+  const body = (await box.innerText()).trim();
+  if (!body || /\b(error|cannot|failed|denied|invalid)\b/i.test(body)) return false;
+  const buttons = box.locator('a.x-btn:visible');
+  if (await buttons.count() !== 1) return false;
+  const label = (await buttons.first().innerText()).replace(/\s+/g, ' ').trim();
+  if (!/^(OK|Continue|Close)$/i.test(label)) return false;
+  notices.push(body.slice(0, 2000));
+  await buttons.first().click({ timeout: 3000 });
+  await box.waitFor({ state: 'hidden', timeout: 3000 });
+  return true;
+}
+
 // An optional, encrypted diagnostic for unsaved Prepare. The dialog
 // handlers remain unchanged: this only observes a failure before the page closes.
 function prepareDialogDiagnostic(page, publicKey, target) {
@@ -514,8 +530,9 @@ export async function createReservation(input, options = {}) {
     catch (error) { return { outcome: commit && began ? 'uncertain' : 'refused',
       issue: error?.message === 'HMS_CREDENTIAL_LEASE_CONTENDED' ? error.message : 'CREDENTIAL_LEASE_UNAVAILABLE', approvalReady: false }; }
   }
+  const notices = [];
   const output = { outcome: 'needs_input', approvalReady: false, applied: {}, appliedVerification: { visibleFields: false },
-    warnings: [], suggestedCmsMessageId: '03', missing,
+    warnings: [], notices, suggestedCmsMessageId: '03', missing,
     ...(checked.unsupportedFields.length ? { unsupportedFields: checked.unsupportedFields } : {}) };
   if (commit && missing.length) return output;
   if (commit && input.parties?.arAccountId != null && text(input.parties?.arAccountName) && expectedArProfileId === undefined) {
@@ -668,13 +685,7 @@ export async function createReservation(input, options = {}) {
           }
           output.applied.guaranteeType = state.guarantee.actual.display;
           if (!commit && state.rateAvailabilityRequired) await new Promise(resolve => setTimeout(resolve, 1000));
-          if (!commit && input.guaranteeType === 'DEPREQ') {
-            const message = page.locator('.x-message-box:visible');
-            if (await message.count() === 1 && /^0\s+OK$/.test((await message.innerText()).trim())) {
-              await message.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ }).click({ timeout: 3000 });
-              await message.waitFor({ state: 'hidden', timeout: 3000 });
-            }
-          }
+          if (!commit) await dismissInformationalMessageBox(page, notices);
         }
       } else if (!commit && isSupportedLabtestGuarantee(input.guaranteeType)) {
         missing.push('guaranteeType.staging');
@@ -793,6 +804,10 @@ export async function createReservation(input, options = {}) {
           }
           output.applied.ratePlan = selected.code;
           if (selected.rateAvailability) output.ratePlanAvailability = selected.rateAvailability;
+          if (!commit && Array.isArray(selected.notices)) {
+            for (const notice of selected.notices) if (typeof notice === 'string' && notice.trim()) notices.push(notice.trim().slice(0, 2000));
+          }
+          if (!commit) await dismissInformationalMessageBox(page, notices);
         }
       }
       let form;

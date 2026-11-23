@@ -14,11 +14,12 @@ import { goInput, groupedQuoteRequest, proposalDraft, requoteInput, revisionInpu
 import { createPilotOperations, manualLabtestTarget } from './create-operations.js';
 import { createGoEnabled, hmsSaveEnabled, isWriteWorkflow, staffPrepareOnly } from './hms-mode.js';
 import { attachmentCheckPath, attachmentsUnconfirmed, invalidGuestSelection } from './attachment-gate.js';
+import { quoteNeedsStaffInput } from './prepare-feedback.js';
 import { targetInput, targetLookup } from './stay-target.js';
 import { selectStayTarget } from './edit.js';
 
 type Operation = 'stage'|'go'|'reconcile'|'quote'|'target';
-type OperationFailure = 'REAL_GUEST_GO_UNAVAILABLE'|'REQUIRED_FIELDS_MISSING'|'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code|typeof invalidGuestSelection.code;
+type OperationFailure = 'REAL_GUEST_GO_UNAVAILABLE'|'REQUIRED_FIELDS_MISSING'|'NEEDS_STAFF_INPUT'|'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code|typeof invalidGuestSelection.code;
 type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null;quoteId:string|null;preparedJobId?:string;createProfile?:true;lookup?:z.infer<typeof targetLookup>};
 
 // Called with session then proposal locked, matching core-db lock order. Only enqueue/claim durable work in this
@@ -180,7 +181,12 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote','target'
         const action=draft.data.actions.find(item=>item.type==='quote' && typeof item.details==='object' && item.details!==null && !Array.isArray(item.details) && item.details.quote_id===quoteId);
         if(!action) throw new OperationError('NOT_FOUND');
         const checked=groupedQuoteRequest.safeParse(action.details);
-        if(!checked.success) throw new OperationError('INVALID_INPUT',checked.error.issues.map(({path,message})=>({path,message})));
+        if(!checked.success) {
+          const issues=checked.error.issues.map(({path,message})=>({path,message}));
+          const staff=quoteNeedsStaffInput(issues);
+          if(staff) throw new OperationError('NEEDS_STAFF_INPUT',{missing_fields:staff.missing_fields,message:staff.message});
+          throw new OperationError('INVALID_INPUT',issues);
+        }
       }
       const preparedJobId='prepared_job_id' in input.data && typeof input.data.prepared_job_id==='string'?input.data.prepared_job_id:undefined;
       const createProfile='create_profile' in input.data && input.data.create_profile===true?true:undefined;
@@ -203,6 +209,12 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote','target'
     if(code==='FORBIDDEN') return c.json({error:{code,message:'Mailbox unavailable',details:null}},403);
     if(code==='REAL_GUEST_GO_UNAVAILABLE') return c.json({error:{code,message:'This proposal cannot be saved in Infor.',details:null}},403);
     if(code==='INVALID_INPUT') return c.json({error:{code,message:'Invalid proposal fields',details:error instanceof OperationError?error.details:null}},400);
+    if(code==='NEEDS_STAFF_INPUT') {
+      const details=error instanceof OperationError?error.details:null;
+      const message=details && typeof details==='object' && !Array.isArray(details) && typeof (details as {message?:unknown}).message==='string'
+        ? (details as {message:string}).message : 'Fill in the required quote fields.';
+      return c.json({error:{code,message,details}},400);
+    }
     if(code==='REQUIRED_FIELDS_MISSING') return c.json({error:{code,message:'Fill the required booking fields first.',details:error instanceof OperationError?error.details:null}},409);
     if(code===invalidGuestSelection.code) return c.json({error:{...invalidGuestSelection,details:null}},400);
     if(code===attachmentsUnconfirmed.code) return c.json({error:{...attachmentsUnconfirmed,details:null}},409);

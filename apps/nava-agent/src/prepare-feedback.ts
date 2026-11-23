@@ -46,25 +46,75 @@ const nativeRejection = z.object({
   ratePlanIssue: z.object({ issue: optionalIdentifier }).optional().catch(undefined),
   detail:z.object({issue:optionalIdentifier,field:optionalIdentifier,missing:identifiers}).optional().catch(undefined),
 });
-export const prepareRejection = z.object({ issues: z.array(identifier).max(2), fields: z.array(identifier).max(12) }).strict();
+export const prepareRejection = z.object({
+  issues: z.array(identifier).max(2), fields: z.array(identifier).max(12),
+  missing_fields: z.array(identifier).max(12), notices: z.array(z.string().max(2000)).max(20),
+  extra_context: z.record(z.unknown()).optional(),
+}).strict();
 type PrepareRejection = z.infer<typeof prepareRejection>;
 
+const noticeText = z.string().trim().min(1).max(2000);
+const contextRecord = z.record(z.unknown()).catch({});
+
 export function readPrepareRejection(data: unknown, code: string | undefined): PrepareRejection {
-  const result = z.object({ native: nativeRejection.optional(), missing:identifiers, unsupportedFields:identifiers }).safeParse(data);
+  const result = z.object({
+    native: nativeRejection.extend({notices:z.array(noticeText).catch([])}).optional(),
+    missing:identifiers, missing_fields:identifiers, unsupportedFields:identifiers,
+    notices:z.array(noticeText).catch([]), extra_context:contextRecord, unmapped_context:contextRecord,
+  }).safeParse(data);
   const native = result.success ? result.data.native : undefined;
   const issues = [native?.issue, native?.ratePlanIssue?.issue, native?.detail?.issue].filter((issue): issue is string => issue !== undefined);
-  const unsupported = result.success ? result.data.unsupportedFields : [];
   if (!issues.length && code && messages.has(code)) issues.push(code);
-  const fields = [native?.field, native?.detail?.field, ...(native?.missing ?? []), ...(native?.detail?.missing ?? []),
-    ...(native?.invalidFields ?? []), ...(native?.unsupportedFields.map(field=>field.field) ?? []), ...(result.data?.missing ?? []), ...unsupported]
-    .filter((field): field is string => field !== undefined);
-  return { issues: [...new Set(issues)].slice(0,2), fields: [...new Set(fields)].slice(0,12) };
+  // Informational email extras never block — drop unsupportedFields from staff "fill in" list.
+  const missing_fields = [...new Set([
+    ...(result.success ? result.data.missing_fields : []),
+    ...(result.success ? result.data.missing : []),
+    ...(native?.missing ?? []), ...(native?.detail?.missing ?? []),
+    ...(native?.invalidFields ?? []),
+    native?.field, native?.detail?.field,
+  ].filter((field): field is string => field !== undefined))].slice(0,12);
+  const notices = [...new Set([
+    ...(result.success ? result.data.notices : []),
+    ...(native && 'notices' in native ? (native as {notices?:string[]}).notices ?? [] : []),
+  ])].slice(0,20);
+  const extra_context = result.success
+    ? {...result.data.unmapped_context, ...result.data.extra_context}
+    : undefined;
+  return { issues: [...new Set(issues)].slice(0,2), fields: missing_fields, missing_fields, notices,
+    ...(extra_context && Object.keys(extra_context).length ? {extra_context} : {}) };
 }
 
-export function describePrepareRejection({ issues, fields }: PrepareRejection): string {
+/** Map Quote Zod failures that are only blank human-required fields → NEEDS_STAFF_INPUT. */
+const staffQuoteLeaves = new Set(['adults','quantity','groups','arrival_date','departure_date','property_code','rooms','child_ages','children']);
+export function quoteNeedsStaffInput(issues: readonly { path: readonly (string|number)[]; message: string }[]):
+  { code:'NEEDS_STAFF_INPUT'; missing_fields:string[]; message:string } | null {
+  if (!issues.length) return null;
+  const missing: string[] = [];
+  for (const issue of issues) {
+    const leaf = String(issue.path.at(-1) ?? '');
+    const blank = /received null|received undefined|Required|at least 1 element/i.test(issue.message);
+    if (!blank || !staffQuoteLeaves.has(leaf)) return null;
+    missing.push(leaf === 'rooms' ? 'groups' : leaf);
+  }
+  const missing_fields = [...new Set(missing)];
+  const labels: Record<string,string> = {
+    adults:'adult count', quantity:'room quantity', groups:'stay groups / room lines',
+    arrival_date:'arrival date', departure_date:'departure date', property_code:'property',
+    child_ages:'child ages', children:'child count',
+  };
+  return {
+    code: 'NEEDS_STAFF_INPUT',
+    missing_fields,
+    message: 'Fill in: '+missing_fields.map(field=>labels[field]??field).join(', ')+'.',
+  };
+}
+
+export function describePrepareRejection({ issues, fields, missing_fields, notices }: PrepareRejection): string {
   const reasons = issues.map(issue => messages.get(issue) ?? 'Infor could not complete Prepare.');
-  const readable = fields.map(field=>labels.get(field) ?? field.replace(/^.*\./,'').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/_/g,' ').toLowerCase());
-  if (readable.length) reasons.push('Fill in or correct: '+[...new Set(readable)].join(', ')+'.');
+  const fill = (missing_fields.length ? missing_fields : fields)
+    .map(field=>labels.get(field) ?? field.replace(/^.*\./,'').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/_/g,' ').toLowerCase());
+  if (fill.length) reasons.push('Fill in or correct: '+[...new Set(fill)].join(', ')+'.');
+  for (const notice of notices) reasons.push(notice);
   return reasons.join(' ') || 'HMS Prepare did not complete.';
 }
 
@@ -93,11 +143,15 @@ const createObserved=z.object({
 const envelope = z.object({native_result:z.unknown(),display_rows:z.array(z.unknown()).optional(),
   observed_fields:z.unknown(),coverage:z.unknown(),cancellation_fee:z.unknown(),
   native:z.object({ratePlanAvailability:nativePrice.nullable().optional(),applied:createObserved,
-    stage:optionalIdentifier,issue:optionalIdentifier,
+    stage:optionalIdentifier,issue:optionalIdentifier,notices:z.array(noticeText).optional().catch(undefined),
     detail:z.object({issue:optionalIdentifier}).optional().catch(undefined),
     ratePlanIssue:z.object({issue:optionalIdentifier,rateAvailability:nativePrice.nullable().optional(),
       priceComparison:z.object({averageRate:z.string(),totalRate:z.string(),currency:z.string()}).nullable().optional()}).optional().catch(undefined),
   }).optional(),
+  notices:z.array(noticeText).optional().catch(undefined),
+  missing_fields:z.array(identifier).optional().catch(undefined),
+  extra_context:z.record(z.unknown()).optional().catch(undefined),
+  unmapped_context:z.record(z.unknown()).optional().catch(undefined),
   rate_choices:z.unknown(),room_choices:z.unknown(),guest_candidates:z.unknown(),track_choices:z.unknown(),
 }).passthrough();
 
@@ -145,9 +199,14 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
   const ok=!!result?.ok && bounded;
   const attachmentsBlocked=code===attachmentsUnconfirmed.code;
   const prepare=readPrepareRejection(result?.data,code);
-  const hasCreateFeedback=workflow==='create' && (prepare.issues.length>0 || prepare.fields.length>0);
+  const hasCreateFeedback=workflow==='create' && (prepare.issues.length>0 || prepare.missing_fields.length>0 || prepare.notices.length>0);
   const read=workflow==='quote' || workflow==='triage';
   const action=read?'native read':'Prepare';
+  const stageNotices=[...(capture?.notices ?? []), ...(capture?.native?.notices ?? []), ...prepare.notices]
+    .filter((value,index,all)=>typeof value==='string' && value.trim() && all.indexOf(value)===index);
+  const extraContext=workflow==='create'
+    ? {...(capture?.unmapped_context ?? {}), ...(capture?.extra_context ?? {}), ...(prepare.extra_context ?? {})}
+    : undefined;
   const error=ok ? null : {
     code, outcome:'known', operation:'staff_stage',
     message:attachmentsBlocked?attachmentsUnconfirmed.message:hasCreateFeedback?describePrepareRejection(prepare):
@@ -155,21 +214,26 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
       code==='STAFF_JOB_CHANGED' || code==='STAFF_SOURCE_CHANGED'?'The selected source or proposal revision changed.':
       result?.error?.message.slice(0,240) ?? `HMS ${action} did not complete.`,
     recovery:attachmentsBlocked?attachmentsUnconfirmed.message:`Review the proposal and run ${action} again.`,
-    ...(hasCreateFeedback?{prepare}:{}),
+    ...(hasCreateFeedback?{prepare}:{ }),
     ...(result?.error?.native_error?{native_error:result.error.native_error}:{}),
   };
   const hasCapture=workflow==='create' ? !!rate || !!failedStep || !!detailIssue || observed!==undefined || capture?.guest_candidates!=null
     || capture?.rate_choices!=null || capture?.room_choices!=null || capture?.track_choices!=null
+    || stageNotices.length>0 || (extraContext && Object.keys(extraContext).length>0)
     : native!==null;
   const stage=bounded && (ok || hasCapture) ? {
     state:ok?'prepared':'incomplete',revision,job_id:jobId,...(quoteId?{quote_id:quoteId}:{}),
     summary:[ok?`HMS ${action} complete. Nothing saved.`:`HMS ${action} incomplete. Nothing saved.`,
-      ...(failedStep?[`Infor stopped at ${failedStep}${detailIssue?` (${detailIssue})`:''}.`]:[])],
+      ...(failedStep?[`Infor stopped at ${failedStep}${detailIssue?` (${detailIssue})`:''}.`]:[]),
+      ...stageNotices],
     native_result:native,display_rows:rows,
     ...(observed!==undefined?{observed_fields:observed}:{}),
     ...(capture?.coverage!==undefined?{coverage:capture.coverage}:{}),
     ...((capture?.cancellation_fee ?? cancellation?.cancellation_fee)!==undefined
       ? {cancellation_fee:capture?.cancellation_fee ?? cancellation?.cancellation_fee}:{}),
+    ...(stageNotices.length?{notices:stageNotices}:{}),
+    ...(prepare.missing_fields.length?{missing_fields:prepare.missing_fields}:{}),
+    ...(extraContext && Object.keys(extraContext).length?{extra_context:extraContext}:{}),
   } : null;
   return {stage,error};
 }

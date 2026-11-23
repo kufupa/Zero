@@ -21,6 +21,22 @@ const fingerprint = fields => createHash('sha256').update(JSON.stringify(fields)
 const clean = value => String(value ?? '').trim();
 const safeIssue = error => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'RATE_SELECTION_FAILED';
 
+/** Prepare staging only: single-button informational Ext dialog → capture + dismiss. */
+async function dismissInformationalMessageBox(page, notices) {
+  const box = page.locator('.x-message-box:visible');
+  if (await box.count() !== 1) return false;
+  const body = (await box.innerText()).trim();
+  if (!body || /\b(error|cannot|failed|denied|invalid)\b/i.test(body)) return false;
+  const buttons = box.locator('a.x-btn:visible');
+  if (await buttons.count() !== 1) return false;
+  const label = (await buttons.first().innerText()).replace(/\s+/g, ' ').trim();
+  if (!/^(OK|Continue|Close)$/i.test(label)) return false;
+  notices.push(body.slice(0, 2000));
+  await buttons.first().click({ timeout: 3000 });
+  await box.waitFor({ state: 'hidden', timeout: 3000 });
+  return true;
+}
+
 function dateParts(value) {
   const match = /^(\d{2})-([A-Z]{3})-(\d{4})$/i.exec(clean(value));
   if (!match) return null;
@@ -401,7 +417,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
   const revision = chargeRoomRevision(page);
   let nativeDialog = false, attempted = false, availabilityCheckArmed = false, unsupportedId = null,
     before = null, after = null, guard = null, fence = null, scope = null;
-  const blocked = [], requests = new Map(), responses = [], sessions = [];
+  const blocked = [], requests = new Map(), responses = [], sessions = [], notices = [];
   const onDialog = () => {nativeDialog = true;};
   const onRequest = request => {
     try {
@@ -575,6 +591,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
         return typeof globalThis.Ext?.Ajax?.isLoading === 'function' && !Ext.Ajax.isLoading() &&
           ![...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(shown);
       },null,{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
+      await dismissInformationalMessageBox(page, notices);
       if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
       const availabilityResponses = responses.filter(item => item.kind === 'availability');
       if (availabilityResponses.length !== 1 || availabilityResponses[0].response !== availabilityResponse ||
@@ -650,6 +667,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       identityReadback:{guestProfileId:guestId || null,arAccount:dates.ar ? {accountId:dates.ar.accountId,
         profileId:dates.ar.profileId,displayName:after.arAccountName,nativeName:after.arAccountNativeName} : null},
       ...(rateAvailability ? {rateAvailability} : {}),
+      ...(notices.length ? {notices:[...notices]} : {}),
       changedFields:changedFields(before.fields,after.fields),
       effects:{validationStatus:validation[0]?.response.status() ?? null,rateChangeStatus:change[0]?.response.status() ?? null,blockedRequests:blocked}};
   } catch (error) {

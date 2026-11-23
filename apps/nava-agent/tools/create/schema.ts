@@ -25,6 +25,7 @@ export const saveInput = prepareInput.extend({ executionId: z.string().min(1).ma
   priorRooms:z.array(savedSibling).max(7).optional() }).strict();
 export type CreateInput = z.infer<typeof prepareInput>;
 
+/** Human labels for email extras shown in pane warnings / note lines. Not an allowlist gate. */
 export const createStaffNoteLabels: Readonly<Record<string,string>> = {
   guest_name:'Guest name from email', guest_phone:'Guest phone', booker_email:'Booker email', booker_phone:'Booker phone',
   title:'Guest title from email', passport_number:'Passport number', board:'Requested meal plan (set by the rate)',
@@ -33,15 +34,82 @@ export function isCreateRateCode(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Z0-9]{1,12}$/.test(value);
 }
 export const createNoteAliases = ['reservation_note','special_requests','staff_context'] as const;
-export const createNonNativeFields = ['parking','rate_context'] as const;
-export function createReservationNote(fields: Record<string,unknown>): string | null {
-  const parking = fields.parking === true ? 'Parking requested' :
-    typeof fields.parking === 'string' && fields.parking.trim() ? 'Parking: '+fields.parking.trim() : null;
-  const extra = [...createNoteAliases.map(key => fields[key]), parking].flatMap(value => {
-    return typeof value === 'string' && value.trim() ? [value.trim().replace(/\r\n?/g,'\n').replace(/[\x00-\x09\x0b-\x1f\x7f]/g,' ')] : [];
-  });
-  const note = typeof fields.note === 'string' ? fields.note : null;
-  return extra.length ? [...new Set([...(note ? [note] : []), ...extra])].join('\n') : note;
+/** @deprecated Empty — extras use the universal non-blocking rule in createExtraContext. Kept for proposal-fields import. */
+export const createNonNativeFields = [] as const;
+
+const scrub = (value: string) => value.trim().replace(/\r\n?/g, '\n').replace(/[\x00-\x09\x0b-\x1f\x7f]/g, ' ');
+const humanize = (key: string) => createStaffNoteLabels[key] ?? key.replace(/_/g, ' ');
+
+/** Native booking keys that map to HMS NativeRequest paths (see tools/create/index.ts fieldPaths). */
+export const createNativeFieldKeys = new Set([
+  'guest_profile_id', 'first_name', 'last_name', 'guest_email', 'arrival_date', 'departure_date', 'adults',
+  'children', 'child_count', 'child_ages', 'room_type', 'room_type_for_charge', 'rate_plan', 'guarantee_type',
+  'source_of_business', 'reason_for_stay', 'track', 'market_segment', 'guest_opt_in', 'billing_reference',
+  'commission_percent', 'organization_id', 'organization_name', 'agency_id', 'agency_name', 'ar_account_id',
+  'ar_account_name', 'booker_name', 'booker_contact', 'cms_send', 'cms_message_id', 'cms_recipient', 'price',
+  'confirmation_recipient',
+]);
+
+const metaSkip = (field: string, value: unknown) =>
+  field === 'room_count' || field.startsWith('profile_') || value === null || value === undefined || value === '' ||
+  (field === 'quantity' && value === 1);
+
+/**
+ * Universal boundary: known native keys stay out; every other non-empty email field becomes
+ * non-blocking extraContext — short staff-relevant text/bool/number → reservation note,
+ * structured/long values → unmapped_context for pane display. Never blocks prepare/save.
+ */
+export function createExtraContext(fields: Record<string, unknown>): {
+  note: string | null;
+  unmapped_context: Record<string, unknown>;
+  extra_context: Record<string, unknown>;
+} {
+  const noteParts: string[] = [];
+  const unmapped_context: Record<string, unknown> = {};
+  const extra_context: Record<string, unknown> = {};
+  const noteKeys = new Set<string>(['note', ...createNoteAliases]);
+
+  for (const [field, value] of Object.entries(fields)) {
+    if (metaSkip(field, value) || createNativeFieldKeys.has(field)) continue;
+    if (field === 'rate_plan') continue; // invalid codes skipped by buildRequest; valid ones are native
+    if (field === 'note' || noteKeys.has(field)) {
+      if (typeof value === 'string' && value.trim()) noteParts.push(scrub(value));
+      if (field !== 'note') extra_context[field] = value;
+      continue;
+    }
+    // Staff-label fields (board, title, passport, …) stay pane-visible extras — not HMS note lines.
+    if (Object.hasOwn(createStaffNoteLabels, field)) {
+      extra_context[field] = value;
+      continue;
+    }
+    extra_context[field] = value;
+    if (value === true) {
+      noteParts.push(`${humanize(field)} requested`);
+      continue;
+    }
+    if (value === false) continue;
+    if (typeof value === 'string' && value.trim()) {
+      const text = scrub(value);
+      if (text.length <= 240) {
+        noteParts.push(`${humanize(field)}: ${text}`);
+        continue;
+      }
+      unmapped_context[field] = text;
+      continue;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      noteParts.push(`${humanize(field)}: ${value}`);
+      continue;
+    }
+    unmapped_context[field] = value;
+  }
+
+  const note = noteParts.length ? [...new Set(noteParts)].join('\n') : null;
+  return { note, unmapped_context, extra_context };
+}
+
+export function createReservationNote(fields: Record<string, unknown>): string | null {
+  return createExtraContext(fields).note;
 }
 
 const nullableString = { anyOf: [{ type: 'string' }, { type: 'null' }] };

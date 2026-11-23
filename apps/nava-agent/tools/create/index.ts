@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createNonNativeFields, createNoteAliases, createReservationNote, createStaffNoteLabels, isCreateRateCode, prepareInput, saveInput, type CreateInput } from './schema.js';
+import { createExtraContext, createNativeFieldKeys, isCreateRateCode, prepareInput, saveInput, type CreateInput } from './schema.js';
 import { createGoEnabled, createGoRealGuests, hmsSaveEnabled } from '../../src/hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedCreate, type StaffStage } from '../../src/attachment-gate.js';
 
@@ -85,7 +85,11 @@ function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function buildRequest(input: CreateInput): { request: NativeRequest; unknown: string[]; expectedGuest?: { firstName: string; lastName: string } } | ToolResult {
+export function buildRequest(input: CreateInput): {
+  request: NativeRequest; unknown: string[];
+  extra_context: Record<string, unknown>; unmapped_context: Record<string, unknown>;
+  expectedGuest?: { firstName: string; lastName: string };
+} | ToolResult {
   const { booking, action } = input;
   if (!booking.property_code || booking.reservation_id !== null || booking.current_state !== null ||
       action.type !== 'create' || !action.booking_ids.includes(booking.id)) {
@@ -95,14 +99,12 @@ export function buildRequest(input: CreateInput): { request: NativeRequest; unkn
     return fail('UNSUPPORTED_ACTION_DETAILS', 'Create action details must be expressed as booking fields.');
   }
   const request: NativeRequest = { propertyCode: booking.property_code, guest: {}, stay: {}, room: {} };
-  const unknown: string[] = [];
   const assigned = new Set<string>();
   for (const [field, value] of Object.entries(booking.fields)) {
-    if (Object.hasOwn(createStaffNoteLabels,field) || field === 'room_count' || field.startsWith('profile_') || value === null ||
-      (field === 'quantity' && value === 1) || ['note',...createNoteAliases,...createNonNativeFields].includes(field) ||
-      (field === 'rate_plan' && !isCreateRateCode(value))) continue;
-    const path = Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
-    if (!path) { unknown.push(field); continue; }
+    if (value === null || field === 'room_count' || field.startsWith('profile_') || (field === 'quantity' && value === 1)) continue;
+    if (field === 'rate_plan' && !isCreateRateCode(value)) continue;
+    const path = createNativeFieldKeys.has(field) && Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
+    if (!path) continue; // informational extras → createExtraContext; never unknown[]
     const key = path.join('.');
     if (assigned.has(key)) return fail('DUPLICATE_CREATE_FIELD', `Multiple fields map to ${key}.`);
     assigned.add(key);
@@ -114,7 +116,7 @@ export function buildRequest(input: CreateInput): { request: NativeRequest; unkn
     }
     target[path[path.length - 1]] = value;
   }
-  const note = createReservationNote(booking.fields);
+  const { note, unmapped_context, extra_context } = createExtraContext(booking.fields);
   if (note !== null) request.note = note;
   const firstName = booking.fields.first_name;
   const lastName = booking.fields.last_name;
@@ -126,7 +128,7 @@ export function buildRequest(input: CreateInput): { request: NativeRequest; unkn
     if (!expectedGuest) return fail('GUEST_IDENTITY_CONFLICT', 'Profile ID requires matching first and last name.');
     delete request.guest.search;
   }
-  return { request, unknown, ...(expectedGuest ? { expectedGuest } : {}) };
+  return { request, unknown: [], extra_context, unmapped_context, ...(expectedGuest ? { expectedGuest } : {}) };
 }
 
 function bounded(value: unknown): unknown {
@@ -296,10 +298,10 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       });
       const rateUnavailable = result.issue === 'RATE_NOT_AVAILABLE' ||
         (object(result.detail) && result.detail.issue === 'RATE_NOT_AVAILABLE');
-      const needsRate = !built.unknown.length && (rateUnavailable ||
+      const needsRate = rateUnavailable ||
         (result.outcome === 'needs_input' && !!result.applied && !!result.appliedVerification &&
           (result.issue === 'room_type_not_unique' || !request.room.ratePlan || object(result.ratePlanIssue) ||
-          (Array.isArray(result.missing) && result.missing.some(field => typeof field === 'string' && field.startsWith('room.rate'))))));
+          (Array.isArray(result.missing) && result.missing.some(field => typeof field === 'string' && field.startsWith('room.rate')))));
       const roomType = typeof result.applied?.roomType === 'string' ? result.applied.roomType :
         typeof request.room.roomType === 'string' ? request.room.roomType : undefined;
       const choices = needsRate ? await scopedRateChoices(request,lease,transportId,roomType,rateUnavailable) :
@@ -314,9 +316,11 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       ['room.roomType',request.room.roomType],['room.ratePlan',request.room.ratePlan],
       ['guaranteeType',request.guaranteeType],['track',request.track],
     ].flatMap(([key,value])=>value==null || value==='' ? [key] : []);
-    const data = bounded({ native: result, missing, unsupportedFields: built.unknown, guest_candidates:guestChoices(result),
-      rate_choices:rateChoices, room_choices:roomChoices, track_choices:trackChoices });
-    if (built.unknown.length || result.outcome !== 'prepared') return fail('CREATE_PREPARE_INCOMPLETE', result.issue ?? 'Native create is incomplete.', 'known', data);
+    const notices = Array.isArray(result.notices) ? result.notices.filter((n): n is string => typeof n === 'string' && !!n.trim()) : [];
+    const data = bounded({ native: result, missing, unsupportedFields: [], missing_fields: missing,
+      notices, extra_context: built.extra_context, unmapped_context: built.unmapped_context,
+      guest_candidates:guestChoices(result), rate_choices:rateChoices, room_choices:roomChoices, track_choices:trackChoices });
+    if (result.outcome !== 'prepared') return fail('CREATE_PREPARE_INCOMPLETE', result.issue ?? 'Native create is incomplete.', 'known', data);
     return success(data);
   } catch (error) {
     return fail(context.signal?.aborted ? 'ABORTED' : 'CREATE_PREPARE_UNAVAILABLE', error instanceof Error && error.message === 'NATIVE_RESULT_TOO_LARGE' ? error.message : 'Native create prepare failed.');
@@ -332,8 +336,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   if (!parsed.success || typeof context.markDispatched !== 'function') return fail('INVALID_INPUT', 'Create Save requires an execution ID and durable dispatch callback.');
   const built = buildRequest(parsed.data);
   if ('ok' in built) return built;
-  const { request, expectedGuest, unknown } = built;
-  if (unknown.length) return fail('UNSUPPORTED_CREATE_FIELDS', 'Unsupported fields cannot be saved.', 'known', { fields: unknown });
+  const { request, expectedGuest } = built;
   if (parsed.data.booking.fields.guest_email != null && !request.guest.profileId) {
     return fail('GUEST_PROFILE_REQUIRED', 'Choose the guest profile in Prepare before Save.');
   }
