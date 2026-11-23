@@ -57,12 +57,18 @@ function historyStaysForMemory(world: TwinWorld): HistoryStay[] {
     if (createdAtMs == null || !Number.isFinite(createdAtMs)) continue;
     const company = String(fields.company ?? '').trim();
     const ta1 = String(fields.ta1 ?? '').trim();
+    const guarantee = fields.guaranteetype ?? fields.guarantee_type ?? fields.guarantee;
+    const board = fields.mealplan ?? fields.board;
     stays.push({
       propertyCode: world.propertyCode,
       createdAtMs,
       agencyId: ta1 ? agencies.get(normalizePartyName(ta1)) ?? null : null,
       organizationId: company ? organizations.get(normalizePartyName(company)) ?? null : null,
-      fields: {rate_plan: fields.rateplan != null && fields.rateplan !== '' ? String(fields.rateplan) : null},
+      board: board != null && board !== '' ? String(board) : null,
+      fields: {
+        rate_plan: fields.rateplan != null && fields.rateplan !== '' ? String(fields.rateplan) : null,
+        guarantee_type: guarantee != null && guarantee !== '' ? String(guarantee) : null,
+      },
     });
   }
   return stays;

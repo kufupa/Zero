@@ -15,6 +15,8 @@ import { writeEvent } from './session-store.js';
 import { createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { initialSkillContext } from './initial-skill-context.js';
 import { cachedCatalogue, readCatalogue, type ToolContext as CatalogueContext } from '../tools/triage/index.js';
+import { effectiveSenderHost } from './party-matching.js';
+import { formatClientCard, lookupPartyMemory, lookupSenderPartyMemory } from './party-memory.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
 export type RuntimeMessage = {role:'user'|'assistant';content:RuntimeBlock[];stop_reason?:string|null};
@@ -242,9 +244,26 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
     if(!begun.length) throw new Error('LEASE_LOST');
     let content=pending.kind==='mail_pending'?'Read the selected thread and handle its request.':`Staff context: ${pending.payload.text ?? ''}`;
     if(pending.kind==='mail_pending') {
-      const mail=await sessionMailPrompt(sessionId).catch(()=>null);
-      if(mail) content+=`\n<untrusted_mail_evidence>\n${JSON.stringify(mail).replaceAll('<','\\u003c')}\n</untrusted_mail_evidence>`;
       const property=typeof session.property_code==='string' && session.property_code ? session.property_code : 'HRCEN';
+      const baseMail=await sessionMailPrompt(sessionId).catch(()=>null);
+      let clientCard:string|null=null;
+      try {
+        const sel=(baseMail as {selected_message?:{from?:{email?:string}|string;subject?:string;body_text?:string;body?:string}}|null)?.selected_message;
+        const fromEmail=typeof sel?.from==='string'?sel.from:sel?.from?.email;
+        const host=effectiveSenderHost(fromEmail,sel?.body_text ?? sel?.body ?? null,sel?.subject ?? null);
+        if(host) {
+          const [agency,organization]=await Promise.all([
+            lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'agency'}).catch(()=>null),
+            lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'organization'}).catch(()=>null),
+          ]);
+          const memory=agency||organization ? await lookupPartyMemory(sql,{
+            propertyCode:property,agencyId:agency?.nativeId ?? null,organizationId:organization?.nativeId ?? null,
+          }).catch(()=>[]) : [];
+          clientCard=formatClientCard({senderHost:host,agency,organization,memory});
+        }
+      } catch { /* non-fatal client card lookup */ }
+      const mail=clientCard ? await sessionMailPrompt(sessionId,clientCard).catch(()=>baseMail) : baseMail;
+      if(mail) content+=`\n<untrusted_mail_evidence>\n${JSON.stringify(mail).replaceAll('<','\\u003c')}\n</untrusted_mail_evidence>`;
       const catalogueInput={property_code:property,kinds:['room_type','rate_plan','source_of_business','track','guarantee_type','meal_plan']};
       const catalogue=await cachedCatalogue(catalogueInput,{sessionId,mode,signal:abort.signal},async()=>({ok:false,data:null,error:{code:'CATALOGUE_NOT_WARM',message:'Catalogue cache miss',retryable:false,outcome:'known'}})).catch(()=>null);
       const summary=catalogue?.ok ? compactCatalogueSummary(catalogue.data) : null;
@@ -279,7 +298,7 @@ async function parkFailedSession(sessionId:string):Promise<string|null> {
       const error=dispatched?uncertain:partial?{...failed,message:'Some rooms were saved. Review the completed rooms before continuing.',recovery:'Check Infor before taking further action.'}:failed;
       const execution={...proposal.execution,last_go:{...go,...(rooms?{rooms}:{}),state:dispatched?'uncertain':'failed'},error};
       delete execution.go;
-      const result=rooms?{...(proposal.result ?? {}),confirmation:null,reservation_id:null,readback:null,rooms}:proposal.result;
+      const result=rooms?{...proposal.result,confirmation:null,reservation_id:null,readback:null,rooms}:proposal.result;
       await tx`UPDATE nava_agent.proposal SET phase=${phase},result=${json(result)},execution=${json(execution)},updated_at=now() WHERE id=${proposal.id}`;
     }
     await tx`UPDATE nava_agent.agent_event SET payload=jsonb_set(payload,'{delivered}','true'::jsonb)
