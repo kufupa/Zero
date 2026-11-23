@@ -1287,6 +1287,28 @@ export function scoreCase(input: {
     source: 'unknown',
   });
 
+  // Amend requested-delta diagnostic only — canonical target-bound scoring above unchanged.
+  if (workflow === 'amend') {
+    const deltaKeys = ['arrival_date', 'departure_date', 'first_name', 'last_name'];
+    const gIdx = [...new Set(goldFields.flatMap(f => f.expectation === 'expected' && deltaKeys.some(k => f.path.endsWith('/' + k))
+      ? [/^\/bookings\/(\d+)\//.exec(f.path)?.[1]].filter((x): x is string => !!x) : []))];
+    const unbound = matchingActions.filter(a => a.bookingIndex >= 0 && a.targets.length === 0);
+    const draft = gIdx.length === 1 && unbound.length === 1 ? bookingFields(bookings[unbound[0]!.bookingIndex]) : null;
+    for (const gold of goldFields) {
+      const m = /^\/bookings\/(\d+)\/fields\/(arrival_date|departure_date|first_name|last_name)$/.exec(gold.path);
+      if (!m || gold.expectation !== 'expected' || isBlank(gold.value)) continue;
+      const idG = goldFields.find(f => f.expectation === 'expected' && f.path.startsWith(`/bookings/${m[1]}/`) && idField(f.path));
+      const bound = idG ? actionForTarget(idG.value) : undefined;
+      const actual = bound && bound.bookingIndex >= 0 ? bookingFields(bookings[bound.bookingIndex])[m[2]!]
+        : draft && gIdx[0] === m[1] ? draft[m[2]!] : undefined;
+      const mode = bound && bound.bookingIndex >= 0 ? 'canonical_target' : draft && gIdx[0] === m[1] ? 'extracted' : 'withheld';
+      const hit = mode !== 'withheld' && (m[2]!.endsWith('_date') ? normalizeDate(gold.value) === normalizeDate(actual) : personEqual(gold.value, actual, gold.aliases));
+      const status = mode === 'withheld' ? 'withheld' : isBlank(actual) ? 'omitted' : hit ? 'hit' : 'miss';
+      fields.push({path: gold.path, expectation: 'diagnostic', result: 'no_gold', expected: gold.value, actual,
+        basis: `requested_delta:${mode}:${status}`, tier: 'diagnostic', priority: 'P0', source: goldSource(gold)});
+    }
+  }
+
   const allowed = new Set(workflowTools[card.workflow] ?? []);
   let wasted = 0;
   let right = 0;

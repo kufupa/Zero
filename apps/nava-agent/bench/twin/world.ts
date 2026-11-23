@@ -185,7 +185,9 @@ function walkCreatedFields(node: unknown, into: Map<string, number>, confirmatio
 function loadCreatedOn(root: string): Map<string, number> {
   const into = new Map<string, number>();
   const overnightReads = '/home/orca/.local/share/zero/runs/overnight-20261122/data';
-  const candidates = [
+  const strict = process.env.NAVA_BENCH_STRICT_WORLD === '1';
+  // Strict: only supplied Created-On (no implicit overnight/stay360 reads).
+  const candidates = (strict ? [process.env.NAVA_BENCH_CREATED] : [
     process.env.NAVA_BENCH_CREATED,
     join(root, 'created-on.jsonl'),
     join(root, 'stay360-run01.json'),
@@ -193,7 +195,7 @@ function loadCreatedOn(root: string): Map<string, number> {
     join(DEFAULT_DATA_ROOT, 'world', 'stay360-run01.json'),
     join(overnightReads, 'initial-native.reads.jsonl'),
     ...['focus2', 'focus3', 'focus4', 'focus5', 'focus6', 'focus8', 'focus10'].map(name => join(overnightReads, `${name}.reads.jsonl`)),
-  ].filter((path): path is string => !!path);
+  ]).filter((path): path is string => !!path);
   for (const path of candidates) {
     if (path.endsWith('.jsonl')) {
       for (const row of optionalJsonl<Record<string, unknown>>(path)) {
@@ -219,9 +221,11 @@ function loadBase(root:string):BaseWorld {
   const createdOn = loadCreatedOn(root);
   // Merge Created On + native guarantee_type from pre-cutoff HMS reads into real replay worlds only (not temp test fixtures).
   const isRealWorld = resolve(root) === resolve(defaultWorldDir()) || root.includes('/v6/') || Boolean(process.env.NAVA_BENCH_DEV_DIR);
+  const strict = process.env.NAVA_BENCH_STRICT_WORLD === '1';
   const overnightReads = '/home/orca/.local/share/zero/runs/overnight-20261122/data';
   const readGuarantee = new Map<string, {guaranteetype: string; ta1: string; company: string; createdMs: number}>();
-  if (isRealWorld && existsSync(overnightReads)) {
+  // Strict: suppress synthetic global read-based commercial anchors.
+  if (isRealWorld && !strict && existsSync(overnightReads)) {
     for (const file of readdirSync(overnightReads).filter(f => f.endsWith('.reads.jsonl')).sort()) {
       for (const row of optionalJsonl<Record<string, unknown>>(join(overnightReads, file))) {
         const conf = confirmationId(row.confirmation ?? row.confirmation_no);
@@ -256,16 +260,17 @@ function loadBase(root:string):BaseWorld {
     }
   }
   // Append strictly time-stamped read-only guarantee stays not already in anchors (run.ts gates createdAtMs < cutoff).
-  for (const [conf, rg] of readGuarantee) {
+  if (!strict) for (const [conf, rg] of readGuarantee) {
     if (anchorConfs.has(conf) || (!rg.ta1 && !rg.company)) continue;
     const stamp = new Date(rg.createdMs).toISOString();
     anchors.push({confirmation: conf, captured_at: stamp, hms_fields: {created: stamp, ta1: rg.ta1, company: rg.company, guaranteetype: rg.guaranteetype}});
   }
-  const pairsCandidates = [
+  // Strict: only supplied pairs file (Train-filtered); no default world/global pairs.
+  const pairsCandidates = (strict ? [process.env.NAVA_BENCH_PAIRS_FILE] : [
     process.env.NAVA_BENCH_PAIRS_FILE,
     join(root, 'pairs.jsonl'),
     join(DEFAULT_DATA_ROOT, 'world/pairs.jsonl'),
-  ].filter((p): p is string => Boolean(p));
+  ]).filter((p): p is string => Boolean(p));
   const pairsPath = pairsCandidates.find(p => existsSync(p));
   const senderPairs: SenderPairRow[] = [];
   if (pairsPath && process.env.NAVA_BENCH_DISABLE_PAIRS !== '1') {
