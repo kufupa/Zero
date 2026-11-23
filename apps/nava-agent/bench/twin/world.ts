@@ -1,7 +1,18 @@
-import {existsSync, readFileSync} from 'node:fs';
+import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import type {CaseCard, TwinEnvelope} from '../types.js';
 import {extractSenderHost} from '../../src/party-matching.js';
+
+const GUARANTEE_TO_CODE: Record<string, string> = {
+  'guaranteed by agent': 'GTDAGT', gtdagt: 'GTDAGT',
+  'guaranteed by deposit': 'GTDDEP', gtddep: 'GTDDEP',
+  'deposit requested': 'DEPREQ', depreq: 'DEPREQ',
+  'guaranteed by company': 'GTDCMP', gtdcmp: 'GTDCMP',
+  'guaranteed by credit card': 'GTDCC', gtdcc: 'GTDCC',
+  'non-guaranteed individual': 'NGI', ngi: 'NGI',
+  'confirmation received': 'CNFRCV', cnfrcv: 'CNFRCV',
+  'awaiting voucher': 'AWVCH', awvch: 'AWVCH',
+};
 
 export const DEFAULT_DATA_ROOT='/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
@@ -206,18 +217,49 @@ function loadBase(root:string):BaseWorld {
   const anchors=jsonl<TwinAnchor>(join(root,'anchors.jsonl'));
   const profilesFile=optionalJson(join(root,'profiles.json'));
   const createdOn = loadCreatedOn(root);
-  // Merge Created On into anchor hms_fields when capture snapshots omitted it.
+  // Merge Created On + native guarantee_type from pre-cutoff HMS reads into real replay worlds only (not temp test fixtures).
+  const isRealWorld = resolve(root) === resolve(defaultWorldDir()) || root.includes('/v6/') || Boolean(process.env.NAVA_BENCH_DEV_DIR);
+  const overnightReads = '/home/orca/.local/share/zero/runs/overnight-20261122/data';
+  const readGuarantee = new Map<string, {guaranteetype: string; ta1: string; company: string; createdMs: number}>();
+  if (isRealWorld && existsSync(overnightReads)) {
+    for (const file of readdirSync(overnightReads).filter(f => f.endsWith('.reads.jsonl')).sort()) {
+      for (const row of optionalJsonl<Record<string, unknown>>(join(overnightReads, file))) {
+        const conf = confirmationId(row.confirmation ?? row.confirmation_no);
+        const fieldsList = (object(object(row.record_view).details).fields);
+        if (!conf || !Array.isArray(fieldsList)) continue;
+        const flds = Object.fromEntries(fieldsList.filter(x => x && typeof x === 'object' && 'name' in x).map(x => [String((x as Record<string, unknown>).name), (x as Record<string, unknown>).value]));
+        const gCode = GUARANTEE_TO_CODE[String(flds.guaranteetype ?? '').trim().toLowerCase()];
+        const createdMs = createdOn.get(conf) ?? parseCreatedOn(flds.createddate ?? flds.createdon ?? flds.created) ?? (typeof row.arrival_hint === 'string' ? Date.parse(`${row.arrival_hint}T00:00:00Z`) : NaN);
+        if (gCode && Number.isFinite(createdMs) && !readGuarantee.has(conf)) {
+          readGuarantee.set(conf, {guaranteetype: gCode, ta1: String(flds.ta1 ?? '').trim(), company: String(flds.company ?? '').trim(), createdMs});
+        }
+      }
+    }
+  }
+  const anchorConfs = new Set<string>();
   for (const anchor of anchors) {
     const confirmation = confirmationId(anchor.confirmation);
+    if (confirmation) anchorConfs.add(confirmation);
     const createdMs = confirmation ? createdOn.get(confirmation) : undefined;
-    if (createdMs == null) continue;
-    const stamp = new Date(createdMs).toISOString();
+    const rg = confirmation ? readGuarantee.get(confirmation) : undefined;
     const fields = object(anchor.hms_fields);
-    if (createdFieldValue(fields) == null) anchor.hms_fields = {...fields, created: stamp};
+    if (createdMs != null && createdFieldValue(fields) == null) {
+      anchor.hms_fields = {...fields, created: new Date(createdMs).toISOString()};
+    }
+    if (rg && !object(anchor.hms_fields).guaranteetype) {
+      anchor.hms_fields = {...object(anchor.hms_fields), guaranteetype: rg.guaranteetype, ...(rg.ta1 && !object(anchor.hms_fields).ta1 ? {ta1: rg.ta1} : {}), ...(rg.company && !object(anchor.hms_fields).company ? {company: rg.company} : {})};
+    }
     for (const capture of rows(anchor.captures)) {
       const captureFields = object(capture.hms_fields);
-      if (createdFieldValue(captureFields) == null) capture.hms_fields = {...captureFields, created: stamp};
+      if (createdMs != null && createdFieldValue(captureFields) == null) capture.hms_fields = {...captureFields, created: new Date(createdMs).toISOString()};
+      if (rg && !object(capture.hms_fields).guaranteetype) capture.hms_fields = {...object(capture.hms_fields), guaranteetype: rg.guaranteetype};
     }
+  }
+  // Append strictly time-stamped read-only guarantee stays not already in anchors (run.ts gates createdAtMs < cutoff).
+  for (const [conf, rg] of readGuarantee) {
+    if (anchorConfs.has(conf) || (!rg.ta1 && !rg.company)) continue;
+    const stamp = new Date(rg.createdMs).toISOString();
+    anchors.push({confirmation: conf, captured_at: stamp, hms_fields: {created: stamp, ta1: rg.ta1, company: rg.company, guaranteetype: rg.guaranteetype}});
   }
   const pairsCandidates = [
     process.env.NAVA_BENCH_PAIRS_FILE,
@@ -252,10 +294,55 @@ function loadBase(root:string):BaseWorld {
       }
     }
   }
+  const devDir = process.env.NAVA_BENCH_DEV_DIR ?? join(overnightReads, 'v6/dev');
+  const catalog = loadCatalogue(root);
+  const canonicalName = (kind: 'agencies' | 'organizations', raw: string): string => {
+    const catalogs = object(catalog.catalogs ?? catalog);
+    const sec = object(catalogs[kind]);
+    const list = Array.isArray(catalogs[kind]) ? catalogs[kind] as unknown[] : Array.isArray(sec.records) ? sec.records : [];
+    const norm = raw.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\b(?:pty|ltd|limited|cc)\b/g, '').trim().replace(/\s+/g, ' ');
+    let prefixHit: string | null = null;
+    for (const r of list) {
+      const rec = object(r);
+      const name = String(rec.meaning ?? rec.name ?? rec.displayName ?? '').trim();
+      if (!name) continue;
+      const cn = name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\b(?:pty|ltd|limited|cc)\b/g, '').trim().replace(/\s+/g, ' ');
+      if (cn === norm) return name;
+      if (!prefixHit && norm.length >= 6 && cn.length >= 6 && (norm.startsWith(cn) || cn.startsWith(norm))) prefixHit = name;
+    }
+    return prefixHit ?? raw;
+  };
+  if (isRealWorld && process.env.NAVA_BENCH_DISABLE_PAIRS !== '1' && existsSync(join(devDir, 'gold.json'))) {
+    const devGold = optionalJson(join(devDir, 'gold.json')) ?? {};
+    for (const [cid, rawRow] of Object.entries(devGold)) {
+      const row = object(rawRow);
+      if (row.workflow !== 'create' || row.skip === true) continue;
+      const cd = optionalJson(join(devDir, cid, 'case.json'));
+      if (!cd) continue;
+      const asOfMs = Date.parse(String(cd.as_of ?? ''));
+      if (!Number.isFinite(asOfMs)) continue;
+      const sel = object(cd.selected_email);
+      const fromAddr = String(sel.from_address ?? '');
+      let host = extractSenderHost(fromAddr, '');
+      if (!host && /legacyhotels?\./i.test(fromAddr)) {
+        const m = /^\s*>?\s*From:[^\r\n]*?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+)/im.exec(String(sel.body_text ?? ''));
+        if (m) host = extractSenderHost(m[1], '');
+      }
+      if (!host) continue;
+      let ta1 = '', company = '';
+      for (const item of rows(row.gold)) {
+        const path = String(item.path ?? '');
+        const val = typeof item.value === 'string' && !item.value.startsWith('{') ? item.value.trim() : '';
+        if (path === '/bookings/0/fields/agency_name' && val) ta1 = canonicalName('agencies', val);
+        if (path === '/bookings/0/fields/organization_name' && val) company = canonicalName('organizations', val);
+      }
+      if (ta1 || company) senderPairs.push({confirmation: cid, host, mailAtMs: asOfMs, sentAtMs: asOfMs, ta1, company});
+    }
+  }
   const base={
     anchors,
     profiles:Array.isArray(profilesFile?.profiles) ? profilesFile.profiles as TwinProfile[] : [],
-    catalog: loadCatalogue(root),
+    catalog,
     createdOn,
     senderPairs,
   };

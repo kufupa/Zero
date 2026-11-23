@@ -794,3 +794,50 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
   });
   return true;
 }
+
+/** Enqueue at most one idle background HMS Prepare for a recent ready Create proposal (read-only, never creates profiles). */
+export async function enqueueOpportunisticPrepare(): Promise<string | null> {
+  if (!createPilotEnabled() || !staffPrepareOnly()) return null;
+  const [busy] = await sql`SELECT 1 FROM nava_agent.proposal
+    WHERE (phase='staging' AND stage->>'state'='queued')
+       OR (phase='saving' AND execution->'go'->>'staff'='true')
+       OR (phase='uncertain' AND execution->'reconcile'->>'state'='queued')
+    LIMIT 1`;
+  if (busy) return null;
+  const candidates = await sql`SELECT p.id,p.session_id,p.revision,p.current
+    FROM nava_agent.proposal p
+    JOIN nava_agent.agent_session s ON s.id=p.session_id AND s.thread_id=p.thread_id
+    WHERE p.workflow='create' AND p.phase='ready' AND p.stage IS NULL
+      AND (p.execution IS NULL OR p.execution->'error' IS NULL)
+      AND p.updated_at > now() - interval '6 hours'
+      AND s.mode='live' AND s.status='idle' AND s.pending_tool_use_id IS NULL
+      AND (s.lease_until IS NULL OR s.lease_until < now())
+      AND NOT (s.config ? 'replay_id')
+    ORDER BY p.updated_at DESC LIMIT 8`;
+  for (const row of candidates) {
+    const parsed = proposalDraft.safeParse(row.current);
+    if (!parsed.success || parsed.data.disposition !== 'propose') continue;
+    const needsProfile = parsed.data.bookings.some(b => b.fields.profile_create_new === true && b.fields.guest_profile_id == null);
+    if (needsProfile) continue;
+    if (parsed.data.bookings.some((_, i) => missingCreateFields(parsed.data, 'stage', i).length > 0)) continue;
+    const queued = await sql.begin(async tx => {
+      const source = await selectedStageSource(tx, row.session_id);
+      if (!source.success || !stageInput(parsed.data, 'create', source.data.property_code, null)) return null;
+      const stage = queuedStage.parse({
+        job_id: uid('stage'), revision: row.revision, actor: 'bg-prepare',
+        previous_phase: 'ready', state: 'queued', workflow: 'create', source: source.data,
+      });
+      const updated = await tx`UPDATE nava_agent.proposal
+        SET phase='staging', stage=${json(stage)}, updated_at=now()
+        WHERE id=${row.id} AND revision=${row.revision} AND phase='ready' AND stage IS NULL
+        RETURNING id`;
+      if (!updated.length) return null;
+      await writeEvent(tx, row.session_id, 'stage_queued', {
+        proposal_id: row.id, job_id: stage.job_id, revision: stage.revision, workflow: 'create', actor: 'bg-prepare',
+      });
+      return stage.job_id;
+    });
+    if (queued) return queued;
+  }
+  return null;
+}

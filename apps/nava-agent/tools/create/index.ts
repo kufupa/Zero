@@ -436,7 +436,8 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
             ...(saved.save?.checkedPricing !== undefined ? {checkedPricing:saved.save.checkedPricing} : {}),
             ...(stage.requestBinding.arAccountProfileId ? {arProfileId:stage.requestBinding.arAccountProfileId} : {})}} : {}) }));
       }
-      return fail(markerAttempted ? 'CREATE_SAVE_UNCERTAIN' : 'CREATE_SAVE_REFUSED', saved.issue ?? 'Native Save was not verified.', markerAttempted ? 'uncertain' : 'known', bounded({ native: saved }));
+      const draftCheck = typeof saved.save?.draftCheck === 'string' && saved.save.draftCheck ? ` (${saved.save.draftCheck})` : '';
+      return fail(markerAttempted ? 'CREATE_SAVE_UNCERTAIN' : 'CREATE_SAVE_REFUSED', `${saved.issue ?? 'Native Save was not verified.'}${draftCheck}`, markerAttempted ? 'uncertain' : 'known', bounded({ native: saved }));
     };
     // The registry already holds the exclusive write lease; taking a second one here would wait on ourselves.
     return context.credentialLease ? await write(context.credentialLease)

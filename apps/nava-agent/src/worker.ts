@@ -10,9 +10,9 @@ import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableT
 import { client, cmaServerConfigured, deliverPending, environmentId, mirrorEvent, runtimeProvider, startPending } from './runtime.js';
 import { event, json, sql, uid } from './db.js';
 import { compactCatalogueSummary, discoverToolPacks, sessionMailPrompt, ToolRegistry, toolErrorSchema, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type NativeTiming, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
-import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffReconcile, runStaffStage } from './create-operations.js';
+import { createPilotEnabled, enqueueOpportunisticPrepare, manualLabtestTarget, runStaffGo, runStaffReconcile, runStaffStage } from './create-operations.js';
 import { writeEvent } from './session-store.js';
-import { createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
+import { backgroundPrepareEnabled, createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { initialSkillContext } from './initial-skill-context.js';
 import { cachedCatalogue, readCatalogue, type ToolContext as CatalogueContext } from '../tools/triage/index.js';
 import { effectiveSenderHost } from './party-matching.js';
@@ -319,6 +319,7 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
   // A dispatched Save is already uncertain in the DB, so re-admission never re-clicks it.
   const parked=new Map<string,string>();
   const limit=configuredSlots().requested;
+  let lastBgCheck=0;
   while(!signal?.aborted) {
     const parkedIds=[...parked.keys()],parkedSeqs=[...parked.values()];
     const rows=await sql`SELECT s.id,(${createPilotEnabled() && createGoEnabled()} AND EXISTS
@@ -337,6 +338,10 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
         OR EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.execution->'go' IS NOT NULL
           AND (p.phase='saving' OR p.execution->'go'->'completion' IS NOT NULL))))
       ) ORDER BY staff_go DESC,s.updated_at LIMIT ${limit+1}`;
+    if(!rows.length && backgroundPrepareEnabled() && active.size<Math.max(1,Math.floor(limit/2)) && Date.now()-lastBgCheck>=5000) {
+      lastBgCheck=Date.now();
+      await enqueueOpportunisticPrepare().catch(()=>null);
+    }
     for(const row of rows) if(parked.delete(row.id)) failures.delete(row.id);
     for(const row of rows) if(!active.has(row.id) && (active.size<limit || (row.staff_go && active.size<limit+1))) {
       active.add(row.id);

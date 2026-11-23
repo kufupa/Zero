@@ -15,6 +15,10 @@ export function staffPrepareOnly(): boolean {
   return process.env.NAVA_CREATE_PREPARE_ONLY === '1'; // staff mode; Go always available in it (ship mode)
 }
 
+export function backgroundPrepareEnabled(): boolean {
+  return staffPrepareOnly() && process.env.NAVA_BG_PREPARE !== '0';
+}
+
 export function createPilotRequested(): boolean {
   return staffPrepareOnly() || process.env.NAVA_CREATE_PILOT === '1';
 }

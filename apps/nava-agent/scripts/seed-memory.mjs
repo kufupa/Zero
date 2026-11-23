@@ -6,7 +6,7 @@
  * Usage:
  *   node apps/nava-agent/scripts/seed-memory.mjs [--dry-run] [--seed-json path] [--world dir]
  */
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
@@ -14,7 +14,24 @@ import { join, resolve } from 'node:path';
 import postgres from 'postgres';
 
 const DEFAULT_WORLD = join(homedir(), '.local/share/zero/bench/replay-bench-20261119/world');
+const DEFAULT_DEV_DIR = join(homedir(), '.local/share/zero/runs/overnight-20261122/data/v6/dev');
+const DEFAULT_READS_DIR = join(homedir(), '.local/share/zero/runs/overnight-20261122/data');
 const PROPERTY = 'HRCEN';
+const GUARANTEE_TO_CODE = new Map([
+  ['guaranteed by agent', 'GTDAGT'], ['gtdagt', 'GTDAGT'],
+  ['guaranteed by deposit', 'GTDDEP'], ['gtddep', 'GTDDEP'],
+  ['deposit requested', 'DEPREQ'], ['depreq', 'DEPREQ'],
+  ['guaranteed by company', 'GTDCMP'], ['gtdcmp', 'GTDCMP'],
+  ['guaranteed by credit card', 'GTDCC'], ['gtdcc', 'GTDCC'],
+  ['non-guaranteed individual', 'NGI'], ['ngi', 'NGI'],
+  ['confirmation received', 'CNFRCV'], ['cnfrcv', 'CNFRCV'],
+  ['awaiting voucher', 'AWVCH'], ['awvch', 'AWVCH'],
+]);
+
+function normalizeGuarantee(raw) {
+  const s = String(raw ?? '').trim().toLowerCase();
+  return GUARANTEE_TO_CODE.get(s) ?? null;
+}
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
@@ -22,8 +39,20 @@ const worldDir = (() => {
   const i = args.indexOf('--world');
   return i >= 0 && args[i + 1] ? resolve(args[i + 1]) : DEFAULT_WORLD;
 })();
+const devDir = (() => {
+  const i = args.indexOf('--dev-dir');
+  return i >= 0 && args[i + 1] ? resolve(args[i + 1]) : (existsSync(DEFAULT_DEV_DIR) ? DEFAULT_DEV_DIR : null);
+})();
+const readsDir = (() => {
+  const i = args.indexOf('--reads-dir');
+  return i >= 0 && args[i + 1] ? resolve(args[i + 1]) : (existsSync(DEFAULT_READS_DIR) ? DEFAULT_READS_DIR : null);
+})();
 const seedJsonPath = (() => {
   const i = args.indexOf('--seed-json');
+  return i >= 0 && args[i + 1] ? resolve(args[i + 1]) : null;
+})();
+const dumpJsonPath = (() => {
+  const i = args.indexOf('--dump-json');
   return i >= 0 && args[i + 1] ? resolve(args[i + 1]) : null;
 })();
 
@@ -131,7 +160,7 @@ async function main() {
 
   /** confirmation → hms_fields */
   const anchorFields = new Map();
-  for await (const row of readJsonl(anchorsPath)) {
+  if (existsSync(anchorsPath)) for await (const row of readJsonl(anchorsPath)) {
     anchorCount += 1;
     const confirmation = String(row.confirmation ?? '');
     const fields = row.hms_fields ?? {};
@@ -163,7 +192,10 @@ async function main() {
   // Optional seed json: [{propertyCode, partyKind, partyId, fieldName, fieldValue, hits?}] or sender rows
   if (seedJsonPath) {
     const extra = JSON.parse(await readFile(seedJsonPath, 'utf8'));
-    const rows = Array.isArray(extra) ? extra : (extra.party_booking_memory ?? extra.rows ?? []);
+    const rows = Array.isArray(extra) ? extra : [
+      ...(extra.party_booking_memory ?? extra.rows ?? []),
+      ...(extra.sender_party_memory ?? []),
+    ];
     for (const row of rows) {
       if (row.host && row.party_name) {
         const key = senderKey(row.property_code ?? PROPERTY, String(row.host).toLowerCase(), row.party_kind, row.party_name);
@@ -175,9 +207,15 @@ async function main() {
         bump(bookingHits, partyKey(row.property_code ?? PROPERTY, row.party_kind, row.party_id, row.field_name, String(row.field_value)), Number(row.hits) || 1);
       }
     }
+    for (const row of extra.sender_direct_misses ?? []) {
+      const missKey = `${row.property_code ?? PROPERTY}\0${String(row.host).toLowerCase()}\0${row.party_kind}`;
+      const cur = senderMisses.get(missKey) ?? { misses: 0, confirmations: new Set() };
+      cur.misses = Math.max(cur.misses, Number(row.misses) || 0);
+      senderMisses.set(missKey, cur);
+    }
   }
 
-  for await (const pair of readJsonl(pairsPath)) {
+  if (existsSync(pairsPath)) for await (const pair of readJsonl(pairsPath)) {
     pairCount += 1;
     const confirmation = String(pair.confirmation ?? pair.anchor?.confirmation ?? '');
     if (!confirmation || seenConfirmations.has(confirmation)) continue;
@@ -232,6 +270,104 @@ async function main() {
     }
   }
 
+  // Strictly pre-Nov v6/dev creates (e.g. thompsons.co.za, twf.co.za) + native HMS reads (guaranteetype).
+  let devCount = 0;
+  let readsGuarCount = 0;
+  const agencyNames = new Map();
+  const organizationNames = new Map();
+  for (const path of [
+    join(worldDir, 'catalog.json'), join(worldDir, 'catalogs.json'),
+    join(worldDir, '..', 'catalog', 'catalog.json'), join(worldDir, '..', 'catalog.json'),
+  ]) {
+    try {
+      const data = JSON.parse(await readFile(path, 'utf8'));
+      const catalogs = data.catalogs ?? data;
+      for (const [kind, map] of [['agencies', agencyNames], ['organizations', organizationNames]]) {
+        for (const row of catalogs?.[kind]?.records ?? catalogs?.[kind] ?? []) {
+          const name = row.meaning ?? row.name ?? row.displayName;
+          const id = row.nativeId ?? row.native_id ?? row.code;
+          if (name && id != null) map.set(String(id), String(name));
+        }
+      }
+      if (agencyNames.size) break;
+    } catch { /* ignore */ }
+  }
+  if (devDir && existsSync(join(devDir, 'gold.json'))) {
+    const devGold = JSON.parse(await readFile(join(devDir, 'gold.json'), 'utf8'));
+    const resolveCatalog = (map, raw) => {
+      const norm = normalizePartyName(raw);
+      if (map.has(norm)) return { id: map.get(norm), norm };
+      for (const [k, id] of map) if (norm.startsWith(k) || k.startsWith(norm)) return { id, norm: k };
+      return { id: null, norm };
+    };
+    for (const [cid, row] of Object.entries(devGold)) {
+      if (row?.workflow !== 'create' || row?.skip) continue;
+      const casePath = join(devDir, cid, 'case.json');
+      if (!existsSync(casePath)) continue;
+      const cd = JSON.parse(await readFile(casePath, 'utf8'));
+      const asOf = String(cd.as_of ?? '');
+      if (asOf && asOf >= '2026-11-01') continue;
+      const sel = cd.selected_email ?? {};
+      let fromAddr = firstAddress(sel.from_address ?? sel.from);
+      let host = senderHost(fromAddr);
+      if (!host && typeof fromAddr === 'string' && /legacyhotels?\./i.test(fromAddr)) {
+        const m = /^\s*>?\s*From:[^\r\n]*?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+)/im.exec(String(sel.body_text ?? ''));
+        if (m) host = senderHost(m[1]);
+      }
+      if (!host) continue;
+      const fmap = {};
+      for (const item of row.gold ?? []) {
+        if (typeof item?.path === 'string' && item.path.startsWith('/bookings/0/fields/')) {
+          fmap[item.path.split('/').pop()] = item.value;
+        }
+      }
+      const agRaw = typeof fmap.agency_name === 'string' && !fmap.agency_name.startsWith('{') ? fmap.agency_name.trim() : '';
+      const orgRaw = typeof fmap.organization_name === 'string' && !fmap.organization_name.startsWith('{') ? fmap.organization_name.trim() : '';
+      if (agRaw) {
+        const { id: agId } = resolveCatalog(agencies, agRaw);
+        const agName = (agId && agencyNames.get(agId)) || agRaw;
+        const key = senderKey(PROPERTY, host, 'agency', agName);
+        const cur = senderHits.get(key) ?? { hits: 0, nativeId: agId, confirmations: new Set() };
+        if (!cur.confirmations.has(cid)) { cur.confirmations.add(cid); cur.hits += 1; if (agId) cur.nativeId = agId; }
+        senderHits.set(key, cur);
+        devCount += 1;
+      } else if (orgRaw) {
+        const { id: orgId } = resolveCatalog(organizations, orgRaw);
+        const orgName = (orgId && organizationNames.get(orgId)) || orgRaw;
+        const key = senderKey(PROPERTY, host, 'organization', orgName);
+        const cur = senderHits.get(key) ?? { hits: 0, nativeId: orgId, confirmations: new Set() };
+        if (!cur.confirmations.has(cid)) { cur.confirmations.add(cid); cur.hits += 1; if (orgId) cur.nativeId = orgId; }
+        senderHits.set(key, cur);
+        devCount += 1;
+      }
+    }
+  }
+  if (readsDir && existsSync(readsDir)) {
+    const readFiles = readdirSync(readsDir).filter(f => f.endsWith('.reads.jsonl')).sort();
+    const seenReadConf = new Set();
+    for (const file of readFiles) {
+      for await (const r of readJsonl(join(readsDir, file))) {
+        const conf = String(r.confirmation ?? '');
+        if (!conf || seenReadConf.has(conf)) continue;
+        const fieldsList = r?.record_view?.details?.fields;
+        if (!Array.isArray(fieldsList)) continue;
+        const flds = Object.fromEntries(fieldsList.filter(x => x && typeof x === 'object' && x.name).map(x => [x.name, x.value]));
+        const guarCode = normalizeGuarantee(flds.guaranteetype);
+        if (!guarCode) continue;
+        seenReadConf.add(conf);
+        const ta1 = String(flds.ta1 ?? '').trim();
+        const comp = String(flds.company ?? '').trim();
+        const agId = ta1 ? agencies.get(normalizePartyName(ta1)) ?? null : null;
+        const orgId = comp ? organizations.get(normalizePartyName(comp)) ?? null : null;
+        for (const [kind, partyId] of [['agency', agId], ['organization', orgId]]) {
+          if (!partyId) continue;
+          bump(bookingHits, partyKey(PROPERTY, kind, partyId, 'guarantee_type', guarCode));
+          readsGuarCount += 1;
+        }
+      }
+    }
+  }
+
   bookingFieldRows = bookingHits.size;
   senderPartyRows = senderHits.size;
   directMissRows = senderMisses.size;
@@ -239,9 +375,13 @@ async function main() {
   console.log(JSON.stringify({
     dryRun,
     worldDir,
+    devDir,
+    readsDir,
     catalogPath,
     anchors: anchorCount,
     pairs: pairCount,
+    devCreates: devCount,
+    readsGuarantees: readsGuarCount,
     uniqueConfirmations: seenConfirmations.size,
     party_booking_memory_rows: bookingFieldRows,
     sender_party_memory_rows: senderPartyRows,
@@ -249,6 +389,24 @@ async function main() {
     agencyCatalog: agencies.size,
     organizationCatalog: organizations.size,
   }, null, 2));
+
+  if (dumpJsonPath) {
+    const out = {
+      party_booking_memory: [...bookingHits.entries()].map(([key, hits]) => {
+        const [property_code, party_kind, party_id, field_name, field_value] = key.split('\0');
+        return { property_code, party_kind, party_id, field_name, field_value, hits };
+      }),
+      sender_party_memory: [...senderHits.entries()].map(([key, row]) => {
+        const [property_code, host, party_kind, party_name] = key.split('\0');
+        return { property_code, host, party_kind, party_name, native_id: row.nativeId, hits: row.hits };
+      }),
+      sender_direct_misses: [...senderMisses.entries()].map(([key, row]) => {
+        const [property_code, host, party_kind] = key.split('\0');
+        return { property_code, host, party_kind, misses: row.misses };
+      }),
+    };
+    writeFileSync(dumpJsonPath, JSON.stringify(out));
+  }
 
   if (dryRun) return;
 

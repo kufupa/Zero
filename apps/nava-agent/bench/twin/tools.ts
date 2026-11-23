@@ -58,7 +58,7 @@ export function twinLearnedSender(world: TwinWorld, host: string, kind: 'agency'
       if (host === mail.host || host.endsWith(`.${mail.host}`)) domains.add(mail.host);
     }
     if (!domains.size) continue;
-    const state = anchorCaptures(anchor).map(row => object(row.hms_fields)).find(fields => {
+    const state = anchorCaptures(anchor).filter(row => beforeCutoff(row.captured_at, world.cutoff)).map(row => object(row.hms_fields)).find(fields => {
       const departure = isoDate(fields.departure_date ?? fields.departuredate);
       return departure !== null && departure < cutoffDate;
     });
