@@ -8,6 +8,7 @@ import { claimGoInTransaction, writeEvent } from './session-store.js';
 import { groupedQuoteRequest, proposalDraft, type ProposalDraft, type Workflow } from './schema.js';
 import { createGoEnabled, createGoRealGuests, createPilotRequested, hmsSaveEnabled, isWriteWorkflow, staffPrepareOnly, staffSlotCount } from './hms-mode.js';
 import { missingCreateFields } from './proposal-fields.js';
+import { recordSavedStayMemory } from './party-memory.js';
 import { stageFeedback } from './prepare-feedback.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, hasBoundCreateGuest, invalidGuestSelection, profileReviewFor, requiresStaffAttachmentCheck, selectedCreateGuest, selectedStageSource, stageSource, staffAttachmentsChecked, type StaffJobBinding } from './attachment-gate.js';
 import { installedStaffTools, type LeaseFence, type RegistryContext, type StaffNativeInput, type ToolRegistry, type ToolResult } from './tool-registry.js';
@@ -360,6 +361,18 @@ async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId:
       await tx`UPDATE nava_agent.proposal SET phase='done',result=${json({confirmation:data.confirmation,reservation_id:data.reservation_id,readback:data.readback,...(rooms?{rooms}:{})})},
         execution=(execution-'go') || ${json({last_go:completion})}::jsonb,updated_at=now() WHERE id=${p.id}`;
       await resumeFilingAfterCreate(tx,p,data);
+      if(draft.success && draft.data.workflow==='create' && data.readback!=null) {
+        for(const booking of draft.data.bookings) {
+          try {
+            await recordSavedStayMemory(tx, {
+              propertyCode: String(booking.property_code ?? '').trim().toUpperCase(),
+              agencyId: typeof booking.fields.agency_id==='string'?booking.fields.agency_id:null,
+              organizationId: typeof booking.fields.organization_id==='string'?booking.fields.organization_id:null,
+              fields: booking.fields,
+            });
+          } catch { /* memory flywheel non-fatal */ }
+        }
+      }
     } else if(uncertain) {
       await tx`UPDATE nava_agent.proposal SET phase='uncertain',execution=(execution-'go') || ${json({last_go:completion,
         error:{...(result.error ?? {code:'SAVE_UNCERTAIN',message:'Save may have dispatched.',retryable:false}),outcome:'uncertain'}})}::jsonb,updated_at=now() WHERE id=${p.id}`;
@@ -449,6 +462,21 @@ async function finishCreateRoom(lease:LeaseFence,proposalId:string,executionId:s
       execution=${phase==='saving' ? json({...p.execution,go:next}) : json({...p.execution,go:undefined,last_go:{...next,state:complete?'saved':uncertain?'uncertain':'failed'},error})},updated_at=now() WHERE id=${proposalId}`;
     await writeEvent(tx,lease.sessionId,'create_room_finished',{proposal_id:proposalId,execution_id:executionId,booking_id:rooms[index].booking_id,
       outcome:rooms[index].state,confirmation:rooms[index].confirmation ?? null,reservation_id:rooms[index].reservation_id ?? null});
+    if(complete) {
+      const draft=proposalDraft.safeParse(go.snapshot);
+      if(draft.success && draft.data.workflow==='create') {
+        for(const booking of draft.data.bookings) {
+          try {
+            await recordSavedStayMemory(tx, {
+              propertyCode: String(booking.property_code ?? '').trim().toUpperCase(),
+              agencyId: typeof booking.fields.agency_id==='string'?booking.fields.agency_id:null,
+              organizationId: typeof booking.fields.organization_id==='string'?booking.fields.organization_id:null,
+              fields: booking.fields,
+            });
+          } catch { /* memory flywheel non-fatal */ }
+        }
+      }
+    }
     return phase==='saving';
   });
 }
