@@ -137,9 +137,11 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
     for(const kind of ['agency','organization'] as const) {
       const nameKey=`${kind}_name`, idKey=`${kind}_id`;
       const choice=readPartyChoice(propertyCode,fields[nameKey] ?? (draft.workflow==='quote'?fields.party_name:null),values,kind);
-      if(nameKey in fields || choice) fields[nameKey]=choice?.name ?? null;
-      if(idKey in fields || choice) fields[idKey]=choice?.nativeId ?? null;
+      // Only overwrite when a party read resolves; preserve pre-bound agency_id/organization_id for party memory.
       if(!choice) continue;
+      fields[nameKey]=choice.name;
+      if(choice.nativeId!=null) fields[idKey]=choice.nativeId;
+      else if(!(idKey in fields)) fields[idKey]=null;
       for(const [suffix,label] of [['id',kind==='agency'?'Booking agency ID':'Company ID'],['name',kind==='agency'?'Booking agency':'Company']] as const) {
         if(suffix==='id' && !choice.nativeId) continue;
         const path=`${root}/${kind}_${suffix}`;
@@ -248,8 +250,8 @@ async function selectedMail(sessionId:string) {
   return row;
 }
 
-/** Turn-1 mail evidence preload (same payload mail_read_thread returns). */
-export async function sessionMailPrompt(sessionId:string):Promise<unknown|null> {
+/** Turn-1 mail evidence preload (same payload mail_read_thread returns). Optional `clientCard` appends a `[Client Memory Card]` block for callers that supply one. */
+export async function sessionMailPrompt(sessionId:string, clientCard?:string|null):Promise<unknown|null> {
   const selected=await selectedMail(sessionId);
   if(!selected?.thread_id || !selected.selected_message_id) return null;
   const {sender_email:_sender,input_cutoff:_cutoff,replay_id:_replay,thread_id,...thread}=selected;
@@ -257,7 +259,11 @@ export async function sessionMailPrompt(sessionId:string):Promise<unknown|null> 
     AND received_at <= ${thread.selected_received_at ?? null}::timestamptz ORDER BY received_at,id`;
   const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${sessionId} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
   const sourceInput=source?.payload;
-  return mailPrompt({...thread,messages:messages.map(m=>m.payload),...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {})});
+  const prompt=mailPrompt({...thread,messages:messages.map(m=>m.payload),...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {})});
+  if(clientCard==null || typeof clientCard!=='string' || !clientCard.trim()) return prompt;
+  const card=clientCard.trimStart().startsWith('[Client Memory Card]') ? clientCard.trim() : `[Client Memory Card]\n${clientCard.trim()}`;
+  if(prompt && typeof prompt==='object' && !Array.isArray(prompt)) return {...prompt as Record<string,unknown>, client_memory_card:card};
+  return {mail:prompt, client_memory_card:card};
 }
 
 export function compactCatalogueSummary(data:unknown):string|null {
@@ -499,7 +505,7 @@ function nativeError(error:unknown, step:string):z.infer<typeof nativeErrorSchem
   const info=e as Error & {step?:unknown;stage?:unknown;phase?:unknown};
   const provided=[info.step,info.stage,info.phase].find(value=>typeof value==='string' && /^[a-z][\w.:-]{0,95}$/i.test(value));
   const redact=(value:string)=>value
-    .replace(/\b(?:Bearer|Basic)\s+[\w.+\/=-]+/gi,'[redacted authorization]')
+    .replace(/\b(?:Bearer|Basic)\s+[\w.+/=-]+/gi,'[redacted authorization]')
     .replace(/\b(authorization|cookie|password|secret|token|api[_-]?key|access[_-]?key)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,'$1=[redacted]')
     .replace(/([a-z][\w+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/gi,'$1[redacted]@')
     .replace(/(https?:\/\/[^\s?]+)\?[^\s)]+/gi,'$1?[redacted]')
