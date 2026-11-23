@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { parseAsString, useQueryStates } from 'nuqs';
-import { composeHasUnsavedChanges } from '@/lib/mail/compose-flush-registry';
+import { runComposeSwitch } from '@/lib/mail/compose-flush-registry';
 import emailAddresses from 'email-addresses';
 import { OutlookPaneSignIn } from '@/app/(routes)/outlook-pane/outlook-pane-sign-in';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
@@ -118,10 +118,11 @@ function RewriteWithWebmail({ email, threadId, source, onSourceNotEligible }: Ex
     const found = await trpcClient.drafts.quoteReply.query({ threadId, messageId: selected.id, binding }, inMailbox(source.input.mailbox_id));
     if (!found || !current.current || !isCurrent()) throw new Error('Draft unavailable');
     if (compose.mode && compose.draftId === found.id) return null;
-    // oxlint-disable-next-line no-alert
-    if (composeHasUnsavedChanges() && !window.confirm('Discard the current unsaved reply and open this draft?')) return null;
-    await setCompose({ mode: null, activeReplyId: null, draftId: null });
-    if (current.current && isCurrent()) await setCompose({ mode: 'reply', activeReplyId: selected.id, draftId: found.id });
+    // Flush/save open composer first; refuse switch when dirty draft cannot be preserved.
+    await runComposeSwitch(async () => {
+      if (!current.current || !isCurrent()) throw new Error('Draft unavailable');
+      await setCompose({ mode: 'reply', activeReplyId: selected.id, draftId: found.id });
+    });
     return null;
   }
 

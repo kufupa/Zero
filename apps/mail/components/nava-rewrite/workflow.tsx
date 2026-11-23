@@ -819,8 +819,6 @@ function QuoteCover({ proposal, busy, drafts, onSaveQuoteDraft, onFindQuoteDraft
   const [checking, setChecking] = useState(Boolean(onFindQuoteDraft));
   const [opened, setOpened] = useState<{ subject: string; body: string; files: string[]; to?: string; cc?: string } | null>(null);
   const [refresh, setRefresh] = useState(0);
-  const autoDraftAttempted = useRef(false);
-  const [checkedBinding, setCheckedBinding] = useState<string | null>(null);
   const artifacts = proposal.stage?.artifacts ?? [];
   const pdf = artifacts.find(item => item.mime_type === 'application/pdf');
   const workbook = artifacts.find(item => item.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -828,30 +826,17 @@ function QuoteCover({ proposal, busy, drafts, onSaveQuoteDraft, onFindQuoteDraft
   const artifactIds = quoteCount>0 && artifacts.length===quoteCount*2 ? quoteArtifactIds(artifacts) : null;
   const binding: QuoteDraftBinding = { proposalId: proposal.id, revision: proposal.revision, quoteId: quoteId ?? '', jobId: jobId ?? '', artifactIds: artifactIds ?? ['', ''] };
   const bindingKey = JSON.stringify(binding);
-  const currentBinding = useRef(bindingKey);
-  currentBinding.current = bindingKey;
   useEffect(() => {
     let active = true;
-    setSaved(false); setOpened(null); setCheckedBinding(null);
+    setSaved(false); setOpened(null);
     if (onFindQuoteDraft && quoteConnectionReady !== false && quoteId && jobId && artifactIds && Object.keys(drafts).length === 0) {
       setChecking(true);
-      void onFindQuoteDraft(JSON.parse(bindingKey)).then(found => {
-        if (active) { setSaved(found); setCheckedBinding(bindingKey); if (found) autoDraftAttempted.current=true; }
-      })
+      void onFindQuoteDraft(JSON.parse(bindingKey)).then(found => { if (active) setSaved(found); })
         .catch(() => { if (active) setMessage('Could not check the saved draft. Try again.'); })
         .finally(() => { if (active) setChecking(false); });
     } else setChecking(false);
     return () => { active = false; };
   }, [bindingKey, refresh, quoteConnectionReady, Object.keys(drafts).length]);
-  useEffect(() => {
-    if (checkedBinding!==bindingKey || busy || saving || checking || saved || quoteConnectionReady===false || autoDraftAttempted.current || !onSaveQuoteDraft || !body.trim()) return;
-    autoDraftAttempted.current=true;
-    setSaving(true); setMessage(null);
-    void onSaveQuoteDraft(body).then(result => {
-      if (currentBinding.current===bindingKey) { setMessage(result.message); if (result.status==='created') setSaved(true); }
-    }).catch(() => { if (currentBinding.current===bindingKey) setMessage('Could not confirm the draft. Check Drafts before trying again.'); })
-      .finally(() => setSaving(false));
-  }, [bindingKey,checkedBinding,busy,saving,checking,saved,body,onSaveQuoteDraft,quoteConnectionReady]);
   if (!pdf || !workbook || !artifactIds) return null;
   return <PaneSection title="Cover email and quote files">
     {!saved && <PaneField label="Cover email" control="textarea" value={body} disabled={busy || saving} onChange={value => { setBody(value); setMessage(null); }} />}
@@ -1210,6 +1195,7 @@ export function Workflow(props: WorkflowProps) {
     {proposal.reply_draft !== null && (proposal.workflow !== 'quote' || proposal.revision === 1 && Object.keys(props.drafts).length === 0) && <PaneSection title={proposal.workflow === 'quote' ? 'Initial reply draft' : 'Reply draft'}>
       {proposal.workflow === 'quote' && <p>This draft may contain outdated rates. Check current prices in Infor before using it.</p>}
       <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{proposal.reply_draft}</p>
+      {proposal.workflow !== 'quote' && <button type="button" onClick={() => { void navigator.clipboard.writeText(proposal.reply_draft!); }}>Copy reply</button>}
     </PaneSection>}
   </>;
 }
