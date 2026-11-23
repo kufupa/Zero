@@ -1,3 +1,5 @@
+import { extractForwardedSender } from './party-matching.js';
+
 const historyLimit = 1500;
 const historyLabel = '[Quoted history; earlier correspondence]';
 const truncated = '\n[Quoted history truncated]';
@@ -28,6 +30,24 @@ function compactBody(body: string, subject: string): string {
   return [current, first && '[First quoted message]\n' + first, excerpt && historyLabel + '\n' + excerpt].filter(Boolean).join('\n\n');
 }
 
+function mailFromAddress(mail: Record<string, unknown>): string | null {
+  if (typeof mail.from_address === 'string' && mail.from_address.trim()) return mail.from_address;
+  const from = mail.from;
+  if (from && typeof from === 'object' && !Array.isArray(from)) {
+    const email = (from as {email?: unknown}).email;
+    if (typeof email === 'string' && email.trim()) return email;
+  }
+  return null;
+}
+
+function withForwardedClientHeader(body: string, subject: string, fromAddress: string | null): string {
+  if (!fromAddress || !/(?:^|@)(?:[^@\s]*\.)?legacyhotels?\.(?:com|co\.za)$/i.test(fromAddress)) return body;
+  const {innerEmail, staffInstruction} = extractForwardedSender(body, subject);
+  if (!innerEmail) return body;
+  const instruction = staffInstruction ? ` | Staff instruction: ${staffInstruction}` : '';
+  return `[Forwarded client sender: ${innerEmail}${instruction}]\n${body}`;
+}
+
 // Apply only to model evidence, including copies in historical source events.
 export function mailPrompt(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(mailPrompt);
@@ -35,12 +55,14 @@ export function mailPrompt(value: unknown): unknown {
   const entries = Object.entries(value);
   const mail = Object.fromEntries(entries.map(([key, item]) => [key, mailPrompt(item)]));
   if (typeof mail.subject !== 'string') return mail;
+  const fromAddress = mailFromAddress(mail);
   for (const key of ['body_text', 'body']) {
     const original = mail[key];
     if (typeof original !== 'string') continue;
     const compact = compactBody(original, mail.subject);
-    if (compact !== original) {
-      mail[key] = compact;
+    const next = withForwardedClientHeader(compact, mail.subject, fromAddress);
+    if (next !== original) {
+      mail[key] = next;
       if ('body_html' in mail) mail.body_html = null;
     }
   }
