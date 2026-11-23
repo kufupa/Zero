@@ -109,6 +109,12 @@ test('PDF column bleed does not pollute guest identity or room type', async t =>
     guest_name_is_surname: true, arrival_date: '2026-09-02',
   }));
   assert.equal(result.ok, true);
+  for (const reservation_id of ['unknown', 'GVQMVXR']) {
+    const fallback = await twin.dispatch('hms_search_reservations', search({
+      reservation_id, last_name: 'De Koker', arrival_date: '2026-09-02',
+    }));
+    assert.match(JSON.stringify(fallback.data), /92227177-1/);
+  }
   assert.equal(twin.shown().stay?.guestfullname, 'Jane De Koker');
   assert.equal(twin.shown().stay?.room_type_text, 'Standard Queen');
 });
@@ -279,35 +285,35 @@ test('Azure Responses retries HTTP 429 and 5xx with jitter for Sol', async t => 
   assert.ok(delays[0] >= 500 && delays[0] < 1000 && delays[1] >= 1000 && delays[1] < 1500);
 });
 
-test('learned sender history uses only dated HMS availability or the older PDF own party', async t => {
-  const rows = Array.from({length: 2}, (_, i) => ({
+test('forwarded sender history requires three pre-cutoff stays and discounts direct bookings', async t => {
+  const rows = Array.from({length: 5}, (_, i) => ({
     confirmation: `80000000-${i + 1}`,
-    hms_available_at: after,
-    captured_at: after,
-    hms_fields: {ta1: 'Future Agency'},
-    pdf_versions: [{sent_at: before, recipient_fields: {to: ['guest@example.org']},
-      fields: {agency_text: 'Observed Agency'}}],
+    captured_at: before,
+    hms_fields: {departuredate: '2026-09-03', ta1: i === 4 ? '' : 'Observed Agency'},
+    captures: [{captured_at: after, hms_fields: {departuredate: '2026-09-03', ta1: 'Future Agency'}}],
+    pdf_versions: [{sent_at: before, thread_id: `thread-${i}`}],
   }));
   const worldDir = await world(t, rows);
-  const catalog = {captured_at: before, agencies: [{id: 'a', name: 'Observed Agency'}, {id: 'b', name: 'Named Agency'}]};
-  await writeFile(join(worldDir, 'catalog.json'), JSON.stringify(catalog));
-  const twin = createTwin(fixture, {worldDir});
-  const input = {property_code: 'HRCEN', kind: 'agency', field: 'name', query: 'Guest', sender_host: 'example.org'};
-  const result = await twin.dispatch('hms_search_parties', input);
-  assert.match(JSON.stringify(result.data), /Observed Agency/);
-  assert.doesNotMatch(JSON.stringify(result.data), /Future Agency/);
-  assert.match(JSON.stringify(result.data), /"selection":"none"/);
-  const senderOnly = await twin.dispatch('hms_search_parties', {...input, query: undefined});
+  await writeFile(join(worldDir, 'catalog.json'), JSON.stringify({
+    agencies: [{id: 'a', name: 'Observed Agency'}, {id: 'b', name: 'Named Agency'}],
+  }));
+  const card = {...fixture, selected_email: {...fixture.selected_email as object,
+    from_address: 'staff@legacyhotels.co.za', body: 'From: Travel Agent <guest@example.org>'}};
+  const input = {property_code: 'HRCEN', kind: 'agency', field: 'name', sender_host: 'legacyhotels.co.za'};
+  const threadSenders = new Map(rows.map((_, i) => [`thread-${i}`, {
+    host: 'example.org', at: Date.parse(i < 3 ? before : cutoff),
+  }]));
+  const searchParty = (query?: string) => createTwin(card, {worldDir, threadSenders})
+    .dispatch('hms_search_parties', {...input, query});
+  const senderOnly = await searchParty();
   assert.match(JSON.stringify(senderOnly.data), /"selection":\{"nativeId":"a"/);
-  const explicit = await twin.dispatch('hms_search_parties', {...input, query: 'Named Agency'});
+  assert.match(JSON.stringify(senderOnly.data), /"support":3/);
+  assert.doesNotMatch(JSON.stringify(senderOnly.data), /Future Agency/);
+  const explicit = await searchParty('Named Agency');
   assert.match(JSON.stringify(explicit.data), /Named Agency/);
   assert.doesNotMatch(JSON.stringify(explicit.data), /sender_history|Observed Agency/);
-  const futureDir = await world(t, rows.map(row => ({...row,
-    pdf_versions: row.pdf_versions.map(pdf => ({...pdf, sent_at: after})),
-  })));
-  await writeFile(join(futureDir, 'catalog.json'), JSON.stringify(catalog));
-  const uncovered = await createTwin(fixture, {worldDir: futureDir}).dispatch('hms_search_parties', input);
-  assert.doesNotMatch(JSON.stringify(uncovered.data), /sender_history|Future Agency|Observed Agency/);
+  threadSenders.set('thread-4', {host: 'example.org', at: Date.parse(before)});
+  assert.doesNotMatch(JSON.stringify((await searchParty()).data), /sender_history/);
 });
 
 test('filing document identity and critical codes stay strict; native action spelling still binds', () => {
@@ -337,7 +343,17 @@ test('fresh replay and rescore agree using a local Responses server and explicit
   const casesDir = join(root, 'cases');
   const goldFile = join(root, 'gold.json');
   const outDir = join(root, 'run');
-  const worldDir = await world(t, []);
+  const stays = Array.from({length: 4}, (_, i) => ({
+    confirmation: `33333333-${i + 1}`,
+    captured_at: i < 3 ? before : cutoff,
+    hms_fields: {departuredate: '2026-09-03', ta1: 'Travel Agency', rateplan: i < 3 ? 'USUAL' : 'FUTURE'},
+    pdfs: [{sent_at: before, thread_id: `pair-${i}`}],
+  }));
+  const worldDir = await world(t, stays);
+  await writeFile(join(worldDir, 'catalog.json'), JSON.stringify({agencies: [{code: 'AG', meaning: 'Travel Agency'}]}));
+  await writeFile(join(worldDir, 'pairs.jsonl'), stays.map((_, i) => JSON.stringify({
+    thread: {thread_id: `pair-${i}`, messages: [{direction: 'inbound', from: ['agent@example.org'], timestamp: before}]},
+  })).join('\n'));
   await mkdir(join(casesDir, 'sample'), {recursive: true});
   await writeFile(join(casesDir, 'sample', 'case.json'), JSON.stringify(fixture));
   await writeFile(goldFile, JSON.stringify({sample: {workflow: 'triage', skip: true, gold: []}}));
@@ -368,6 +384,8 @@ test('fresh replay and rescore agree using a local Responses server and explicit
   assert.equal(fresh.board.ruler?.world_dir, worldDir);
   assert.equal(fresh.board.ruler?.model, 'gpt-6-luna');
   assert.ok(requests.length >= 2);
+  assert.match(JSON.stringify(requests[0].input), /Client Memory Card.*Travel Agency.*USUAL/);
+  assert.doesNotMatch(JSON.stringify(requests[0].input), /FUTURE/);
   assert.ok(!requests[0].tools.some(tool => ['hms_prepare', 'hms_save'].includes(tool.name)));
   const seenMail = requests[1].input.find(row => row.type === 'function_call_output');
   assert.match(seenMail?.output ?? '', /HRCEN/);
@@ -394,6 +412,8 @@ test('Create counts rooms in one grouped action, including numbered quantities',
   draft.actions[0].booking_ids = ['b0', 'b1'];
   const scored = score(card, draft);
   assert.equal(scored.roi_score, 1);
+  const review = score({...card, expected_action_count: 0, expected_disposition: 'staff_review'}, draft);
+  assert.deepEqual([review.expected_units, review.actual_units, review.disposition_ok], [2, 2, true]);
   assert.deepEqual([scored.expected_units, scored.actual_units, scored.failure_reason], [2, 2, null]);
   const duplicate = {...draft, actions: [draft.actions[0], {...draft.actions[0], id: 'duplicate'}]};
   assert.equal(score(card, duplicate).safety_flags.spurious_action, true);

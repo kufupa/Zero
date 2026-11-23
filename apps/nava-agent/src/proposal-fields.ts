@@ -218,7 +218,7 @@ function adultsFromWording(...values:unknown[]):number|null {
 /** DD/MM/YYYY (and close forms) from field evidence → ISO date. */
 export function parseQuoteEvidenceDate(quote:unknown):string|null {
   if(typeof quote!=='string') return null;
-  const match=quote.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/);
+  const match=quote.match(/\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\b/);
   if(!match) return null;
   const iso=`${match[3]}-${match[2].padStart(2,'0')}-${match[1].padStart(2,'0')}`;
   return /^\d{4}-\d{2}-\d{2}$/.test(iso) && !Number.isNaN(Date.parse(`${iso}T00:00:00Z`))
@@ -234,6 +234,10 @@ export function liftQuoteRoomFields(room:Record<string,unknown>, fallback:{board
     const board=criteria.board ?? fallback.board;
     if(typeof board==='string' && board.trim()) next.board=/bed and breakfast/i.test(board) ? 'BB'
       : /dinner/i.test(board) ? 'DBB' : /room only/i.test(board) ? 'RO' : board;
+  }
+  if(typeof next.room_type==='string' && next.room_type.trim()) {
+    const code=hrcenCode('room_type', next.room_type, next.board ?? fallback.board);
+    if(code) next.room_type=code;
   }
   if(blank(next.rate_preference) && typeof fallback.rate_preference==='string') next.rate_preference=fallback.rate_preference;
   if(blank(next.adults)) next.adults=asNumber(criteria.adults)
@@ -418,6 +422,16 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
       for(const key of nonNativeFields) delete fields[key];
       if(typeof fields.billing_reference==='number' && Number.isSafeInteger(fields.billing_reference)) {
         fields.billing_reference=String(fields.billing_reference);
+      }
+      if(typeof fields.billing_reference==='string') {
+        const ref=fields.billing_reference.trim();
+        const agency=typeof fields.agency_name==='string' ? fields.agency_name.trim() : '';
+        const org=typeof fields.organization_name==='string' ? fields.organization_name.trim() : '';
+        const sameParty=ref && ((agency && ref.toLowerCase()===agency.toLowerCase())
+          || (org && ref.toLowerCase()===org.toLowerCase()));
+        // Keep digit-bearing PO/voucher refs; strip purely alphabetic company-name copies only.
+        if(!ref || (sameParty && !/\d/.test(ref))) fields.billing_reference=null;
+        else fields.billing_reference=ref;
       }
       for(const key of ['rate_plan','room_type'] as const) {
         const requested=fields[key];

@@ -1,5 +1,7 @@
+import {createReadStream, existsSync} from 'node:fs';
+import {createInterface} from 'node:readline';
 import {createHash} from 'node:crypto';
-import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {mkdir, writeFile} from 'node:fs/promises';
 import {basename, join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {RuntimeLoop, type ModelCall} from '../../src/agent-runtime/loop.js';
@@ -19,8 +21,9 @@ import type {CaseCard} from '../types.js';
 import {rulerStamp, scoreCase, type CaseScore, type Scoreboard} from './score.js';
 import {applyGoldOverlay, loadReplayGold} from './gold-overlay.js';
 import {loadCaseCards, readOptionalJson, skillsPath, writeBoards, type ReplayOptions} from './artifacts.js';
-import {extractSenderHost, normalizePartyName} from '../../src/party-matching.js';
-import {createdFieldValue, defaultWorldDir, parseCreatedOn, selectedCutoff, type ThreadSenders, type TwinWorld} from '../twin/world.js';
+import {normalizePartyName} from '../../src/party-matching.js';
+import {twinLearnedSender, twinSenderHost} from '../twin/tools.js';
+import {anchorCaptures, beforeCutoff, createdFieldValue, defaultWorldDir, parseCreatedOn, selectedCutoff, type ThreadSenders, type TwinWorld} from '../twin/world.js';
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
 function partyNameIds(catalog: Record<string, unknown>, key: 'agencies' | 'organizations'): Map<string, string> {
@@ -31,8 +34,8 @@ function partyNameIds(catalog: Record<string, unknown>, key: 'agencies' | 'organ
   for (const row of records) {
     if (!row || typeof row !== 'object') continue;
     const rec = row as Record<string, unknown>;
-    const id = String(rec.nativeId ?? rec.native_id ?? '').trim();
-    const name = normalizePartyName(String(rec.meaning ?? rec.name ?? ''));
+    const id = String(rec.nativeId ?? rec.native_id ?? rec.code ?? rec.id ?? '').trim();
+    const name = normalizePartyName(String(rec.meaning ?? rec.name ?? rec.label ?? ''));
     if (id && name) out.set(name, id);
   }
   return out;
@@ -44,8 +47,10 @@ function historyStaysForMemory(world: TwinWorld): HistoryStay[] {
   const organizations = partyNameIds(world.catalog, 'organizations');
   const stays: HistoryStay[] = [];
   for (const anchor of world.anchors) {
-    const fields = {...(anchor.hms_fields ?? {})};
-    const pdfTimes = (anchor.pdfs ?? []).map(pdf => Date.parse(String(pdf.sent_at ?? ''))).filter(Number.isFinite);
+    const capture = anchorCaptures(anchor).find(row => beforeCutoff(row.captured_at, world.cutoff));
+    if (!capture) continue;
+    const fields = record(capture.hms_fields);
+    const pdfTimes = (anchor.pdfs ?? []).filter(pdf => beforeCutoff(pdf.sent_at, world.cutoff)).map(pdf => Date.parse(String(pdf.sent_at ?? ''))).filter(Number.isFinite);
     const createdAtMs = parseCreatedOn(createdFieldValue(fields))
       ?? world.createdOn.get(anchor.confirmation)
       ?? (pdfTimes.length ? Math.min(...pdfTimes) : null);
@@ -127,7 +132,7 @@ async function aimdPool<T, R>(items: T[], options: {
   let clean = 0;
   let inFlight = 0;
   let next = 0;
-  const out: R[] = new Array(items.length);
+  const out: R[] = [];
   let settle: (() => void) | null = null;
   let fail: ((error: unknown) => void) | null = null;
   const done = new Promise<void>((resolve, reject) => { settle = resolve; fail = reject; });
@@ -207,7 +212,7 @@ export async function writeReceiptCard(outDir: string, board: Scoreboard, meta: 
   const twinPct = 100 * twinCases / n;
   const twinByWf: string[] = [];
   let twinBlind = false;
-  for (const [workflow, bucket] of Object.entries(board.by_workflow)) {
+  for (const workflow of Object.keys(board.by_workflow)) {
     const rows = board.cases.filter(row => row.workflow === workflow);
     if (!rows.length) continue;
     const uncovered = rows.filter(row => row.twin_uncovered.length > 0).length;
@@ -274,7 +279,7 @@ function confirmationHints(filename: string, text: string): string[] {
   return [...hints];
 }
 
-function mailAttachments(raw: unknown, at: number, owner: unknown, pdf: boolean): Array<{
+function mailAttachments(raw: unknown, at: number, owner: unknown): Array<{
   id: string;
   name: string;
   content_type: string;
@@ -371,8 +376,8 @@ function mailMessage(source: Record<string, unknown>, fallback?: string) {
     body_text: cutFutureQuote(text(source.body_text) ?? text(source.body) ?? '', Date.parse(received ?? '')),
     received_at: received,
     attachments: [
-      ...mailAttachments(source.pdf_attachments_text ?? source.attachments, Date.parse(received ?? ''), source.source_row_id, Array.isArray(source.pdf_attachments_text)),
-      ...mailAttachments(source.attachments_non_pdf, Date.parse(received ?? ''), source.source_row_id, false),
+      ...mailAttachments(source.pdf_attachments_text ?? source.attachments, Date.parse(received ?? ''), source.source_row_id),
+      ...mailAttachments(source.attachments_non_pdf, Date.parse(received ?? ''), source.source_row_id),
     ],
   };
 }
@@ -455,7 +460,6 @@ type Profile = {
 
 async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   mail: ReturnType<typeof mailPayload>;
-  skillConfig: SkillConfig;
   skillContext: string | null;
   tokens: Tokens;
   profile: Profile;
@@ -466,7 +470,7 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   model: string;
   callModel: ModelCall;
 }): Promise<CaseScore> {
-  const {mail, skillConfig, skillContext, tokens, profile, started, directEvidence} = options;
+  const {mail, skillContext, tokens, profile, started, directEvidence} = options;
   const promptMail = mailPrompt(mail);
   const twin = createTwin(card, {worldDir: options.worldDir, property: mail.property_code, threadSenders: options.threadSenders});
   const memoryLookup = buildMemoryFromHistory(historyStaysForMemory(twin.world), twin.world.cutoff);
@@ -581,6 +585,17 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   const opaqueId = createHash('sha1').update(card.case_id).digest('hex').slice(0, 10);
   const prefix = `nava-mail-event:${opaqueId} Read the selected thread and handle its request.`;
   let nudge = prefix;
+  const selected = record(card.selected_email);
+  const host = twinSenderHost(selected.from_address ?? mail.source_input.selected_message.from?.email, mail.source_input.selected_message.body_text);
+  const party = host && (twinLearnedSender(twin.world, host, 'agency') ?? twinLearnedSender(twin.world, host, 'organization'));
+  if (party) {
+    const defaults = memoryLookup({
+      propertyCode: twin.world.propertyCode,
+      agencyId: party.kind === 'agency' ? party.nativeId : null,
+      organizationId: party.kind === 'organization' ? party.nativeId : null,
+    });
+    nudge += `\n\n[Client Memory Card]\nHistorical defaults only; prefer explicit evidence from the selected email.\n${JSON.stringify({party, defaults})}`;
+  }
   if (directEvidence) {
     const evidence = JSON.stringify(redactToolData(promptMail)).replaceAll('<', '\\u003c');
     nudge += `\n<untrusted_mail_evidence>\n${evidence}\n</untrusted_mail_evidence>${catalogueBlock}`;
@@ -620,19 +635,28 @@ export async function runBench(options: SpeedReplayOptions) {
   const cards = (options.caseIds ? await loadCaseCards(casesDir, options.caseIds) : corpus).slice(0, options.limit);
   const threadSenders = new Map<string, {host: string; at: number}>();
   const threadMail = process.env.NAVA_BENCH_THREAD_MAIL;
-  const remember = (mail?: Record<string, unknown>) => {
-    if (mail?.direction !== 'inbound') return;
-    const thread = String(mail.thread_id ?? '');
-    const host = extractSenderHost(mail.from_address, '');
+  const pairsFile = join(worldDir, 'pairs.jsonl');
+  const remember = (mail: Record<string, unknown>, fallbackThread?: unknown) => {
+    if (mail.direction !== 'inbound') return;
+    const thread = String(mail.thread_id ?? fallbackThread ?? '');
     const at = Date.parse(String(mail.received_at ?? mail.timestamp ?? ''));
+    const body = cutFutureQuote(text(mail.body_text) ?? text(mail.body) ?? '', at);
+    const host = twinSenderHost(mail.from_address ?? people(record(mail.addresses).from ?? mail.from)[0]?.email, body);
     if (thread && host && at < (threadSenders.get(thread)?.at ?? Infinity)) threadSenders.set(thread, {host, at});
   };
-  if (threadMail) for (const line of (await readFile(threadMail, 'utf8')).split(/\r?\n/)) {
-    if (line.trim()) remember(JSON.parse(line));
+  const historyFile = threadMail ?? (existsSync(pairsFile) ? pairsFile : undefined);
+  if (historyFile) for await (const line of createInterface({input: createReadStream(historyFile), crlfDelay: Infinity})) {
+    if (!line.trim()) continue;
+    const row = record(JSON.parse(line));
+    if (threadMail) remember(row);
+    else {
+      const thread = record(row.thread);
+      for (const message of list(thread.messages)) remember(record(message), thread.thread_id);
+    }
   }
   for (const card of corpus) {
-    for (const mail of Array.isArray(card.context_before) ? card.context_before : []) remember(mail);
-    remember(card.selected_email as Record<string, unknown> | undefined);
+    for (const mail of Array.isArray(card.context_before) ? card.context_before : []) remember(record(record(mail).message ?? mail));
+    remember(record(card.selected_email));
   }
   if (!cards.length) throw new Error('No replay cases selected');
   const gold = await loadReplayGold({...options, casesDir});
@@ -700,7 +724,7 @@ export async function runBench(options: SpeedReplayOptions) {
     let score: CaseScore;
     try {
       const mail = mailPayload(card, options.property);
-      score = await runCase(card, scoreCard, {mail, skillConfig, skillContext, tokens, profile, started, directEvidence, worldDir, threadSenders, callModel, model});
+      score = await runCase(card, scoreCard, {mail, skillContext, tokens, profile, started, directEvidence, worldDir, threadSenders, callModel, model});
       if (classifyRunError(score.run_error) === '429') notify.rateLimited();
       else notify.ok();
     } catch (error) {

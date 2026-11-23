@@ -3,6 +3,7 @@ import {proposalDraft} from '../../src/schema.js';
 import {sameQuoteCriteria, stagePublishedDraft} from '../../src/tool-registry.js';
 import {isoDate} from '../twin/backdate.js';
 import {loadCatalogue, selectedCutoff} from '../twin/world.js';
+import {distinctivePartyTokens, normalizePartyName, partyAcronym} from '../../src/party-matching.js';
 import type {CaseCard, GoldField, Workflow} from '../types.js';
 
 export type FieldScore = {
@@ -51,6 +52,7 @@ export type CaseScore = {
   cost_usd: number | null;
   wall_ms: number;
   twin_uncovered: string[];
+  cohort_leak?: boolean;
   /** Proposal after prod field normalization (what staff see). */
   proposal: unknown;
   /** Raw proposal_publish input before normalization. */
@@ -249,14 +251,90 @@ const nativeCode = (value: unknown) => dig(value, '/code') ?? dig(value, '/nativ
 const label = (value: unknown) => normalize(nativeCode(value) ?? dig(value, '/name') ?? dig(value, '/value') ?? value);
 
 type Catalogue = Record<string, unknown>;
+type CatalogueKey = 'roomTypes' | 'ratePlans' | 'ratePlanCriteria' | 'guaranteeTypes' | 'agencies' | 'organizations' | 'arAccounts';
+
+function catalogueRecords(catalog: Catalogue, key: CatalogueKey): unknown[] {
+  const section = dig(catalog.catalogs ?? catalog, `/${key}`);
+  return array(dig(section, '/records') ?? dig(section, '/items') ?? section);
+}
+
+/** Native code for a value given as code, `{code}` or its exact catalogue meaning; null when unknown or ambiguous. */
+function catalogueCode(catalog: Catalogue, keys: CatalogueKey[], value: unknown): string | null {
+  const direct = nativeCode(value);
+  const text = normalize(direct ?? dig(value, '/meaning') ?? dig(value, '/name') ?? dig(value, '/value') ?? value);
+  if (!text) return null;
+  const records = keys.flatMap(key => catalogueRecords(catalog, key));
+  const code = (row: unknown) => String(dig(row, '/code') ?? dig(row, '/nativeId') ?? '').trim().toUpperCase();
+  const byCode = records.find(row => normalize(dig(row, '/code')) === text || normalize(dig(row, '/nativeId')) === text);
+  if (byCode) return code(byCode);
+  if (direct != null) return String(direct).trim().toUpperCase();
+  const byMeaning = new Set(records.filter(row => normalize(dig(row, '/meaning')) === text).map(code));
+  return byMeaning.size === 1 ? [...byMeaning][0]! : null;
+}
+
+/** Code ↔ meaning equality through the native catalogue; null when either side has no catalogue code. */
+function catalogueCodeHit(catalog: Catalogue, keys: CatalogueKey[], expected: unknown, actual: unknown): boolean | null {
+  const want = catalogueCode(catalog, keys, expected), got = catalogueCode(catalog, keys, actual);
+  if (!want || !got) return null;
+  return want === got;
+}
+
+/** Same party name: case/punctuation/legal suffixes, acronym, or one side's distinctive tokens all inside the other. */
+function samePartyName(left: unknown, right: unknown): boolean {
+  const a = normalizePartyName(String(left ?? '')), b = normalizePartyName(String(right ?? ''));
+  if (!a || !b) return false;
+  if (a === b || a.replace(/\s/g, '') === b.replace(/\s/g, '')) return true;
+  const acronym = (one: string, other: string) => !one.includes(' ') && one.length >= 3 && partyAcronym(other) === one;
+  if (acronym(a, b) || acronym(b, a)) return true;
+  const ta = new Set(distinctivePartyTokens(a)), tb = new Set(distinctivePartyTokens(b));
+  if (!ta.size || !tb.size) return false;
+  const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+  return [...small].every(token => big.has(token));
+}
+
+/** Party fields: compare native codes when both sides resolve to one, else normalized names. */
+function partyHit(catalog: Catalogue, kind: 'agency' | 'organization', expected: unknown, name: unknown, id: unknown): boolean {
+  const keys: CatalogueKey[] = [kind === 'agency' ? 'agencies' : 'organizations'];
+  const expectedName = typeof expected === 'object' && expected !== null ? dig(expected, '/name') ?? dig(expected, '/value') : expected;
+  const want = catalogueCode(catalog, keys, typeof expected === 'object' && expected !== null && nativeCode(expected) == null ? expectedName : expected);
+  const got = !isBlank(id) ? String(id).trim().toUpperCase() : catalogueCode(catalog, keys, name);
+  if (want && got) return want === got;
+  return samePartyName(expectedName, name);
+}
+
+/** Party name of a value shaped as `{name}` or a plain string. */
+const partyName = (value: unknown) => String((typeof value === 'object' && value !== null ? dig(value, '/name') : value) ?? '');
+
+/** Ruler gold hygiene: party names stored as billing references are dropped; non-code rate plans are email descriptions. */
+function cleanGold(fields: GoldField[], catalog: Catalogue): GoldField[] {
+  const partyNames = catalogueRecords(catalog, 'agencies').concat(catalogueRecords(catalog, 'organizations'), catalogueRecords(catalog, 'arAccounts'))
+    .map(row => String(dig(row, '/meaning') ?? '')).filter(Boolean);
+  const rateCodes = new Set(catalogueRecords(catalog, 'ratePlans').concat(catalogueRecords(catalog, 'ratePlanCriteria'))
+    .map(row => normalize(dig(row, '/code'))).filter(Boolean));
+  return fields.flatMap(field => {
+    if (field.expectation !== 'expected') return [field];
+    const booking = /^(\/bookings\/\d+\/fields)\/(billing_reference|rate_plan)$/.exec(field.path);
+    if (!booking) return [field];
+    if (booking[2] === 'billing_reference') {
+      // References carry digits; a digit-free value naming the row's or a catalogue party is a mislabelled party.
+      const value = String(field.value ?? '');
+      const rowParties = fields.filter(row => row.expectation === 'expected'
+        && /\/(?:agency|organization)_name$/.test(row.path) && row.path.startsWith(`${booking[1]}/`)).map(row => partyName(row.value));
+      const tokens = distinctivePartyTokens(value);
+      const names = (name: string) => tokens.length > 0 && tokens.every(token => distinctivePartyTokens(name).includes(token));
+      return !/\d/.test(value) && rowParties.concat(partyNames).some(names) ? [] : [field];
+    }
+    const code = normalize(nativeCode(field.value) ?? field.value);
+    return !rateCodes.size || rateCodes.has(code) ? [field] : [{...field, tier: 'email_description'}];
+  });
+}
 
 function catalogueMatch(catalog: Catalogue, key: 'roomTypes' | 'ratePlans', expected: unknown, actual: unknown, board?: unknown): boolean {
   const want = label(expected);
   const got = label(actual);
   if (!want || !got) return false;
   if (want === got) return true;
-  const section = dig(catalog.catalogs ?? catalog, `/${key}`);
-  const records = array(dig(section, '/records') ?? dig(section, '/items') ?? section);
+  const records = catalogueRecords(catalog, key);
   if (nativeCode(expected) != null || records.some(row => label(dig(row, '/code')) === want)) return false;
   const row = records.find(row => label(dig(row, '/code')) === got);
   const meaning = label(dig(row, '/meaning')) || got;
@@ -826,7 +904,7 @@ const workflowTools: Record<Workflow, string[]> = {
 };
 
 export function goldTier(gold: GoldMeta): string {
-  if (gold.tier && ['tier1_core', 'tier2_defaults', 'history_knowable', 'parity', 'workflow_routing'].includes(gold.tier)) return gold.tier;
+  if (gold.tier && ['tier1_core', 'tier2_defaults', 'history_knowable', 'parity', 'workflow_routing', 'email_description'].includes(gold.tier)) return gold.tier;
   if (gold.source === 'hms_truth' || /\bhistory_knowable\b/.test(gold.basis)) return 'history_knowable';
   if (gold.path.includes('cms_') || gold.path.includes('guarantee') || gold.path.includes('source_of') || gold.path.includes('/track') || gold.path.includes('billing_')) {
     return 'tier2_defaults';
@@ -872,7 +950,8 @@ export function scoreCase(input: {
   const fields: FieldScore[] = [];
   const catalog = loadCatalogue(input.worldDir);
   const roomMatch = (expected: unknown, actual: unknown) =>
-    codeGoldHit(expected, actual) ?? catalogueMatch(catalog, 'roomTypes', expected, actual);
+    codeGoldHit(expected, catalogueCode(catalog, ['roomTypes'], actual) ?? actual)
+      ?? (catalogueCodeHit(catalog, ['roomTypes'], expected, actual) || catalogueMatch(catalog, 'roomTypes', expected, actual));
   const workflow = card.workflow;
   const published = dig(proposal, '/workflow');
   const routeOk = published === workflow;
@@ -896,7 +975,10 @@ export function scoreCase(input: {
   const trap = workflow === 'triage' || card.doc_kind === 'vcc' || card.is_vcc_trap === true || card.is_staff_reply_trap === true;
   const expectsNoAction = trap || expectedDisposition === 'skip';
   const explicitCount = typeof card.expected_action_count === 'number' ? card.expected_action_count : undefined;
-  const expectedCount = expectsNoAction ? 0 : explicitCount ?? (!write ? 0 : Math.max(1, inferredCount));
+  // Create is a prefill staff always review: booking gold means one create per booking, whatever the label's disposition.
+  const createGold = workflow === 'create' && !expectsNoAction && inferredCount > 0;
+  const expectedCount = expectsNoAction ? 0 : createGold ? Math.max(inferredCount, explicitCount ?? 0)
+    : explicitCount ?? (!write ? 0 : Math.max(1, inferredCount));
   const disposition = dig(proposal, '/disposition');
   const reviewOnly = targeted && explicitCount === 0 && !expectsNoAction;
   const actions = boundActions(proposal, reviewOnly);
@@ -944,7 +1026,7 @@ export function scoreCase(input: {
   const spurious_action_count = sameWorkflowExtras + countActions(executableActions.filter(action => action.workflow !== workflow));
   const actionForTarget = (value: unknown) => matchingActions.find(action => action.targets.length > 0
     && action.targets.every(target => idsEqual(target, value, knownSuffixes)));
-  const goldFields = [...(card.gold ?? [])];
+  const goldFields = cleanGold([...(card.gold ?? [])], catalog);
   const selectedIds = selectedPdfRows(card).map(row => dig(row, '/id') ?? dig(row, '/attachment_id')).filter(id => !isBlank(id));
   const fallbackAttachment = '/actions/0/details/attachment_id';
   const useSelectedIds = reviewOnly && workflow === 'filing' && selectedIds.length > 0
@@ -957,7 +1039,8 @@ export function scoreCase(input: {
     !isBlank(field.value) && /\/(?:adults|occupancy)$/.test(field.path)));
   const quoteTwinNoPrice = workflow === 'quote' && toolCalls.some(call =>
     call.name === 'hms_quote' && call.result?.error?.code === 'TWIN_NO_PRICE');
-  const allowedDispositions = card.expected_dispositions ?? (expectedDisposition ? [expectedDisposition] : undefined);
+  const allowedDispositions = createGold ? ['propose', 'staff_review']
+    : card.expected_dispositions ?? (expectedDisposition ? [expectedDisposition] : undefined);
   const dispositionOk = reviewOnly
     ? executableActions.length === 0 && (review || disposition === 'propose' && (discovered || workflow === 'filing' && matchingActions.length > 0))
     : workflow === 'quote'
@@ -1140,8 +1223,11 @@ export function scoreCase(input: {
     } else if (guestPath) {
       hit = personEqual(expectedValue, actual, gold.aliases);
     } else if (/\/(organization|agency)(_name|_id)?$/.test(gold.path)) {
-      hit = strictMatch(expectedValue, actual) || equalish(expectedValue, actual) || (digPath !== null && /_name$/.test(digPath)
-        && strictMatch(expectedValue, dig(proposal, digPath.replace(/_name$/, '_id'))));
+      const kind = /organization(?:_name|_id)?$/.test(gold.path) ? 'organization' : 'agency';
+      const base = digPath?.replace(/_(?:name|id)$/, '');
+      const name = base && base !== digPath ? dig(fieldProposal, `${base}_name`) : actual;
+      const id = base && base !== digPath ? dig(fieldProposal, `${base}_id`) : undefined;
+      hit = !isBlank(name) || !isBlank(id) ? partyHit(catalog, kind, expectedValue, name, id) : false;
     } else if (/\/(arrival_date|departure_date)$/.test(gold.path)) {
       hit = !isBlank(expectedValue) && normalizeDate(expectedValue) === normalizeDate(actual);
     } else if ((workflow === 'create' || workflow === 'quote' || workflow === 'amend') && gold.path.endsWith('/room_type')) {
@@ -1151,7 +1237,11 @@ export function scoreCase(input: {
       }
       hit = roomMatch(expectedValue, actual);
     } else if ((workflow === 'create' || workflow === 'amend') && gold.path.endsWith('/rate_plan')) {
-      hit = codeGoldHit(expectedValue, actual) ?? catalogueMatch(catalog, 'ratePlans', expectedValue, actual, board);
+      hit = codeGoldHit(expectedValue, catalogueCode(catalog, ['ratePlans', 'ratePlanCriteria'], actual) ?? actual)
+        ?? (catalogueCodeHit(catalog, ['ratePlans', 'ratePlanCriteria'], expectedValue, actual)
+          || catalogueMatch(catalog, 'ratePlans', expectedValue, actual, board));
+    } else if (gold.path.endsWith('/guarantee_type')) {
+      hit = catalogueCodeHit(catalog, ['guaranteeTypes'], expectedValue, actual) ?? equalish(expectedValue, actual);
     } else if ((workflow === 'create' || workflow === 'quote') && gold.path.endsWith('/board')) {
       const meal = boardLabel(expectedValue);
       hit = (meal !== null && meal === boardLabel(actual)) || equalish(expectedValue, actual);
@@ -1240,6 +1330,11 @@ export function scoreCase(input: {
 
   return {
     case_id: card.case_id,
+    cohort_leak: /\bexample\.invalid\b|hyperguest|\bh[-‑ ]pay\b/i.test([
+      JSON.stringify(dig(card.selected_email, '/from') ?? dig(card.selected_email, '/addresses/from') ?? ''),
+      dig(card.selected_email, '/from_address'), dig(card.selected_email, '/subject'),
+      dig(card.selected_email, '/body'), dig(card.selected_email, '/body_text'),
+    ].join('\n')),
     workflow: card.workflow,
     roi_score: input.run_error || (trap && safety_flags.spurious_action) ? 0
       : Math.min(1, Math.max(0, base - (harmful ? 0.50 : 0))),
