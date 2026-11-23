@@ -48,8 +48,8 @@ export type StaffNativeContext = ToolContext & {propertyCode:string; credentialL
   staffStage:StaffJobBinding & {mailboxId:string;sourceMessageId:string;sourceThreadId:string}};
 
 const modelReadTools = new Set(['hms_quote','hms_search_reservations','hms_read_reservation','hms_read_catalogue','hms_search_parties']);
-const prepareOnlyTool = (name:string) => name==='skill_read' || modelReadTools.has(name);
-const replacedBaselineTool = (name:string) => name==='reply_draft' || prepareOnlyTool(name);
+const prepareOnlyTool = (name:string) => modelReadTools.has(name);
+const replacedBaselineTool = (name:string) => name==='reply_draft' || name==='skill_read' || prepareOnlyTool(name);
 const workflows = ['quote','create','amend','cancel','filing','triage'] as const;
 type ToolPack = {tools?:unknown;prepare?:unknown;save?:unknown;pinSkills?:unknown;quote?:unknown;quoteModelView?:unknown;stageRead?:unknown};
 type FilingPorts = Required<Pick<import('../tools/filing/index.js').ToolContext,'authorizeTarget'|'resolveAttachment'>>;
@@ -234,7 +234,7 @@ function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{nati
   return {native:{quote_order:quoteOrder.filter(id=>Object.hasOwn(quotes,id)),quotes,searches,display_rows:displayRows},incomplete};
 }
 async function selectedMail(sessionId:string) {
-  const [row]=await sql`SELECT t.source,t.source_thread_id,t.mailbox_id,m.source_message_id AS selected_message_id,
+  const [row]=await sql`SELECT t.id AS thread_id,t.source,t.source_thread_id,t.mailbox_id,m.source_message_id AS selected_message_id,
     t.property_code,t.mode,m.received_at::text AS selected_received_at,m.payload->'from'->>'email' AS sender_email,
     s.config->>'input_cutoff' AS input_cutoff,s.config->>'replay_id' AS replay_id
     FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id
@@ -242,6 +242,33 @@ async function selectedMail(sessionId:string) {
     JOIN nava_agent.mail_message m ON m.thread_id=t.id AND m.source_message_id=COALESCE(e.payload->>'message_id',t.selected_message_id)
     WHERE s.id=${sessionId}`;
   return row;
+}
+
+/** Turn-1 mail evidence preload (same payload mail_read_thread returns). */
+export async function sessionMailPrompt(sessionId:string):Promise<unknown|null> {
+  const selected=await selectedMail(sessionId);
+  if(!selected?.thread_id || !selected.selected_message_id) return null;
+  const {sender_email:_sender,input_cutoff:_cutoff,replay_id:_replay,thread_id,...thread}=selected;
+  const messages=await sql`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${thread_id}
+    AND received_at <= ${thread.selected_received_at ?? null}::timestamptz ORDER BY received_at,id`;
+  const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${sessionId} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
+  const sourceInput=source?.payload;
+  return mailPrompt({...thread,messages:messages.map(m=>m.payload),...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {})});
+}
+
+export function compactCatalogueSummary(data:unknown):string|null {
+  if(!data || typeof data!=='object' || !('sections' in data) || !data.sections || typeof data.sections!=='object') return null;
+  const out:Record<string,unknown>={};
+  for(const [kind,section] of Object.entries(data.sections as Record<string,unknown>)) {
+    if(!section || typeof section!=='object') continue;
+    const row=section as Record<string,unknown>;
+    if(Array.isArray(row.records)) {
+      out[kind]=(row.records as Array<Record<string,unknown>>).slice(0,80).map(item=>({code:item.code ?? null,meaning:item.meaning ?? null}));
+    } else {
+      out[kind]={status:row.status ?? null,...(row.reason!=null?{reason:row.reason}:{}),...(row.count!=null?{count:row.count}:{})};
+    }
+  }
+  return Object.keys(out).length ? JSON.stringify({property_code:(data as {property_code?:unknown}).property_code ?? null,sections:out}) : null;
 }
 
 function filingJobs(draft:ProposalDraft):ProposalDraft[] {
@@ -276,7 +303,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
       }
     } else if(name==='mail_read_thread') {
       schemas.mail_read_thread.parse(input);
-      const {sender_email: _sender, input_cutoff: _cutoff, replay_id: _replay, ...thread}=await selectedMail(session.id) ?? {};
+      const {sender_email: _sender, input_cutoff: _cutoff, replay_id: _replay, thread_id: _thread, ...thread}=await selectedMail(session.id) ?? {};
       const messages=await sql`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${session.thread_id}
         AND received_at <= ${thread.selected_received_at ?? null}::timestamptz ORDER BY received_at,id`;
       const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
@@ -492,8 +519,9 @@ export class ToolRegistry {
       for(const item of pack.tools) {
         const parsed=definitionSchema.parse(item);
         if(parsed.name==='hms_prepare' && typeof pack.prepare==='function') continue;
+        if(parsed.name==='skill_read') continue; // skills stay pinned via pinSkills; model must not call skill_read
         if(staffPrepareOnly() && !prepareOnlyTool(parsed.name)) continue;
-        if(!parsed.name.startsWith('hms_') && !['skill_read','outlook_reply_draft','outlook_reply_command'].includes(parsed.name)) throw new Error(`INVALID_PACK_TOOL:${parsed.name}`);
+        if(!parsed.name.startsWith('hms_') && !['outlook_reply_draft','outlook_reply_command'].includes(parsed.name)) throw new Error(`INVALID_PACK_TOOL:${parsed.name}`);
         if(['hms_prepare','hms_save'].includes(parsed.name) || this.packTools.has(parsed.name)) throw new Error(`DUPLICATE_TOOL:${parsed.name}`);
         // The structural boundary checks declaration and callable handler; packs own their own input parsing.
         const tool:PackTool={name:parsed.name,description:parsed.description,input_schema:parsed.input_schema,run:async(input,context)=>parseResult(await parsed.run(input,context))};
@@ -516,7 +544,7 @@ export class ToolRegistry {
   }
 
   definitions():ToolDefinition[] {
-    const merged=new Map<string,ToolDefinition>(tools.filter(tool=>!staffPrepareOnly() || !replacedBaselineTool(tool.name)).map(({name,description,input_schema})=>[name,{name,description,input_schema}]));
+    const merged=new Map<string,ToolDefinition>(tools.filter(tool=>tool.name!=='skill_read' && (!staffPrepareOnly() || !replacedBaselineTool(tool.name))).map(({name,description,input_schema})=>[name,{name,description,input_schema}]));
     for(const {name,description,input_schema} of this.packTools.values()) merged.set(name,{name,description,input_schema});
     if(this.mutations.size && !staffPrepareOnly()) {
       merged.set(prepareDefinition.name,prepareDefinition);
@@ -780,14 +808,14 @@ export async function discoverToolPacks(registry:ToolRegistry,root=toolRoot,name
 
 export async function installedStaffTools() {
   const installed=await Promise.all((configuredToolPacks() ?? []).map(async name=>({name,pack:await loadToolPack(name,toolRoot)})));
-  const modelTools=new Set(tools.filter(tool=>!replacedBaselineTool(tool.name)).map(tool=>tool.name));
+  const modelTools=new Set(tools.filter(tool=>tool.name!=='skill_read' && !replacedBaselineTool(tool.name)).map(tool=>tool.name));
   const stages:Workflow[]=[];
   const writers:Workflow[]=[];
   for(const {name,pack} of installed) {
     if(!pack) continue;
     if(Array.isArray(pack.tools)) for(const value of pack.tools) {
       const tool=definitionSchema.parse(value);
-      if(prepareOnlyTool(tool.name)) modelTools.add(tool.name);
+      if(tool.name!=='skill_read' && prepareOnlyTool(tool.name)) modelTools.add(tool.name);
     }
     const workflow=workflows.find(workflow=>workflow===name);
     if(workflow && staffPackHandler(name,pack) && (workflow!=='filing' || await filingPortFactory())) {

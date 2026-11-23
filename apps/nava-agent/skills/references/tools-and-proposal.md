@@ -1,6 +1,6 @@
 # Tools and proposal
 
-Use registered tool schemas. `mail_read_thread` supplies the selected message and available context. Use extracted attachment text when available; a filename is a hint. Load missing references with `skill_read`: use `references/...` for local files and `../references/...` for shared files. Reuse files already pinned.
+Use registered tool schemas. The selected message and available thread context are already supplied in the turn evidence; call `mail_read_thread` only if that evidence is missing or truncated. Use extracted attachment text when available; a filename is a hint. All workflow skills and shared references are already loaded; do not call `skill_read`.
 
 `proposal_publish` requires `workflow`, `disposition`, `reason`, `bookings`, `actions`, `field_specs`, `missing`, `warnings`, `reply_draft` and `native_result`. Use empty arrays for unused lists and null for absent nullable facts. Always pass `native_result: null`; the server attaches native quote captures.
 

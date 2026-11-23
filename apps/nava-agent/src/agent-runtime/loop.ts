@@ -246,6 +246,15 @@ export class RuntimeLoop implements AgentRuntime {
           role: 'user',
           content: calls.map(call => ({ type: 'tool_result', tool_use_id: call.id, content: resultContent(completed.toolOutcomes[call.id]) })),
         });
+        // Successful publish ends the turn — skip a useless extra model call.
+        const published = calls.find(call => call.name === 'proposal_publish');
+        if (published && completed.pendingToolUseId === null) {
+          const outcome = completed.toolOutcomes[published.id];
+          if (outcome !== null && typeof outcome === 'object' && 'ok' in outcome && outcome.ok === true) {
+            await this.deps.finish(sessionId, 'proposal_published');
+            return;
+          }
+        }
         continue;
       }
       if (state.pendingToolUseId !== null) throw new Error('PENDING_TOOL_USE_MISMATCH');

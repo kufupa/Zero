@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { strictCompatible } from './strict-schema.js';
 import { RuntimeLoop } from './loop.js';
 import type { AgentRuntime, ModelCall, ModelRequest, ModelResponse, RuntimeBlock, RuntimeDeps, RuntimeMessage, ToolDefinition, TurnInput } from './loop.js';
@@ -7,6 +8,16 @@ export type { AgentRuntime, RuntimeDeps, TurnInput } from './loop.js';
 const DEFAULT_BASE_URL = 'https://nava.openai.azure.com/openai/v1';
 const DEFAULT_DEPLOYMENT = 'gpt-6-luna';
 const DEFAULT_REASONING = 'high';
+
+export type AzureResponsesOptions = {
+  baseURL: string;
+  apiKey: string;
+  deployment: string;
+  effort: string;
+  maxTokens: number;
+  fetcher?: typeof fetch;
+  wait?: (ms: number) => Promise<unknown>;
+};
 
 function azureConfig() {
   const baseURL = (process.env.AZURE_OPENAI_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/$/, '');
@@ -127,45 +138,55 @@ function usageFrom(payload: Record<string, unknown>): ModelResponse['usage'] {
   };
 }
 
-async function fetchAzureResponses(request: ModelRequest, options: {
-  baseURL: string;
-  apiKey: string;
-  deployment: string;
-  effort: string;
-  maxTokens: number;
-}): Promise<Record<string, unknown>> {
-  const response = await fetch(`${options.baseURL}/responses`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'api-key': options.apiKey,
-    },
-    body: JSON.stringify({
-      model: options.deployment,
-      store: false,
-      parallel_tool_calls: false,
-      max_output_tokens: options.maxTokens,
-      reasoning: { effort: options.effort },
-      ...(request.system ? { instructions: request.system } : {}),
-      input: toResponsesInput(request.messages),
-      ...(request.tools.length ? {
-        tools: toResponsesTools(request.tools),
-        tool_choice: 'auto',
-      } : {}),
-    }),
-  });
+async function fetchAzureResponses(request: ModelRequest, options: AzureResponsesOptions): Promise<Record<string, unknown>> {
+  const fetcher = options.fetcher ?? fetch;
+  const wait = options.wait ?? ((ms: number) => sleep(ms));
+  let response: Response;
+  const throttleDeadline = Date.now() + 5 * 60_000;
+  for (let attempt = 0; ; attempt++) {
+    response = await fetcher(`${options.baseURL}/responses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': options.apiKey,
+      },
+      body: JSON.stringify({
+        model: options.deployment,
+        store: false,
+        parallel_tool_calls: true,
+        max_output_tokens: options.maxTokens,
+        reasoning: { effort: options.effort },
+        ...(request.system ? { instructions: request.system } : {}),
+        input: toResponsesInput(request.messages),
+        ...(request.tools.length ? {
+          tools: toResponsesTools(request.tools),
+          tool_choice: 'auto',
+        } : {}),
+      }),
+    });
+    const throttled = response.status === 429;
+    if (response.ok || (!throttled && (attempt >= 3 || response.status < 500 || response.status >= 600))) break;
+    const retry = response.headers.get('retry-after');
+    const msHeader = response.headers.get('retry-after-ms');
+    const requested = msHeader ? Number(msHeader) : retry ? (/^\d+(?:\.\d+)?$/.test(retry)
+      ? Number(retry) * 1000 : Date.parse(retry) - Date.now()) : 0;
+    const backoff = Math.min(30_000, 500 * 2 ** attempt);
+    const retryAfter = Number.isFinite(requested) ? requested : 0;
+    const delay = (throttled ? Math.max(backoff, retryAfter) : Math.min(30_000, Math.max(backoff, retryAfter))) + Math.random() * 500;
+    if (throttled && Date.now() + delay >= throttleDeadline) break;
+    await response.body?.cancel();
+    await wait(delay);
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`AZURE_RESPONSES_HTTP_${response.status}`);
+  }
   const text = await response.text();
   let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(text) as Record<string, unknown>;
   } catch {
     throw new Error(`AZURE_RESPONSES_INVALID_JSON:${response.status}`);
-  }
-  if (!response.ok) {
-    const code = typeof payload.error === 'object' && payload.error && typeof (payload.error as { code?: unknown }).code === 'string'
-      ? (payload.error as { code: string }).code
-      : `HTTP_${response.status}`;
-    throw new Error(`AZURE_RESPONSES_FAILED:${code}`);
   }
   if (payload.status === 'failed') throw new Error('AZURE_RESPONSES_FAILED:status');
   return payload;
@@ -195,11 +216,20 @@ export function azureOutputUsage(payload: Record<string, unknown>, first: Record
   return usage;
 }
 
-export async function callAzureResponses(request: ModelRequest, options: Parameters<typeof fetchAzureResponses>[1]): Promise<ModelResponse> {
-  const { payload, first, stop } = await retryAzureOutput(options.maxTokens,
-    maxTokens => fetchAzureResponses(request, { ...options, maxTokens }));
-  const usage = azureOutputUsage(payload, first);
-  return stop ? { content: [], stop_reason: stop, usage } : { ...fromResponsesOutput(payload), usage };
+export async function callAzureResponses(request: ModelRequest, options: AzureResponsesOptions): Promise<ModelResponse> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { payload, first, stop } = await retryAzureOutput(options.maxTokens,
+        maxTokens => fetchAzureResponses(request, { ...options, maxTokens }));
+      const usage = azureOutputUsage(payload, first);
+      return stop ? { content: [], stop_reason: stop, usage } : { ...fromResponsesOutput(payload), usage };
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof Error) || error.message !== 'INVALID_FUNCTION_CALL_ARGUMENTS' || attempt > 0) throw error;
+    }
+  }
+  throw lastError;
 }
 
 export class AzureRuntime implements AgentRuntime {

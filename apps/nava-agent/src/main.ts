@@ -67,7 +67,7 @@ app.get('/capabilities',async c=>{
   const create=!!capabilities?.create?.stage;
   const enabled=installed ? Object.keys(installed.capabilities) : staffPrepareOnly() ? [] : create?['triage','create']:['quote'];
   const modelTools=installed?.modelTools ?? (staffPrepareOnly()?['mail_read_thread','proposal_publish']:
-    ['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft',...(create?['hms_prepare']:[]),...(hmsSaveEnabled() && capabilities?.create?.go_labtest?['hms_save']:[])]);
+    ['mail_read_thread','hms_quote','proposal_publish','reply_draft',...(create?['hms_prepare']:[]),...(hmsSaveEnabled() && capabilities?.create?.go_labtest?['hms_save']:[])]);
   const authConfigured=await authReady();
   const verifiedCap=process.env.NAVA_HMS_VERIFIED_CAP==='10' && process.env.NAVA_HMS_SLOTS==='10' && process.env.HMS_CREDENTIAL_SESSION_CAP==='10';
   return c.json({workflows:enabled,tools:modelTools,model,environment_type:'self_hosted',auth_ready:installed || create?authConfigured && c.get('principal').kind==='staff':await verifiedAuth(),auth_configured:authConfigured,configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:verifiedCap?10:'not measured; bounded by shared native credential admission',shared_native_admission_verified:verifiedCap,staff_go:staff && createGoEnabled() && workflows.some(workflow=>capabilities?.[workflow]?.go),staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? process.env.NAVA_DEPLOY_SHA ?? null});

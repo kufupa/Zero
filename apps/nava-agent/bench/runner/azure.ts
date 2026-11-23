@@ -1,74 +1,20 @@
-import {setTimeout as sleep} from 'node:timers/promises';
-import {azureOutputUsage, retryAzureOutput} from '../../src/agent-runtime/azure.js';
-import type {ModelCall, RuntimeBlock} from '../../src/agent-runtime/loop.js';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { callAzureResponses } from '../../src/agent-runtime/azure.js';
+import type { ModelCall } from '../../src/agent-runtime/loop.js';
 
-export function azureReplayModel(model: string, effort: string, options: {fetcher?: typeof fetch; wait?: typeof sleep} = {}): ModelCall {
+export function azureReplayModel(model: string, effort: string, options: { fetcher?: typeof fetch; wait?: typeof sleep } = {}): ModelCall {
   const base = (process.env.AZURE_OPENAI_BASE_URL ?? 'https://nava.openai.azure.com/openai/v1').replace(/\/$/, '');
   const key = process.env.AZURE_FOUNDRY_API_KEY ?? process.env.AZURE_OPENAI_API_KEY;
   if (!key) throw new Error('AZURE_FOUNDRY_API_KEY_REQUIRED');
   if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) throw new Error('INVALID_REASONING_EFFORT');
-  const fetcher = options.fetcher ?? fetch;
   const wait = options.wait ?? sleep;
-  return async request => {
-    const input = request.messages.flatMap(message => message.content.flatMap((block): object[] => {
-      if (block.type === 'text') return [{role: message.role, content: block.text}];
-      if (block.type === 'tool_use') return [{type: 'function_call', call_id: block.id, name: block.name,
-        arguments: typeof block.input === 'string' ? block.input : JSON.stringify(block.input ?? {})}];
-      if (block.type === 'tool_result') return [{type: 'function_call_output', call_id: block.tool_use_id, output: block.content}];
-      return [];
-    }));
-    const {payload, first, stop} = await retryAzureOutput(16384, async maxTokens => {
-      let response: Response;
-      const throttleDeadline = Date.now() + 5 * 60_000;
-      for (let attempt = 0; ; attempt++) {
-        response = await fetcher(`${base}/responses`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json', 'api-key': key},
-          body: JSON.stringify({
-            model, store: false, parallel_tool_calls: false, max_output_tokens: maxTokens, reasoning: {effort},
-            instructions: request.system, input,
-            ...(request.tools.length ? {tool_choice: 'auto', tools: request.tools.map(tool => ({
-              type: 'function', name: tool.name, description: tool.description, parameters: tool.input_schema, strict: false,
-            }))} : {}),
-          }),
-        });
-        const throttled = response.status === 429;
-        if (response.ok || (!throttled && (attempt >= 3 || response.status < 500 || response.status >= 600))) break;
-        const retry = response.headers.get('retry-after');
-        const msHeader = response.headers.get('retry-after-ms');
-        const requested = msHeader ? Number(msHeader) : retry ? (/^\d+(?:\.\d+)?$/.test(retry)
-          ? Number(retry) * 1000 : Date.parse(retry) - Date.now()) : 0;
-        const backoff = Math.min(30_000, 500 * 2 ** attempt);
-        const retryAfter = Number.isFinite(requested) ? requested : 0;
-        const delay = (throttled ? Math.max(backoff, retryAfter) : Math.min(30_000, Math.max(backoff, retryAfter))) + Math.random() * 500;
-        if (throttled && Date.now() + delay >= throttleDeadline) break;
-        await response.body?.cancel();
-        await wait(delay);
-      }
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error(`AZURE_RESPONSES_HTTP_${response.status}`);
-      }
-      const payload: {
-        status?: string; incomplete_details?: {reason?: string};
-        output?: Array<{type: string; call_id?: string; name?: string; arguments?: string; content?: Array<{type: string; text?: string}>}>;
-        usage?: {input_tokens?: number; output_tokens?: number; input_tokens_details?: {cached_tokens?: number}};
-      } = await response.json();
-      if (payload.status === 'failed') throw new Error('AZURE_RESPONSES_FAILED');
-      return payload;
-    });
-    const usage = azureOutputUsage(payload, first);
-    if (stop) return {content: [], stop_reason: stop, usage};
-    const content: RuntimeBlock[] = [];
-    for (const item of payload.output ?? []) {
-      if (item.type === 'function_call') {
-        if (!item.call_id || !item.name || typeof item.arguments !== 'string') throw new Error('INVALID_FUNCTION_CALL');
-        content.push({type: 'tool_use', id: item.call_id, name: item.name, input: JSON.parse(item.arguments || '{}')});
-      }
-      if (item.type === 'message') for (const part of item.content ?? []) {
-        if (part.type === 'output_text' && typeof part.text === 'string') content.push({type: 'text', text: part.text});
-      }
-    }
-    return {content, stop_reason: content.some(block => block.type === 'tool_use') ? 'tool_use' : 'end_turn', usage};
-  };
+  return request => callAzureResponses(request, {
+    baseURL: base,
+    apiKey: key,
+    deployment: model,
+    effort,
+    maxTokens: 16384,
+    fetcher: options.fetcher,
+    wait: ms => wait(ms),
+  });
 }
