@@ -21,6 +21,11 @@ type OutlookReplyInput = {
 export type OutlookReplyResult = QuoteOutputResult & { readback?: { subject: string; attachmentNames: string[] }; location?: MailLocation };
 export type QuoteDraftBinding = { proposalId: string; revision: number; quoteId: string; jobId: string; artifactIds: string[] };
 
+/** Web opens native composer; Outlook only previews an unsent Drafts item. */
+export function quoteDraftOpenLabel(target: 'webmail' | 'outlook' = 'outlook'): string {
+  return target === 'webmail' ? 'Open unsent draft' : 'View draft';
+}
+
 const MARKER = 'nava_v2_quote_unresolved_reply_v1';
 const COMPLETED_PREFIX = 'nava_quote_completed_reply_v1:';
 const RETRY_WINDOW_MS = 15 * 60 * 1000;

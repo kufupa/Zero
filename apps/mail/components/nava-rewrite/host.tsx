@@ -119,10 +119,15 @@ function RewriteWithWebmail({ email, threadId, source, onSourceNotEligible }: Ex
     if (!found || !current.current || !isCurrent()) throw new Error('Draft unavailable');
     if (compose.mode && compose.draftId === found.id) return null;
     // Flush/save open composer first; refuse switch when dirty draft cannot be preserved.
-    await runComposeSwitch(async () => {
+    const outcome = await runComposeSwitch(async () => {
       if (!current.current || !isCurrent()) throw new Error('Draft unavailable');
       await setCompose({ mode: 'reply', activeReplyId: selected.id, draftId: found.id });
     });
+    if (outcome !== 'switched') {
+      throw new Error(outcome === 'unfinished_recipient'
+        ? 'Finish entering the recipient before opening this draft.'
+        : 'Save or keep the current draft before opening this quote draft.');
+    }
     return null;
   }
 
@@ -227,6 +232,7 @@ function RewriteWithOutlookDraft({ input, email, bridge, source }: {
   }
 
   async function openQuoteDraft(binding: QuoteDraftBinding, isCurrent = () => true) {
+    // Preview only — draft already lives in Outlook Drafts (openInComposer: false). No active-editor switch.
     if (!isCurrent() || !isCurrentSource(source)) return null;
     const raw = localStorage.getItem(outlookDraftKey(source, binding));
     if (!raw) return null;
@@ -239,9 +245,10 @@ function RewriteWithOutlookDraft({ input, email, bridge, source }: {
     return { subject: draft.subject, to: draft.to, cc: draft.cc, body: draft.bodyText, files: files.map(file => file.fileName) };
   }
   async function findQuoteDraft(binding: QuoteDraftBinding) {
-    try { return Boolean(await openQuoteDraft(binding)); } catch { return false; }
+    if (!isCurrentSource(source)) return false;
+    try { return Boolean(localStorage.getItem(outlookDraftKey(source, binding))); } catch { return false; }
   }
-  return <NavaController input={input} email={email} api={api} saveQuoteDraft={saveQuoteDraft} findQuoteDraft={findQuoteDraft} openQuoteDraft={openQuoteDraft} />;
+  return <NavaController input={input} email={email} api={api} quoteDraftTarget="outlook" saveQuoteDraft={saveQuoteDraft} findQuoteDraft={findQuoteDraft} openQuoteDraft={openQuoteDraft} />;
 }
 
 function draftBinding(request: QuoteDraftRequest): QuoteDraftBinding {
