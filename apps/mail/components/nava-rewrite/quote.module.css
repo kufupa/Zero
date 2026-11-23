@@ -39,3 +39,23 @@
 .requests ol > li { margin: 7px 0; }
 .requests ul { margin: 4px 0; padding-left: 18px; }
 .requests p { margin: 4px 0; color: var(--muted); }
+
+.prepareFee {
+  margin: 8px 0 12px;
+  font-weight: 600;
+}
+
+.selectedStay {
+  margin: 0 0 10px;
+  overflow-wrap: anywhere;
+}
+
+.pendingChanges {
+  margin: 8px 0 12px;
+}
+
+.pendingChanges ul { margin: 4px 0; padding-left: 18px; }
+
+.intentNext {
+  margin: 0 0 8px;
+}

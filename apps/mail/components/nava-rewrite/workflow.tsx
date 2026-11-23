@@ -185,6 +185,80 @@ const amendLabels: Record<string, string> = {
   room_type: 'Room type', room_type_for_charge: 'Room type for charge', rate_plan: 'Rate plan',
   reservation_note: 'Reservation note', billing_reference: 'Billing reference',
 };
+const CREATE_GUARANTEE_OPTIONS = [
+  { value: 'NGI', label: 'NGI', meaning: 'Non-Guaranteed Individual' },
+  { value: 'AVOUCH', label: 'AVOUCH', meaning: 'Awaiting Voucher' },
+  { value: 'CNFREC', label: 'CNFREC', meaning: 'Confirmation Received' },
+  { value: 'DEPREQ', label: 'DEPREQ', meaning: 'Deposit Requested' },
+  { value: 'GRPDEF', label: 'GRPDEF', meaning: 'Group Definite' },
+  { value: 'NGG', label: 'NGG', meaning: 'Non-Guaranteed Group' },
+  { value: 'GTDCMP', label: 'GTDCMP', meaning: 'Guaranteed By Company' },
+  { value: 'GTDAGT', label: 'GTDAGT', meaning: 'Guaranteed By Agent' },
+];
+const CREATE_FIELD_ORDER: Record<string, number> = {
+  first_name: 0, last_name: 1, guest_email: 2, guest_profile_id: 3, profile_create_new: 4, profile_mobile: 5, profile_email: 6,
+  arrival_date: 10, departure_date: 11, adults: 12, child_count: 13, child_ages: 14, room_count: 15,
+  source_of_business: 20, room_type: 21, room_type_for_charge: 22, rate_plan: 23, price: 24,
+  track: 30, guarantee_type: 31,
+  organization_name: 40, organization_id: 41, agency_name: 42, agency_id: 43,
+  ar_account_name: 44, ar_account_id: 45, billing_reference: 46, booker_name: 47, booker_contact: 48,
+  note: 50, reason_for_stay: 51, guest_opt_in: 52, cms_send: 53, cms_message_id: 54, cms_recipient: 55,
+};
+const STAY_CLUE_KEYS = new Set([
+  'guest_name', 'group_name', 'guest_names', 'confirmation_number', 'guest_last_name', 'guest_first_name',
+  'guest_names_hint', 'reservation_hint', 'confirmation_hint',
+]);
+const WORKFLOW_INTENT: Record<Proposal['workflow'], string> = {
+  triage: 'Review email', quote: 'Quote stay', create: 'Create reservation',
+  amend: 'Amend stay', cancel: 'Cancel stay', filing: 'File document',
+};
+
+function createFieldRank(path: string) {
+  const booking = /^\/bookings\/(0|[1-9]\d*)\//.exec(path);
+  const key = path.split('/').at(-1) ?? '';
+  return (booking ? Number(booking[1]) * 100 : 0) + (CREATE_FIELD_ORDER[key] ?? 90);
+}
+
+function provenanceHint(spec: FieldSpec, proposal: Proposal, path: string, value: unknown): string | undefined {
+  const memory = spec.evidence.find(item => item.message_id === 'party_memory' || item.message_id === 'sender_party_memory');
+  if (memory?.quote) {
+    const usual = /Usual for (agency|organization) \((\d+)\/(\d+) stays\)/.exec(memory.quote);
+    if (usual) return usual[1] === 'organization'
+      ? `Usual for company (${usual[2]}/${usual[3]} stays)` : `Usual for agency (${usual[2]}/${usual[3]} stays)`;
+    if (/Usual agency for /.test(memory.quote)) return memory.quote;
+  }
+  if (spec.evidence.some(item => item.quote && item.message_id !== 'party_memory' && item.message_id !== 'sender_party_memory')) return 'From email';
+  if (path.endsWith('/rate_plan') && typeof value === 'string' && value &&
+      proposal.quoted_rate_choices?.some(choice => choice.rate.code === value)) return 'From accepted quote';
+  return undefined;
+}
+
+function readableDraftCheck(code: string) {
+  const labels: Record<string, string> = {
+    DRAFT_GUARANTEE: 'Guarantee on the draft does not match',
+    DRAFT_STAY_FIELDS: 'Stay fields on the draft do not match',
+    DRAFT_PARTY_FIELDS: 'Party fields on the draft do not match',
+    DRAFT_REQUIRED_FIELDS: 'Required draft fields are incomplete',
+    DRAFT_VISIBLE_FIELDS: 'Visible draft fields are incomplete',
+    DRAFT_OPEN_MODAL: 'An Infor dialog is still open on the draft',
+  };
+  return labels[code] ?? code.replace(/^DRAFT_/, '').replace(/_/g, ' ').toLowerCase();
+}
+
+function humanizeDraftChecks(message: string) {
+  return message.replace(/\b(DRAFT_[A-Z0-9_]+)\b/g, (_, code: string) => readableDraftCheck(code));
+}
+
+function workflowNextStep(proposal: Proposal) {
+  if (proposal.workflow === 'triage') return 'Next: Look up in Infor — staff action only.';
+  if (proposal.workflow === 'quote') return 'Next: Check rates, then Create reply draft from current prices.';
+  if (proposal.workflow === 'create') return 'Next: Confirm Guest → Stay → Room/Rate → Guarantee, then Prepare.';
+  if (!proposal.stay_target_selected && ['amend', 'cancel', 'filing'].includes(proposal.workflow)) return 'Next: Find and select the stay.';
+  if (proposal.workflow === 'amend') return 'Next: Confirm change stay fields, then Prepare.';
+  if (proposal.workflow === 'cancel') return 'Next: Review cancellation fee, then Prepare.';
+  if (proposal.workflow === 'filing') return 'Next: Confirm PDF on selected email, then Prepare.';
+  return 'Next: Review details.';
+}
 function fieldText(value: unknown): string | null {
   if (typeof value === 'string') return value || '(empty)';
   if (typeof value === 'number') return String(value);
@@ -405,7 +479,9 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
   const searchFirst=!!newProfileMatch && !hasChoices && !hasReviewed && shown!==true;
   const selectedProfile=!!newProfileMatch && !!booking?.fields.guest_profile_id;
   const createPrice = proposal.workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/price$/.test(spec.path);
+  const sourceHint = proposal.workflow === 'create' ? provenanceHint(spec, proposal, spec.path, shown) : undefined;
   const hint = createPrice ? 'Requested price. HMS sets the booking price from the rate plan.' : searchFirst ? 'Check Infor for matching profiles first.' : selectedProfile ? 'An existing profile is selected.' : guestProfile ? 'Run Prepare to load verified Infor profiles.'
+    : sourceHint ? sourceHint
     : resolved.kind === 'missing' || value === null ? 'No saved value.' : undefined;
   const requiredEmpty = spec.required && (shown === null || shown === undefined || typeof shown === 'string' && shown.trim() === '');
   const common = { label, required: spec.required, disabled: locked || !spec.editable || guestProfile || searchFirst || selectedProfile || createPrice, error: spec.error ?? (requiredEmpty && spec.control !== 'checkbox' ? 'Required — fill before Go.' : null), hint, review };
@@ -520,8 +596,8 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     }
   } else if (shown === null || shown === undefined || typeof shown === 'string') {
     const text = shown ?? '';
-    const nativeCode = /\/(rate_plan|room_type|room_type_for_charge|guest_profile_id|track)$/.test(spec.path);
-    const createCode = proposal.workflow === 'create' ? /^\/bookings\/(0|[1-9]\d*)\/fields\/(rate_plan|room_type|track)$/.exec(spec.path) : null;
+    const nativeCode = /\/(rate_plan|room_type|room_type_for_charge|guest_profile_id|track|guarantee_type)$/.test(spec.path);
+    const createCode = proposal.workflow === 'create' ? /^\/bookings\/(0|[1-9]\d*)\/fields\/(rate_plan|room_type|track|guarantee_type)$/.exec(spec.path) : null;
     const rateChoices = createCode?.[2] === 'rate_plan' ? currentRateChoices(proposal, drafts, Number(createCode[1])) : undefined;
     const quotedRates = createCode?.[2] === 'rate_plan' && rateChoices?.sellable_only !== true ? (proposal.quoted_rate_choices ?? []).map(choice => ({
       value: choice.rate.code, label: choice.rate.code,
@@ -531,11 +607,13 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     const rates = [...nativeRateOptions(rateChoices), ...quotedRates];
     const rooms = createCode?.[2] === 'room_type' ? nativeRoomOptions(proposal, drafts, Number(createCode[1])) : [];
     const tracks = createCode?.[2] === 'track' ? nativeTrackOptions(proposal, drafts, Number(createCode[1])) : [];
-    const options = nativeCode ? [...rates, ...rooms, ...tracks] : spec.options;
-    if (spec.control === 'select' || spec.control === 'combobox' || nativeCode && options.length > 0) {
+    const guarantees = createCode?.[2] === 'guarantee_type'
+      ? (spec.options.length ? spec.options : CREATE_GUARANTEE_OPTIONS) : [];
+    const options = nativeCode ? [...rates, ...rooms, ...tracks, ...guarantees] : spec.options;
+    if (spec.control === 'select' || spec.control === 'combobox' || nativeCode && options.length > 0 || createCode?.[2] === 'guarantee_type') {
       control = nativeCode && options.length === 0
         ? <PaneField {...common} control="text" value={text} onChange={next => onEdit(spec.path, next)} />
-        : <PaneField {...common} hint={rates.length ? rateChoices?.sellable_only === true ? 'Choose an available Infor rate and check the price again.' : 'Choose an Infor or previous quote rate, or type a code. Check the price in Infor.' : rooms.length ? 'Choices from the last Infor check; coverage may be incomplete.' : tracks.length ? 'Choices from the last Infor check for this hotel.' : common.hint} control={nativeCode ? 'combobox' : spec.control === 'select' ? 'select' : 'combobox'} value={text} options={options} onChange={next => onEdit(spec.path, next)} />;
+        : <PaneField {...common} hint={sourceHint ?? (rates.length ? rateChoices?.sellable_only === true ? 'Choose an available Infor rate and check the price again.' : 'Choose an Infor or previous quote rate, or type a code. Check the price in Infor.' : rooms.length ? 'Choices from the last Infor check; coverage may be incomplete.' : tracks.length ? 'Choices from the last Infor check for this hotel.' : guarantees.length ? 'Type a guarantee code or choose from the list.' : common.hint)} control={nativeCode || createCode?.[2] === 'guarantee_type' ? 'combobox' : spec.control === 'select' ? 'select' : 'combobox'} value={text} options={options} onChange={next => onEdit(spec.path, next)} />;
     } else {
       const quoteDate = proposal.workflow === 'quote' && /\/groups\/(?:0|[1-9]\d*)\/(?:arrival_date|departure_date)$/.test(spec.path);
       const date = quoteDate ? 'text' : spec.control === 'date' && (!text || isDateValue(text)) ? 'date' : spec.control === 'date' ? 'text' : spec.control;
@@ -697,7 +775,11 @@ function quoteRooms(proposal: Proposal, quoteId: string) {
     if (!group || typeof group !== 'object' || Array.isArray(group) || typeof group.group_id !== 'string' || !Array.isArray(group.rooms)) return [];
     return group.rooms.flatMap((room, roomIndex) => {
       if (!room || typeof room !== 'object' || Array.isArray(room) || typeof room.id !== 'string') return [];
-      return [{ groupId: group.group_id as string, roomId: room.id, label: `Room group ${groupIndex + 1} · Room ${roomIndex + 1}` }];
+      return [{
+        groupId: group.group_id as string, roomId: room.id,
+        quantity: typeof room.quantity === 'number' ? room.quantity : null,
+        label: `Room group ${groupIndex + 1} · Room ${roomIndex + 1}`,
+      }];
     });
   });
 }
@@ -744,15 +826,20 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
     units:extra.units.trim() ? Number(extra.units) : null,unit_price:extra.unit_price.trim() || null}))});
   const changeExtra=(index:number,patch:Partial<(typeof output.extras)[number]>)=>setOutput(current=>({...current,
     extras:current.extras.map((extra,i)=>i===index ? {...extra,...patch} : extra)}));
+  const unavailable = rooms.filter(room => !(stage.quote_options?.some(option => option.group_id === room.groupId && option.room_id === room.roomId)));
   return <PaneSection title={quoteLabel ? `Choose quote options · ${quoteLabel}` : 'Choose quote options'}>
     <p>Price set by HMS rate plan. Prices and availability are from the latest Infor check. Review the selected options; combined availability is not confirmed.</p>
-    {selections.length < rooms.length && <p>Some room groups could not be priced and are not included in the quote.</p>}
+    {selections.length < rooms.length && <p className={quoteStyles.resultNote}>Partial: {rooms.length - selections.length} room group{rooms.length - selections.length === 1 ? '' : 's'} not priced — excluded from quote. No invented prices.</p>}
+    {unavailable.length > 0 && <p className={quoteStyles.resultNote}>Unavailable: {unavailable.map(room => room.label).join('; ')}.</p>}
     {stage.quote_artifact_block_reason === 'overlapping_date_searches' && <p>Infor checked these overlapping dates separately.</p>}
     {rooms.map(room => {
       const key = JSON.stringify([room.groupId, room.roomId]);
       const options = stage.quote_options?.filter(option => option.group_id === room.groupId && option.room_id === room.roomId) ?? [];
       const picked = options.find(option => option.option_index === selected[key]);
       const format = (code: string, meaning: string | null) => meaning && meaning !== code ? `${code} — ${meaning}` : code;
+      const board = picked && (typeof picked.meal_plan === 'string' ? picked.meal_plan
+        : picked.meal_plan && typeof picked.meal_plan === 'object' && !Array.isArray(picked.meal_plan)
+          ? [picked.meal_plan.code, picked.meal_plan.label].filter(value => typeof value === 'string' && value).join(' · ') : '');
       return <fieldset key={key} className={quoteStyles.stay}>
         <legend>{room.label}</legend>
         {options.length ? <>
@@ -774,22 +861,22 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
             </select>
           </label>
           {picked && <div className={quoteStyles.optionDetail}>
-            <strong>{format(picked.room.code, picked.room.label)} · {format(picked.rate.code, picked.rate.label)}</strong>
-            {typeof picked.meal_plan === 'string' && picked.meal_plan && <p>{picked.meal_plan}</p>}
-            {picked.meal_plan && typeof picked.meal_plan === 'object' && !Array.isArray(picked.meal_plan) &&
-              <p>{[picked.meal_plan.code, picked.meal_plan.label].filter(value => typeof value === 'string' && value).join(' · ')}</p>}
-            <ul>{picked.nightly.map(night => <li key={night.date}>{night.date}: {night.price.currency} {night.price.amount} per room · {night.inventory} available</li>)}</ul>
+            <p>Room: {format(picked.room.code, picked.room.label)}</p>
+            <p>Rate: {format(picked.rate.code, picked.rate.label)}</p>
+            {board && <p>Board: {board}</p>}
+            {room.quantity != null && <p>Quantity: {room.quantity}</p>}
+            <ul>{picked.nightly.map(night => <li key={night.date}>{night.date}: {night.price.currency} {night.price.amount} / night · basis native · {night.inventory} available{night.restricted ? ' · restricted' : ''}{!night.rateAvailable ? ' · rate unavailable' : ''}</li>)}</ul>
           </div>}
         </> : <p>{stage.quote_choices?.some(option => option.group_id === room.groupId && option.room_id === room.roomId)
           ? 'Choose a room type and rate above, then check Infor again before making the files.'
-          : 'No verified options for this room. Check the details and run Infor again.'}</p>}
+          : 'No verified options for this room. Unavailable — check details and run Infor again.'}</p>}
       </fieldset>;
     })}
     <PaneField label="Company or organisation" control="text" value={output.organization_name} disabled={busy} onChange={value=>setOutput(current=>({...current,organization_name:value}))} />
     <PaneField label="Booking agency" control="text" value={output.agency_name} disabled={busy} onChange={value=>setOutput(current=>({...current,agency_name:value}))} />
     <PaneField label="Valid until" control="text" value={output.valid_until} disabled={busy} hint="Leave blank if not confirmed." onChange={value=>setOutput(current=>({...current,valid_until:value}))} />
     <PaneField label="Payment terms" control="textarea" value={output.payment_terms} disabled={busy} hint="Leave blank if not confirmed." onChange={value=>setOutput(current=>({...current,payment_terms:value}))} />
-    <h4>Extras</h4>
+    <h4>Extras (separate from room rates)</h4>
     <p>Enter staff prices in ZAR. Leave unknown values blank. Extras without a complete price are excluded from the priced sum.</p>
     {output.extras.map((extra,index)=><fieldset key={extra.rowKey} className={quoteStyles.stay}>
       <legend>Extra {index+1}</legend>
@@ -846,15 +933,15 @@ function QuoteCover({ proposal, busy, drafts, onSaveQuoteDraft, onFindQuoteDraft
       setSaving(true); setMessage(null);
       void onSaveQuoteDraft(body).then(result => { setMessage(result.message); if (result.status === 'created') { setSaved(true); setRefresh(value => value + 1); } })
         .catch(() => setMessage('Could not confirm the draft. Check Drafts before trying again.')).finally(() => setSaving(false));
-    }}>{saving ? 'Saving draft…' : quoteDraftTarget === 'webmail' ? 'Save unsent draft' : 'Save unsent Outlook draft'}</button>}
+    }}>{saving ? 'Creating reply draft…' : 'Create reply draft'}</button>}
     {saved && onOpenQuoteDraft && <button type="button" disabled={busy || saving || quoteConnectionReady === false} onClick={() => {
       setSaving(true); setMessage(null);
       void onOpenQuoteDraft(binding).then(result => {
         if (result) setOpened(result);
         else if (quoteDraftTarget === 'outlook') setMessage('The draft is no longer available. Check Outlook Drafts.');
       }).catch(() => setMessage('Could not open the draft. Check Drafts and try again.')).finally(() => setSaving(false));
-    }}>Open unsent draft</button>}
-    {saved && <p role="status">Unsent draft saved. Staff review and send it.</p>}
+    }}>{quoteDraftTarget === 'webmail' ? 'Open draft' : 'View draft'}</button>}
+    {saved && <p role="status">Reply draft created from current prices. Staff review and send it.</p>}
     {message && <p role="status">{message}</p>}
     {opened && <div><strong>{opened.subject}</strong>{opened.to && <p>To: {opened.to}</p>}{opened.cc && <p>Cc: {opened.cc}</p>}<p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{opened.body}</p>
       <p>Files: {opened.files.join(', ')}</p><p>Open Outlook Drafts to edit and send.</p></div>}
@@ -923,8 +1010,7 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay,createdStays
   const [arrivalDate,setArrivalDate]=useState('');
   const [changed,setChanged]=useState(false);
   const [previousJob,setPreviousJob]=useState<string | null>(null);
-  const [removed,setRemoved]=useState<Record<string,boolean>>(()=>Object.fromEntries(
-    ['guest_name','group_name','guest_names','confirmation_number','guest_last_name','guest_first_name','guest_names_hint','reservation_hint','confirmation_hint'].map(key=>[key,true])));
+  const [removed,setRemoved]=useState<Record<string,boolean>>(()=>Object.fromEntries([...STAY_CLUE_KEYS].map(key=>[key,true])));
   const canLookUp = proposal.disposition==='propose' || proposal.disposition==='staff_review' ||
     (proposal.workflow==='amend' && proposal.disposition==='needs_info');
   if(!['amend','cancel','filing'].includes(proposal.workflow) || !canLookUp || proposal.bookings.length!==1 || !booking || !onLookupStay || !onSelectStay) return null;
@@ -937,12 +1023,15 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay,createdStays
   const candidates=result?.kind==='surname' && Array.isArray(result.candidates) ? result.candidates : [];
   const locked=busy || proposal.phase!=='ready' || Object.keys(drafts).length>0;
   const exact=/^\d{6,10}-\d{1,10}$/;
-  return <PaneSection title="Find the stay in Infor">
+  const clueEntries=Object.entries(booking.fields).filter(([key])=>STAY_CLUE_KEYS.has(key));
+  const pendingEntries=Object.entries(booking.fields).filter(([key])=>!STAY_CLUE_KEYS.has(key));
+  const selectedGuest=[String(booking.current_state?.first_name ?? ''), String(booking.current_state?.last_name ?? '')].filter(Boolean).join(' ');
+  const selectedDates=[String(booking.current_state?.arrival_date ?? ''), String(booking.current_state?.departure_date ?? '')].filter(Boolean).join(' – ');
+  const picker=<>
     <p>Search uses this mailbox’s hotel.</p>
     {proposal.workflow === 'filing' && createdStays && createdStays.length > 0 && <PaneField label="Created stay from this email" control="select" value="" disabled={locked}
       placeholder="Choose a created stay" options={createdStays.map(stay => ({ value: stay.bookingId, label: stay.label }))}
       onChange={value => { const stay = createdStays.find(item => item.bookingId === value); if (stay) { setConfirmation(stay.confirmation); setArrivalDate(''); setChanged(true); } }} />}
-    {proposal.stay_target_selected && <p>Selected: {booking.reservation_id} · {String(booking.current_state?.first_name ?? '')} {String(booking.current_state?.last_name ?? '')} · arrival {String(booking.current_state?.arrival_date ?? '')}</p>}
     {!proposal.stay_target_selected && booking.reservation_id && <p>Confirmation from the request: {booking.reservation_id}. Check and select the stay below.</p>}
     <PaneField label="Guest surname" control="text" value={surname} disabled={locked} onChange={value=>{setSurname(value);setChanged(true);}} />
     <button type="button" disabled={locked || !surname.trim()} onClick={()=>{setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'surname',surname:surname.trim(),...(arrivalDate ? {arrival_date:arrivalDate} : {})});}}>Search by surname</button>
@@ -964,13 +1053,27 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay,createdStays
     {result?.kind==='confirmation' && selection && state && stage?.job_id && <>
       <p>Infor found: {String(selection.property_code)} · {String(selection.confirmation)} · {String(state.first_name)} {String(state.last_name)} · {String(state.arrival_date)} – {String(state.departure_date)} · {String(result.status)}</p>
       {proposal.workflow==='filing' && <p>Use this stay to replace the previous stay details and continue. The selected PDF stays the same.</p>}
-      {proposal.workflow==='amend' && Object.keys(booking.fields).length>0 && <div>
-        <p>Mark lookup clues that should not be sent as changes:</p>
-        {Object.entries(booking.fields).map(([key,value])=><PaneField key={key} control="checkbox" label={`Remove ${proposal.field_specs.find(spec=>spec.path===`/bookings/0/fields/${key}`)?.label ?? key.replace(/_/g,' ')}: ${String(typeof value==='string'?value:JSON.stringify(value)).slice(0,100)} from changes`} value={removed[key]===true} disabled={locked}
+      {proposal.workflow==='amend' && clueEntries.length>0 && <div>
+        <p>Removable lookup clues (not sent as changes when checked):</p>
+        {clueEntries.map(([key,value])=><PaneField key={key} control="checkbox" label={`Remove ${key.replace(/_/g,' ')}: ${String(typeof value==='string'?value:JSON.stringify(value)).slice(0,100)}`} value={removed[key]===true} disabled={locked}
           onChange={checked=>setRemoved(current=>({...current,[key]:checked}))} />)}
       </div>}
-      <button type="button" disabled={locked} onClick={()=>onSelectStay(stage.job_id!,proposal.workflow==='amend'?Object.keys(booking.fields).filter(key=>removed[key]):[])}>Use this stay</button>
+      {proposal.workflow==='amend' && pendingEntries.length>0 && <div className={quoteStyles.pendingChanges}>
+        <p>Pending new values kept:</p>
+        <ul>{pendingEntries.map(([key,value])=>{
+          const label=proposal.field_specs.find(spec=>spec.path===`/bookings/0/fields/${key}`)?.label ?? key.replace(/_/g,' ');
+          const text=fieldText(value);
+          return text===null?null:<li key={key}>{label}: {text}</li>;
+        })}</ul>
+      </div>}
+      <button type="button" disabled={locked} onClick={()=>onSelectStay(stage.job_id!,proposal.workflow==='amend'?clueEntries.map(([key])=>key).filter(key=>removed[key]):[])}>Use this stay</button>
     </>}
+  </>;
+  return <PaneSection title={proposal.stay_target_selected ? 'Stay target' : 'Find the stay in Infor'}>
+    {proposal.stay_target_selected && <p className={quoteStyles.selectedStay}>Selected: {booking.reservation_id ?? 'No confirmation'} · {selectedGuest || 'Guest unknown'} · {selectedDates || 'Dates unknown'}</p>}
+    {proposal.stay_target_selected
+      ? <details className={quoteStyles.requests}><summary>Change stay</summary>{picker}</details>
+      : picker}
   </PaneSection>;
 }
 
@@ -993,12 +1096,60 @@ function uncertain(proposal: Proposal) {
 
 function errorMessage(proposal: Proposal) {
   if (uncertain(proposal)) return 'Infor has not confirmed the outcome. Check Infor before trying again.';
-  if (proposal.error?.message.trim()) return proposal.error.message;
+  if (proposal.error?.message.trim()) return humanizeDraftChecks(proposal.error.message);
   const subject = {
     triage: 'email review', quote: 'quote request', create: 'reservation request',
     amend: 'change request', cancel: 'cancellation request', filing: 'document request',
   }[proposal.workflow];
   return `Nava couldn’t complete this ${subject}. Check the details.`;
+}
+
+function DraftCheckNote({ native }: { native: Record<string, unknown> | undefined }) {
+  if (!native) return null;
+  const save = native.save && typeof native.save === 'object' && !Array.isArray(native.save) ? native.save as Record<string, unknown> : null;
+  const code = typeof native.draftCheck === 'string' ? native.draftCheck
+    : typeof save?.draftCheck === 'string' ? save.draftCheck : null;
+  if (!code || !/^DRAFT_[A-Z0-9_]{1,80}$/.test(code)) return null;
+  return <p>Draft check: {readableDraftCheck(code)}</p>;
+}
+
+function CancelFeeBesidePrepare({ stage }: { stage: NonNullable<Proposal['stage']> }) {
+  const fee = stage.cancellation_fee;
+  const text = fee && typeof fee === 'object' && !Array.isArray(fee) && typeof (fee as { text?: unknown }).text === 'string'
+    ? (fee as { text: string }).text : null;
+  const native = stage.native_result && typeof stage.native_result === 'object' && !Array.isArray(stage.native_result) ? stage.native_result as Record<string, unknown> : null;
+  const nativeFee = native?.cancellation_fee && typeof native.cancellation_fee === 'object' && !Array.isArray(native.cancellation_fee)
+    ? native.cancellation_fee as { text?: unknown } : null;
+  const label = text ?? (typeof nativeFee?.text === 'string' ? nativeFee.text : null);
+  if (!label) return <CancelPolicy prepared={stage.native_result} />;
+  return <div className={quoteStyles.prepareFee}>
+    <p>Cancellation fee (review before Prepare): {label}</p>
+    <CancelPolicy prepared={stage.native_result} />
+  </div>;
+}
+
+function CreateFields(props: WorkflowProps & { locked: boolean }) {
+  const byRoom = new Map<number, FieldSpec[]>();
+  const other: FieldSpec[] = [];
+  for (const spec of props.proposal.field_specs) {
+    const match = /^\/bookings\/(0|[1-9]\d*)\//.exec(spec.path);
+    if (!match) { other.push(spec); continue; }
+    const index = Number(match[1]);
+    const list = byRoom.get(index) ?? [];
+    list.push(spec);
+    byRoom.set(index, list);
+  }
+  return <PaneSection title="Details">
+    {[...byRoom.entries()].sort((left, right) => left[0] - right[0]).map(([index, specs]) => (
+      <details key={props.proposal.bookings[index]?.id ?? index} className={quoteStyles.stay} open>
+        <summary>Room {index + 1} · Guest/Profile → Stay → Room/Rate → Guarantee → Company → Note/CMS</summary>
+        {[...specs].sort((left, right) => createFieldRank(left.path) - createFieldRank(right.path))
+          .map(spec => <Field key={spec.path} {...props} spec={spec} showContext={false} />)}
+      </details>
+    ))}
+    {other.map(spec => <Field key={spec.path} {...props} spec={spec} locked={props.locked} />)}
+    {props.proposal.workflow === 'filing' && !props.proposal.field_specs.some(spec => /^\/actions\/(?:0|[1-9]\d*)\/details\/attachment_id$/.test(spec.path) && spec.editable) && <PaneMessage>PDF selection is unavailable for this request. Handle it using your usual process.</PaneMessage>}
+  </PaneSection>;
 }
 
 function TriageLookupResult({ proposal }: { proposal: Proposal }) {
@@ -1102,8 +1253,13 @@ export function Workflow(props: WorkflowProps) {
     propose: null, needs_info: 'More information is needed.', decline: 'Marked for decline.',
     skip: 'No action needed.', staff_review: 'Needs review.',
   }[proposal.disposition];
+  const unreadSource = props.attachmentsAttention || props.attachmentMessages.some(message => message.attachment_status === 'has_unread');
+  const priorBits = [dispositionMessage, proposal.reason, ...proposal.warnings, ...proposal.missing].filter((item): item is string => Boolean(item?.trim()));
 
   return <>
+    <PaneSection title={WORKFLOW_INTENT[proposal.workflow]}>
+      <p className={quoteStyles.intentNext}>{workflowNextStep(proposal)}</p>
+    </PaneSection>
     {phaseMessage && <PaneMessage><span role="status">{phaseMessage}{longWait && (proposal.workflow === 'quote' && proposal.phase === 'prefilling' ? ' This is taking longer than expected. Nava is still working on the quote.' : ' This is taking longer than expected. Please wait.')}</span></PaneMessage>}
     {proposal.profile_outcome && <PaneMessage>Guest Profile creation is unconfirmed. Check Infor before trying again.{proposal.profile_outcome.native_id ? ` Guest Profile ID: ${proposal.profile_outcome.native_id}.` : ''}</PaneMessage>}
     {uncertain(proposal) && !proposal.error && <PaneMessage>Infor has not confirmed the outcome. Check Infor before trying again.</PaneMessage>}
@@ -1111,10 +1267,14 @@ export function Workflow(props: WorkflowProps) {
       {errorMessage(proposal)}
       {proposal.error.recovery?.trim() && <p>{proposal.error.recovery}</p>}
     </PaneMessage>}
-    {dispositionMessage && <PaneMessage>{dispositionMessage}</PaneMessage>}
-    {proposal.reason && <PaneMessage>{proposal.reason}</PaneMessage>}
-    {proposal.missing.length > 0 && <PaneSection title="Information needed"><ul>{[...new Set(proposal.missing)].map(item => <li key={item}>{item}</li>)}</ul></PaneSection>}
-    {proposal.warnings.length > 0 && <PaneSection title="Check these details"><ul>{[...new Set(proposal.warnings)].map(item => <li key={item}>{item}</li>)}</ul></PaneSection>}
+    {unreadSource && <PaneMessage tone="error">Unread source: Nava has not read one or more attachments. Review them before Prepare.</PaneMessage>}
+    {priorBits.length > 0 && <details className={quoteStyles.requests}>
+      <summary>Source, warnings, and prior status</summary>
+      {dispositionMessage && <p>{dispositionMessage}</p>}
+      {proposal.reason && <p>{proposal.reason}</p>}
+      {proposal.missing.length > 0 && <><strong>Information needed</strong><ul>{[...new Set(proposal.missing)].map(item => <li key={item}>{item}</li>)}</ul></>}
+      {proposal.warnings.length > 0 && <><strong>Warnings</strong><ul>{[...new Set(proposal.warnings)].map(item => <li key={item}>{item}</li>)}</ul></>}
+    </details>}
     {['needs_info', 'staff_review'].includes(proposal.disposition) && <StaffContext key={proposal.id} {...props} />}
     {['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <PaneSection title="Check attachments">
       <p>{props.attachmentsAttention ? "Nava couldn't read attachments from one or more emails. " : ''}If the selected email or an earlier email has attachments, check them in Outlook and include relevant details in this proposal.</p>
@@ -1131,7 +1291,8 @@ export function Workflow(props: WorkflowProps) {
     {proposal.workflow === 'quote' && proposal.field_specs.length > 0 && <QuoteFields {...props} locked={locked} />}
     <GuestChoices {...props} busy={locked} />
     {proposal.workflow==='create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) && <PaneMessage>Review the matching profiles, name, mobile and email. Go creates the new Guest Profile, then checks the price. The booking needs a separate Go.</PaneMessage>}
-    {proposal.workflow !== 'quote' && proposal.field_specs.length > 0 && <PaneSection title="Details">
+    {proposal.workflow === 'create' && proposal.field_specs.length > 0 && <CreateFields {...props} locked={locked} />}
+    {proposal.workflow !== 'quote' && proposal.workflow !== 'create' && proposal.field_specs.length > 0 && <PaneSection title="Details">
       {proposal.field_specs.map(spec => <Field key={spec.path} {...props} spec={spec} locked={locked} />)}
       {proposal.workflow === 'filing' && !proposal.field_specs.some(spec => /^\/actions\/(?:0|[1-9]\d*)\/details\/attachment_id$/.test(spec.path) && spec.editable) && <PaneMessage>PDF selection is unavailable for this request. Handle it using your usual process.</PaneMessage>}
     </PaneSection>}
@@ -1153,10 +1314,11 @@ export function Workflow(props: WorkflowProps) {
       : <QuoteOptions key={`options:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />)}
     {proposal.stage && stageCurrent && proposal.stage.state !== 'target' && <PaneSection title="Checked details">
       {proposal.workflow === 'create' && <p>Price set by HMS rate plan.</p>}
-      {proposal.workflow === 'cancel' && <CancelPolicy prepared={proposal.stage.native_result} />}
+      {proposal.workflow === 'create' && <DraftCheckNote native={currentNativeResult(proposal, props.drafts)} />}
+      {proposal.workflow === 'cancel' && <CancelFeeBesidePrepare stage={proposal.stage} />}
       {proposal.stage.summary.length > 0 && <div className={styles.stageSummary}>
         <strong>Check notes</strong>
-        <ul>{[...new Set(proposal.stage.summary)].map(item => <li key={item}>{item}</li>)}</ul>
+        <ul>{[...new Set(proposal.stage.summary)].map(item => <li key={item}>{humanizeDraftChecks(item)}</li>)}</ul>
       </div>}
       <ObservedFields proposal={proposal} />
       {proposal.workflow === 'triage' ? <TriageLookupResult proposal={proposal} />
@@ -1192,10 +1354,13 @@ export function Workflow(props: WorkflowProps) {
         : artifact.name}</p>)}
     </PaneSection>}
     {proposal.phase === 'done' && !proposal.result && <PaneMessage>No readback was provided. Refresh this proposal.</PaneMessage>}
-    {proposal.reply_draft !== null && (proposal.workflow !== 'quote' || proposal.revision === 1 && Object.keys(props.drafts).length === 0) && <PaneSection title={proposal.workflow === 'quote' ? 'Initial reply draft' : 'Reply draft'}>
-      {proposal.workflow === 'quote' && <p>This draft may contain outdated rates. Check current prices in Infor before using it.</p>}
+    {proposal.reply_draft !== null && proposal.workflow !== 'quote' && <PaneSection title="Reply draft">
       <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{proposal.reply_draft}</p>
-      {proposal.workflow !== 'quote' && <button type="button" onClick={() => { void navigator.clipboard.writeText(proposal.reply_draft!); }}>Copy reply</button>}
+      <button type="button" onClick={() => { void navigator.clipboard.writeText(proposal.reply_draft!); }}>Copy reply</button>
+    </PaneSection>}
+    {proposal.reply_draft !== null && proposal.workflow === 'quote' && proposal.revision === 1 && Object.keys(props.drafts).length === 0 && !proposal.stage?.artifacts?.length && <PaneSection title="Initial reply draft">
+      <p>Outdated until Create reply draft from current prices. Prefer priced draft after Infor check.</p>
+      <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{proposal.reply_draft}</p>
     </PaneSection>}
   </>;
 }

@@ -21,3 +21,10 @@
 }
 
 .choiceRow option { font-size: 12px; }
+
+.provenanceHint {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted, #667085);
+  font-size: 12px;
+}

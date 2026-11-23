@@ -91,7 +91,7 @@ export function PaneField(props: PaneFieldProps) {
         {selectedChoice && <small id={choiceId}>{choiceLabel(selectedChoice)}</small>}
       </>
       : <input {...common} type={props.control} value={props.value} placeholder={props.placeholder} min={'min' in props ? props.min : undefined} max={'max' in props ? props.max : undefined} step={'step' in props ? props.step : undefined} onChange={event => props.onChange(event.target.value)} />}
-    {props.hint && <small id={hintId}>{props.hint}</small>}
+    {props.hint && <small id={hintId} className={fieldStyles.provenanceHint}>{props.hint}</small>}
     {props.error && <small id={errorId} className={styles.fieldError}>{props.error}</small>}
   </div>;
 }
