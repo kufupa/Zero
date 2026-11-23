@@ -35,6 +35,8 @@ type BaseWorld = {
   anchors:TwinAnchor[];
   profiles:TwinProfile[];
   catalog:Record<string,unknown>;
+  /** confirmation → Created On epoch ms from stay360 / sidecar (booking-time identity). */
+  createdOn:Map<string, number>;
 };
 
 const baseCache=new Map<string,BaseWorld>();
@@ -53,15 +55,18 @@ function optionalJsonl<T>(path: string): T[] {
   }
 }
 
+export const rows = (value: unknown): Record<string,unknown>[] => Array.isArray(value) ? value.map(object) : [];
+
 export const confirmationId = (value: unknown) => {
   const raw = String(value ?? '').trim();
   return /^\d{6,10}(?:-\d+)?$/.test(raw) ? (raw.includes('-') ? raw : `${raw}-1`) : null;
 };
 
 export function indexMentions(mail: Record<string, unknown>, index: Map<string, number>) {
-  const at = Date.parse(String(mail.received_at ?? mail.timestamp ?? ''));
+  const at = Date.parse(String(mail.received_at ?? mail.timestamp ?? mail.sent_at ?? ''));
   if (!Number.isFinite(at)) return;
-  for (const value of `${mail.subject ?? ''} ${mail.body_text ?? ''}`.matchAll(/(?<![\w-])\d{6,10}(?:-\d+)?(?![\w-])/g)) {
+  const attachmentText = rows(mail.pdf_attachments_text).map(row => String(row.text ?? '')).join(' ');
+  for (const value of `${mail.subject ?? ''} ${mail.body_text ?? ''} ${attachmentText}`.matchAll(/(?<![\w-])\d{6,10}(?:-\d+)?(?![\w-])/g)) {
     const id = confirmationId(value[0])!;
     if (at < (index.get(id) ?? Infinity)) index.set(id, at);
   }
@@ -83,10 +88,9 @@ function loadLetterEvidence() {
     } : {},
   }));
   const mentions = new Map<string, number>();
+  // Index every thread message; empty confirmations[] still carry HMS refs in body/subject.
   for (const row of optionalJsonl<Record<string, unknown>>(join(dirname(path), 'threads.jsonl'))) {
-    if (Array.isArray(row.confirmations) && row.confirmations.length) {
-      for (const mail of rows(row.messages)) indexMentions(mail, mentions);
-    }
+    for (const mail of rows(row.messages)) indexMentions(mail, mentions);
   }
   const evidence = {letters, mentions};
   letterCache.set(path, evidence);
@@ -103,7 +107,6 @@ function optionalJson(path:string):Record<string,unknown> | null {
 }
 
 export const defaultWorldDir = () => join(process.env.NAVA_BENCH_DATA_ROOT ?? DEFAULT_DATA_ROOT, 'world');
-export const rows = (value: unknown): Record<string,unknown>[] => Array.isArray(value) ? value.map(object) : [];
 
 const catalogCache = new Map<string, Record<string, unknown>>();
 export function loadCatalogue(root = defaultWorldDir()): Record<string, unknown> {
@@ -115,15 +118,101 @@ export function loadCatalogue(root = defaultWorldDir()): Record<string, unknown>
   return catalog;
 }
 
+/** Parse Stay360 "Created On:" values like `31-AUG-2026 08:46`. */
+export function parseCreatedOn(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const raw = String(value).trim();
+  const native = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})(?:\s+(\d{2}):(\d{2}))?/.exec(raw);
+  if (native) {
+    const month = 'JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC'.split(' ').indexOf(native[2].toUpperCase());
+    if (month >= 0) {
+      return Date.UTC(Number(native[3]), month, Number(native[1]), Number(native[4] ?? 0), Number(native[5] ?? 0));
+    }
+  }
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function createdFieldValue(fields: Record<string, unknown> | null | undefined): unknown {
+  if (!fields) return null;
+  return fields.created ?? fields.created_on ?? fields.createdOn ?? fields.booked_at ?? fields.booked_on
+    ?? fields.created_at ?? fields.creation_date ?? fields.created_date ?? fields.createdate;
+}
+
+function walkCreatedFields(node: unknown, into: Map<string, number>, confirmation?: string): void {
+  if (Array.isArray(node)) {
+    for (const item of node) walkCreatedFields(item, into, confirmation);
+    return;
+  }
+  const row = object(node);
+  if (!Object.keys(row).length) return;
+  const conf = confirmationId(row.confirmation ?? row.confirmation_no ?? row.confirmationnumber ?? confirmation);
+  const name = String(row.name ?? '').toLowerCase();
+  const label = String(row.label ?? '').toLowerCase();
+  if (conf && (name === 'created' || name === 'created_on' || label.startsWith('created on'))) {
+    const at = parseCreatedOn(row.value ?? row.rawValue);
+    if (at !== null && at < (into.get(conf) ?? Infinity)) into.set(conf, at);
+  }
+  const nestedConf = conf ?? confirmation;
+  for (const value of Object.values(row)) {
+    if (value && typeof value === 'object') walkCreatedFields(value, into, nestedConf);
+  }
+}
+
+function loadCreatedOn(root: string): Map<string, number> {
+  const into = new Map<string, number>();
+  const overnightReads = '/home/orca/.local/share/zero/runs/overnight-20261122/data';
+  const candidates = [
+    process.env.NAVA_BENCH_CREATED,
+    join(root, 'created-on.jsonl'),
+    join(root, 'stay360-run01.json'),
+    join(dirname(root), 'stay360-run01.json'),
+    join(DEFAULT_DATA_ROOT, 'world', 'stay360-run01.json'),
+    join(overnightReads, 'initial-native.reads.jsonl'),
+    ...['focus2', 'focus3', 'focus4', 'focus5', 'focus6', 'focus8', 'focus10'].map(name => join(overnightReads, `${name}.reads.jsonl`)),
+  ].filter((path): path is string => !!path);
+  for (const path of candidates) {
+    if (path.endsWith('.jsonl')) {
+      for (const row of optionalJsonl<Record<string, unknown>>(path)) {
+        const conf = confirmationId(row.confirmation ?? row.confirmation_no);
+        const at = parseCreatedOn(createdFieldValue(object(row)) ?? row.created_on ?? row.created);
+        if (conf && at !== null && at < (into.get(conf) ?? Infinity)) into.set(conf, at);
+        walkCreatedFields(row.record_view ?? row.recordView ?? row, into, conf ?? undefined);
+      }
+      continue;
+    }
+    const doc = optionalJson(path);
+    if (!doc) continue;
+    walkCreatedFields(doc.results ?? doc, into);
+  }
+  return into;
+}
+
 function loadBase(root:string):BaseWorld {
   const cached=baseCache.get(root);
   if(cached) return cached;
   const anchors=jsonl<TwinAnchor>(join(root,'anchors.jsonl'));
   const profilesFile=optionalJson(join(root,'profiles.json'));
+  const createdOn = loadCreatedOn(root);
+  // Merge Created On into anchor hms_fields when capture snapshots omitted it.
+  for (const anchor of anchors) {
+    const confirmation = confirmationId(anchor.confirmation);
+    const createdMs = confirmation ? createdOn.get(confirmation) : undefined;
+    if (createdMs == null) continue;
+    const stamp = new Date(createdMs).toISOString();
+    const fields = object(anchor.hms_fields);
+    if (createdFieldValue(fields) == null) anchor.hms_fields = {...fields, created: stamp};
+    for (const capture of rows(anchor.captures)) {
+      const captureFields = object(capture.hms_fields);
+      if (createdFieldValue(captureFields) == null) capture.hms_fields = {...captureFields, created: stamp};
+    }
+  }
   const base={
     anchors,
     profiles:Array.isArray(profilesFile?.profiles) ? profilesFile.profiles as TwinProfile[] : [],
     catalog: loadCatalogue(root),
+    createdOn,
   };
   baseCache.set(root,base);
   return base;
@@ -175,6 +264,7 @@ export class TwinWorld {
   readonly anchors:TwinAnchor[];
   readonly profiles:TwinProfile[];
   readonly catalog:Record<string,unknown>;
+  readonly createdOn:Map<string, number>;
   readonly quotes=new Map<string,{at: number; response: TwinEnvelope}>();
   readonly cutoff: number;
   readonly letterEvidence: ReturnType<typeof loadLetterEvidence>;
@@ -188,6 +278,7 @@ export class TwinWorld {
     const inProperty = (row: Record<string,unknown>) =>
       String(row.property_code ?? row.propertyCode ?? 'HRCEN').toUpperCase() === this.propertyCode;
     this.anchors = base.anchors.filter(inProperty);
+    this.createdOn = base.createdOn;
     this.letterEvidence = this.propertyCode === 'HRCEN' ? loadLetterEvidence() : {letters: [], mentions: new Map()};
     this.cutoff=selectedCutoff(caseCard);
     if (!Number.isFinite(this.cutoff)) throw new Error('CASE_AS_OF_MISSING');
@@ -200,6 +291,8 @@ export class TwinWorld {
   }
 
 }
+
+export {createdFieldValue};
 
 export function loadTwinWorld(caseCard:CaseCard,root?:string, property?:string, threadSenders?:ThreadSenders):TwinWorld {
   return new TwinWorld(caseCard,root,property,threadSenders);

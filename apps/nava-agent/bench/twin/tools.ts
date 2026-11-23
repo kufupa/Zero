@@ -95,13 +95,20 @@ function fieldMap(stay: Record<string, unknown> | null): Array<{name: string; ty
 }
 
 const name = (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/\s+/g, ' ');
+const HONORIFICS = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'prof', 'sir', 'madam']);
+
+function stripHonorifics(value: string): string {
+  return value.split(' ').filter(token => token && !HONORIFICS.has(token)).join(' ');
+}
 
 function reservationNames(stay: Record<string, unknown>) {
   const full = name(stay.guestfullname ?? stay.guest_name);
-  const parts = full.split(' ');
-  const nativeParts = full.split(/\s*[,/]\s*/);
-  const last = name(stay.last_name ?? stay.lastName ?? stay.lastname) || (nativeParts.length > 1 ? nativeParts[0] : parts.at(-1)) || '';
-  const first = name(stay.first_name ?? stay.firstName ?? stay.firstname) || (nativeParts.length > 1 ? nativeParts[1] : parts.slice(0, -1).join(' '));
+  const parts = full.split(' ').filter(Boolean);
+  const nativeParts = full.split(/\s*[,/]\s*/).map(part => stripHonorifics(part.trim())).filter(Boolean);
+  const last = stripHonorifics(name(stay.last_name ?? stay.lastName ?? stay.lastname))
+    || (nativeParts.length > 1 ? nativeParts[0] : stripHonorifics(parts.at(-1) ?? '')) || '';
+  const first = stripHonorifics(name(stay.first_name ?? stay.firstName ?? stay.firstname))
+    || (nativeParts.length > 1 ? nativeParts[1] : stripHonorifics(parts.slice(0, -1).join(' '))) || '';
   return {full, first, last};
 }
 
@@ -110,14 +117,15 @@ function matchReservation(stay: Record<string, unknown>, criteria: Record<string
   const rid = typeof criteria.reservation_id === 'string' ? normalizeReservationReference(criteria.reservation_id) : '';
   if (rid && !matchesId(rid, confirmation)) return false;
   const {full, first, last} = reservationNames(stay);
-  const surname = name(criteria.last_name ?? criteria.guest_name);
-  const given = name(criteria.guest_first_name);
+  const surname = stripHonorifics(name(criteria.last_name ?? criteria.guest_name));
+  const given = stripHonorifics(name(criteria.guest_first_name));
+  const hasExplicitLast = stay.last_name != null || stay.lastName != null || stay.lastname != null;
   if (surname.includes('/') && criteria.guest_name_is_surname !== true) {
-    const [left, right] = surname.split(/\s*\/\s*/);
+    const [left, right] = surname.split(/\s*\/\s*/).map(stripHonorifics);
     if (!((left === last && right === first) || (right === last && left === first))) return false;
   } else {
-    if (surname && surname !== last && !(criteria.guest_name_is_surname === true && !stay.last_name && !stay.lastName && full.endsWith(` ${surname}`))) return false;
-    if (given && given !== first && !full.startsWith(`${given} `)) return false;
+    if (surname && surname !== last && !(criteria.guest_name_is_surname === true && !hasExplicitLast && full.endsWith(` ${surname}`))) return false;
+    if (given && given !== first && !full.startsWith(`${given} `) && !first.startsWith(`${given} `) && !first.endsWith(` ${given}`)) return false;
   }
   for (const date of ['arrival', 'departure']) {
     const requested = criteria[`${date}_date`];
