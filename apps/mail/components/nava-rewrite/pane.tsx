@@ -16,7 +16,7 @@ export type ActionItem = { id: string; label: string };
 export type AvailableAction = { value: string; label: string };
 
 type HistoryControl = { enabled: boolean; onClick: () => void };
-type PrimaryAction = { label: string; disabled?: boolean; onClick: () => void };
+type PrimaryAction = { label: string; disabled?: boolean; disabledReason?: string; onClick: () => void };
 
 export type NavaPaneProps = {
   email: SelectedEmail | null;
@@ -31,6 +31,8 @@ export type NavaPaneProps = {
   };
   children?: ReactNode;
   footer?: ReactNode;
+  /** Single action dock: one readable status + why the primary is disabled. */
+  dock?: { status?: string; disabledReason?: string };
   primaryAction?: PrimaryAction;
 };
 
@@ -57,7 +59,10 @@ export function EmailHeader({ email }: { email: SelectedEmail | null }) {
   );
 }
 
-export function NavaPane({ email, history, actions, children, footer, primaryAction }: NavaPaneProps) {
+export function NavaPane({ email, history, actions, children, footer, dock, primaryAction }: NavaPaneProps) {
+  const reason = primaryAction?.disabledReason ?? dock?.disabledReason;
+  const status = dock?.status;
+  const showDock = Boolean(footer || primaryAction || status || reason);
   return (
     <div className={styles.pane}>
       <header className={styles.header}>
@@ -92,9 +97,13 @@ export function NavaPane({ email, history, actions, children, footer, primaryAct
         </nav>}
         {email && <main className={styles.content}>{children}</main>}
       </div>
-      {email && (footer || primaryAction) && <footer className={styles.footer}>
-        {footer && <div className={styles.footerContent} tabIndex={0} role="region" aria-label="Action details">{footer}</div>}
-        {primaryAction && <button className={styles.primary} type="button" disabled={primaryAction.disabled} onClick={primaryAction.onClick}>{primaryAction.label}</button>}
+      {email && showDock && <footer className={styles.footer} aria-label="Action dock">
+        {(status || reason || footer) && <div className={styles.footerContent} tabIndex={0} role="region" aria-label="Action details">
+          {status && <p className={styles.dockStatus} role="status">{status}</p>}
+          {reason && <p className={styles.dockReason}>{reason}</p>}
+          {footer}
+        </div>}
+        {primaryAction && <button className={styles.primary} type="button" disabled={primaryAction.disabled} title={reason || undefined} onClick={primaryAction.onClick}>{primaryAction.label}</button>}
       </footer>}
     </div>
   );

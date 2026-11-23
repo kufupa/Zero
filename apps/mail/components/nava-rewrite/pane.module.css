@@ -109,6 +109,8 @@
 .error { border-color: #f4c5bc; background: #fff3f0; color: #9c3526; }
 .footer { display: flex; flex: none; flex-direction: column; max-height: min(40%, 220px); padding: 10px 13px; border-top: 1px solid var(--border); background: var(--surface); box-shadow: 0 -4px 14px #17212f08; }
 .footerContent { min-height: 0; overflow: auto; overflow-wrap: anywhere; }
+.dockStatus { margin: 0 0 4px; color: var(--ink); font-weight: 600; }
+.dockReason { margin: 0 0 6px; color: var(--muted); font-size: 11px; }
 .pane .primary { flex: none; width: 100%; margin-top: 7px; border-color: var(--accent); background: var(--accent); color: #fff; font-weight: 600; overflow-wrap: anywhere; }
 .pane .primary:hover:not(:disabled) { border-color: #6044c2; background: #6044c2; }
 @media (max-width: 280px) {

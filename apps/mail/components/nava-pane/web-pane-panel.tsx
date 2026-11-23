@@ -91,9 +91,10 @@ export function WebPanePanel({
     <div
       data-preview-status="ready"
       data-preview-thread={threadId}
-      className="h-full min-h-0 overflow-hidden"
+      data-preview-message={selection.email.entryId}
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
     >
-      {matches && selection.threadId ? <WebRewriteSelection key={JSON.stringify([input, selection.threadId])} email={selection.email} threadId={selection.threadId}
+      {matches && selection.threadId ? <WebRewriteSelection key={JSON.stringify([input.selected_message_id, selection.threadId, selection.email.entryId])} email={selection.email} threadId={selection.threadId}
         input={input} /> : <NavaRewriteHost bridge={bridge} preview source={{ status: 'unavailable', reason: candidate?.status === 'unavailable' ? candidate.reason : 'Select a guest email to use Nava.' }} />}
     </div>
   );

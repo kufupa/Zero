@@ -1148,6 +1148,8 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     return index < 0 ? room.booking_id : `Room ${index + 1}`;
   }) : [];
   const needsProfile = proposal?.workflow === 'create' && proposal.bookings.some(booking => booking.fields.profile_create_new === true && !booking.fields.guest_profile_id);
+  const dirty = Object.keys(drafts).length > 0;
+  const stageBlocked = busy || Boolean(issue) || Boolean(lock) || (proposal ? cache.stagePending[proposal.id] !== undefined || !validSavedChildren(proposal) : false);
   const goLabels = {
     create: remainingRooms ? `Save ${remainingLabels.join(', ')} in Infor? Confirmed rooms will not be saved again.`
       : proposal && proposal.bookings.length>1 ? `Save all ${proposal.bookings.length} rooms in Infor?` : 'Save this booking in Infor?',
@@ -1157,10 +1159,32 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     triage: 'Save in Infor?',
     quote: 'Save in Infor?',
   };
-  const stagePrimary = proposal && !isUncertain ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) ||
-        cache.stagePending[proposal.id] !== undefined || !validSavedChildren(proposal),
-      onStage: canStage && (!needsProfile || canGo) ? () => { if (needsProfile) void goProfile(proposal); else void operation('stage', proposal); } : undefined,
+  // Explicit Infor profile write — never reuse Prepare for this path.
+  const profilePrimary = proposal && needsProfile && !isUncertain && canGo && ['ready', 'waiting_go'].includes(proposal.phase)
+    ? { label: 'Create guest profile in Infor', disabled: dirty || stageBlocked || authenticationExpired,
+        disabledReason: dirty ? 'Save edits before creating the guest profile.' : stageBlocked ? 'Wait for the current Infor step to finish.' : undefined,
+        onClick: () => { void goProfile(proposal); } }
+    : undefined;
+  const stagePrimary = proposal && !isUncertain && !needsProfile ? workflowPrimaryAction({ proposal, drafts, busy: stageBlocked,
+      onStage: canStage ? () => { void operation('stage', proposal); } : undefined,
     }) : undefined;
+  const preparedStale = Boolean(proposal?.stage?.state === 'prepared' && proposal.stage.revision !== proposal.revision);
+  const dockStatus = !proposal ? undefined
+    : lock === 'accepted' || proposal.phase === 'saving' ? 'Saving in Infor… Do not click again.'
+    : lock === 'profile_accepted' ? 'Creating guest profile in Infor…'
+    : lock === 'reconciling' ? 'Checking Infor for the Save outcome…'
+    : isUncertain ? 'Uncertain Save — Reconcile in HMS. Never blind-retry.'
+    : cache.stagePending[proposal.id] !== undefined || proposal.phase === 'staging' ? 'Preparing in Infor…'
+    : confirmingGo ? goLabels[proposal.workflow]
+    : goEnabled ? 'Prepared — review price/policy, then Confirm Go.'
+    : preparedStale || (dirty && proposal.stage?.state === 'prepared') ? 'Details changed — Prepare again before Go.'
+    : needsProfile ? 'Create the guest profile in Infor first. Prepare stays separate until a profile exists.'
+    : goMissing.length > 0 ? `Fill before Go: ${goMissing.join(', ')}.`
+    : proposal.stage?.state === 'prepared' && proposal.stage.revision === proposal.revision ? 'Prepared in Infor — ready when required fields are complete.'
+    : undefined;
+  const dockReason = profilePrimary?.disabledReason
+    ?? (stagePrimary?.disabled && dirty ? 'Save edits before Prepare.' : undefined)
+    ?? (stagePrimary?.disabled && stageBlocked ? 'Wait for the current Infor step to finish.' : undefined);
   const primary = proposal && goEnabled
     ? confirmingGo ? undefined : {
       label: remainingRooms ? 'Go — save remaining rooms' : proposal.workflow === 'cancel' ? 'Go — cancel in Infor' : proposal.workflow === 'filing' ? 'Go — file PDF' : 'Go — save in Infor',
@@ -1168,16 +1192,16 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     }
     : proposal && isUncertain
     ? proposal.phase === 'uncertain' && advertised(capabilities, proposal.workflow, 'reconcile')
-      ? { label: lock === 'reconciling' ? 'Checking Infor…' : 'Check Infor', disabled: busy || Boolean(issue) || lock === 'reconciling', onClick: () => { void operation('reconcile', proposal); } } : undefined
-    : stagePrimary;
+      ? { label: lock === 'reconciling' ? 'Checking Infor…' : 'Check Infor', disabled: busy || Boolean(issue) || lock === 'reconciling',
+          disabledReason: lock === 'reconciling' ? 'Reconcile already running.' : undefined,
+          onClick: () => { void operation('reconcile', proposal); } } : undefined
+    : profilePrimary ?? (stagePrimary ? { ...stagePrimary, disabledReason: dockReason } : undefined);
   const goFooter = proposal && canGo && !isUncertain && proposal.phase !== 'done' ? <>
     {confirmingGo && proposal && <div role="group" aria-label="Confirm Go">
-      <p>{goLabels[proposal.workflow]}</p>
-      <button type="button" disabled={busy} onClick={() => { void go(proposal); }}>Confirm Go</button>{' '}
+      <button type="button" disabled={busy || Boolean(lock)} onClick={() => { void go(proposal); }}>Confirm Go</button>{' '}
       <button type="button" onClick={() => setConfirmedPreparation(null)}>Back</button>
     </div>}
     {goEnabled && !confirmingGo && stagePrimary && proposal && <button type="button" disabled={stagePrimary.disabled} onClick={stagePrimary.onClick}>Prepare again</button>}
-    {goMissing.length > 0 && <p role="status">Fill before Go: {goMissing.join(', ')}</p>}
   </> : undefined;
 
   return <NavaPane email={email} actions={snapshot && snapshot.proposals.length > 0 ? {
@@ -1187,7 +1211,8 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
       return { id: item.id, label: matching.length > 1 ? `${name} ${matching.findIndex(other => other.id === item.id) + 1}` : name };
     }),
     selectedId, onSelect: id => { cache.selectedId = id; setSelectedId(id); }, available: [], onAdd: () => {},
-  } : undefined} footer={goFooter || undefined} primaryAction={primary && authenticationExpired ? { ...primary, disabled: true } : primary}>
+  } : undefined} footer={goFooter || undefined} dock={dockStatus || dockReason ? { status: dockStatus, disabledReason: primary?.disabledReason ?? dockReason } : undefined}
+    primaryAction={primary && authenticationExpired ? { ...primary, disabled: true, disabledReason: 'Sign in again to continue.' } : primary}>
     {authenticationExpired && <PaneMessage tone="error">Your Nava session has expired. Sign in again to continue.{' '}
       <button type="button" onClick={() => { void restoreAuthentication(); }}>{onAuthenticationRequired ? 'Sign in again' : 'Reload pane'}</button>
     </PaneMessage>}
