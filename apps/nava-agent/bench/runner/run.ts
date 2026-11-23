@@ -480,6 +480,12 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   const promptMail = mailPrompt(mail);
   const twin = createTwin(card, {worldDir: options.worldDir, property: mail.property_code, threadSenders: options.threadSenders});
   const memoryLookup = buildMemoryFromHistory(historyStaysForMemory(twin.world), twin.world.cutoff);
+  const selectedForMemory = record(card.selected_email);
+  const senderHostForMemory = twinSenderHost(selectedForMemory.from_address ?? mail.source_input.selected_message.from?.email, mail.source_input.selected_message.body_text);
+  const senderPartiesForMemory = senderHostForMemory ? {
+    agency: twinLearnedSender(twin.world, senderHostForMemory, 'agency'),
+    organization: twinLearnedSender(twin.world, senderHostForMemory, 'organization'),
+  } : undefined;
   const state: RuntimeState = {
     threadId: card.case_id,
     sessionId: card.case_id,
@@ -542,7 +548,7 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
         const parsed = proposalDraft.safeParse(input);
         const staged = parsed.success ? stagePublishedDraft(parsed.data, toolCalls
           .filter(call => call.name === 'hms_search_parties')
-          .map(call => ({input: call.input, response: call.result})), undefined, memoryLookup) : null;
+          .map(call => ({input: call.input, response: call.result})), undefined, memoryLookup, senderPartiesForMemory) : null;
         if (staged?.kind === 'valid') {
           proposal = staged.draft;
           profile.review_ready_ms = Math.round(performance.now() - started);

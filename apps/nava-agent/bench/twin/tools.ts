@@ -28,11 +28,27 @@ export function twinSenderHost(sender: unknown, body: unknown): string | null {
 }
 
 export function twinLearnedSender(world: TwinWorld, host: string, kind: 'agency' | 'organization'): LearnedSenderHit | null {
-  if (!world.threadSenders?.size) return null;
+  if (!world.threadSenders?.size && !world.senderPairs?.length) return null;
   const matches = new Map<string, Map<string, {name: string; support: number}>>();
   const counted = new Set<string>();
   const directMisses = new Map<string, number>();
   const cutoffDate = new Date(world.cutoff).toISOString().slice(0, 10);
+  const recordStay = (conf: string, domain: string, agency: string, company: string) => {
+    const seen = `${conf}|${domain}`;
+    if (counted.has(seen)) return;
+    counted.add(seen);
+    const name = kind === 'agency' ? agency : agency ? '' : company;
+    if (!name) {
+      if (kind === 'agency') directMisses.set(domain, (directMisses.get(domain) ?? 0) + 1);
+      return;
+    }
+    const names = matches.get(domain) ?? new Map();
+    matches.set(domain, names);
+    const key = partyKey(name);
+    const best = names.get(key) ?? {name, support: 0};
+    best.support++;
+    names.set(key, best);
+  };
   for (const anchor of world.anchors) {
     const domains = new Set<string>();
     for (const pdf of anchorPdfs(anchor)) {
@@ -42,28 +58,19 @@ export function twinLearnedSender(world: TwinWorld, host: string, kind: 'agency'
       if (host === mail.host || host.endsWith(`.${mail.host}`)) domains.add(mail.host);
     }
     if (!domains.size) continue;
-    const state = anchorCaptures(anchor).filter(row => beforeCutoff(row.captured_at, world.cutoff)).map(row => object(row.hms_fields)).find(fields => {
+    const state = anchorCaptures(anchor).map(row => object(row.hms_fields)).find(fields => {
       const departure = isoDate(fields.departure_date ?? fields.departuredate);
       return departure !== null && departure < cutoffDate;
     });
     if (!state) continue;
     const agency = String(state.ta1 ?? '').trim();
-    const name = kind === 'agency' ? agency : agency ? '' : String(state?.company ?? state?.company_text ?? '').trim();
-    if (!name && (kind !== 'agency' || agency)) continue;
-    for (const domain of domains) {
-      const seen = `${anchor.confirmation}|${domain}`;
-      if (counted.has(seen)) continue;
-      counted.add(seen);
-      if (!name) {
-        directMisses.set(domain, (directMisses.get(domain) ?? 0) + 1);
-        continue;
-      }
-      const names = matches.get(domain) ?? new Map();
-      matches.set(domain, names);
-      const key = partyKey(name);
-      const best = names.get(key) ?? {name, support: 0};
-      best.support++;
-      names.set(key, best);
+    const company = String(state.company ?? state.company_text ?? '').trim();
+    for (const domain of domains) recordStay(anchor.confirmation, domain, agency, company);
+  }
+  for (const pair of world.senderPairs ?? []) {
+    if (!(pair.mailAtMs < world.cutoff) || !(pair.sentAtMs < world.cutoff)) continue;
+    if (host === pair.host || host.endsWith(`.${pair.host}`)) {
+      recordStay(pair.confirmation, pair.host, pair.ta1, pair.company);
     }
   }
   for (const [domain, names] of [...matches].sort(([a], [b]) => b.length - a.length)) {

@@ -1,6 +1,7 @@
-import {readFileSync} from 'node:fs';
+import {existsSync, readFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import type {CaseCard, TwinEnvelope} from '../types.js';
+import {extractSenderHost} from '../../src/party-matching.js';
 
 export const DEFAULT_DATA_ROOT='/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
@@ -31,12 +32,22 @@ export type TwinProfile = {
   [key:string]:unknown;
 };
 
+export type SenderPairRow = {
+  confirmation: string;
+  host: string;
+  mailAtMs: number;
+  sentAtMs: number;
+  ta1: string;
+  company: string;
+};
+
 type BaseWorld = {
   anchors:TwinAnchor[];
   profiles:TwinProfile[];
   catalog:Record<string,unknown>;
   /** confirmation → Created On epoch ms from stay360 / sidecar (booking-time identity). */
   createdOn:Map<string, number>;
+  senderPairs:SenderPairRow[];
 };
 
 const baseCache=new Map<string,BaseWorld>();
@@ -208,11 +219,45 @@ function loadBase(root:string):BaseWorld {
       if (createdFieldValue(captureFields) == null) capture.hms_fields = {...captureFields, created: stamp};
     }
   }
+  const pairsCandidates = [
+    process.env.NAVA_BENCH_PAIRS_FILE,
+    join(root, 'pairs.jsonl'),
+    join(DEFAULT_DATA_ROOT, 'world/pairs.jsonl'),
+  ].filter((p): p is string => Boolean(p));
+  const pairsPath = pairsCandidates.find(p => existsSync(p));
+  const senderPairs: SenderPairRow[] = [];
+  if (pairsPath && process.env.NAVA_BENCH_DISABLE_PAIRS !== '1') {
+    for (const row of optionalJsonl<Record<string, unknown>>(pairsPath)) {
+      const anchor = object(row.anchor);
+      const fields = object(anchor.hms_fields);
+      const sentAtMs = Date.parse(String(anchor.sent_at ?? ''));
+      const conf = String(row.confirmation ?? row.case_id ?? '').trim();
+      if (!conf || !Number.isFinite(sentAtMs)) continue;
+      const ta1 = String(fields.ta1 ?? '').trim();
+      const company = String(fields.company ?? '').trim();
+      const thread = object(row.thread);
+      const msgs = Array.isArray(thread.messages) ? thread.messages : [];
+      const seenHosts = new Map<string, number>();
+      for (const raw of msgs) {
+        const msg = object(raw);
+        if (msg.direction !== 'inbound') continue;
+        const at = Date.parse(String(msg.timestamp ?? msg.received_at ?? ''));
+        if (!Number.isFinite(at) || at > sentAtMs) continue;
+        const frm = Array.isArray(msg.from) ? msg.from[0] : msg.from;
+        const host = extractSenderHost(typeof frm === 'string' ? frm : object(frm).email, '');
+        if (host && at < (seenHosts.get(host) ?? Infinity)) seenHosts.set(host, at);
+      }
+      for (const [host, mailAtMs] of seenHosts) {
+        senderPairs.push({confirmation: conf, host, mailAtMs, sentAtMs, ta1, company});
+      }
+    }
+  }
   const base={
     anchors,
     profiles:Array.isArray(profilesFile?.profiles) ? profilesFile.profiles as TwinProfile[] : [],
     catalog: loadCatalogue(root),
     createdOn,
+    senderPairs,
   };
   baseCache.set(root,base);
   return base;
@@ -265,6 +310,7 @@ export class TwinWorld {
   readonly profiles:TwinProfile[];
   readonly catalog:Record<string,unknown>;
   readonly createdOn:Map<string, number>;
+  readonly senderPairs:SenderPairRow[];
   readonly quotes=new Map<string,{at: number; response: TwinEnvelope}>();
   readonly cutoff: number;
   readonly letterEvidence: ReturnType<typeof loadLetterEvidence>;
@@ -279,6 +325,7 @@ export class TwinWorld {
       String(row.property_code ?? row.propertyCode ?? 'HRCEN').toUpperCase() === this.propertyCode;
     this.anchors = base.anchors.filter(inProperty);
     this.createdOn = base.createdOn;
+    this.senderPairs = this.propertyCode === 'HRCEN' ? base.senderPairs : [];
     this.letterEvidence = this.propertyCode === 'HRCEN' ? loadLetterEvidence() : {letters: [], mentions: new Map()};
     this.cutoff=selectedCutoff(caseCard);
     if (!Number.isFinite(this.cutoff)) throw new Error('CASE_AS_OF_MISSING');

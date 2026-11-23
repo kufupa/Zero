@@ -255,14 +255,39 @@ export function formatClientCard(args: {
   return ['[Client Memory Card]', ...lines.slice(0, 4)].join('\n');
 }
 
+export type SenderPartySuggestion = {
+  agency?: LearnedSenderHit | null;
+  organization?: LearnedSenderHit | null;
+};
+
 /** Prefill silent Create blanks or model defaults (`provenance: 'default'`); never override explicit email evidence. */
-export function applyPartyMemoryToDraft(draft: ProposalDraft, lookupFn: MemoryLookupFn): ProposalDraft {
+export function applyPartyMemoryToDraft(
+  draft: ProposalDraft,
+  lookupFn: MemoryLookupFn,
+  senderParties?: SenderPartySuggestion,
+): ProposalDraft {
   if (draft.workflow !== 'create') return draft;
   const fieldSpecs = [...draft.field_specs];
   const bookings = draft.bookings.map((booking, index) => {
     const fields = {...booking.fields};
     const propertyCode = String(booking.property_code ?? '').trim().toUpperCase();
     if (!propertyCode) return booking;
+    if (senderParties?.agency && blank(fields.agency_id)) {
+      const agPath = `/bookings/${index}/fields/agency_name`;
+      const agIdx = fieldSpecs.findIndex(field => field.path === agPath || field.path === agPath.slice(1));
+      const agSpec = agIdx >= 0 ? fieldSpecs[agIdx] : null;
+      if (agSpec?.provenance !== 'staff' && !agSpec?.error) {
+        fields.agency_name = senderParties.agency.name;
+        if (senderParties.agency.nativeId) fields.agency_id = senderParties.agency.nativeId;
+        const quote = `Usual agency for ${senderParties.agency.host} (${senderParties.agency.support} stays)`;
+        const evidence = [{message_id: 'sender_party_memory', attachment_id: null, quote}];
+        if (agIdx >= 0) fieldSpecs[agIdx] = {...fieldSpecs[agIdx], path: agPath, provenance: 'default', error: null, evidence};
+        else fieldSpecs.push({
+          path: agPath, label: 'Booking agency', provenance: 'default', editable: true, required: false,
+          error: null, control: 'text', options: [], evidence,
+        });
+      }
+    }
     const board = typeof fields.board === 'string' ? fields.board : null;
     for (const sug of lookupFn({
       propertyCode, agencyId: asId(fields.agency_id), organizationId: asId(fields.organization_id), board,

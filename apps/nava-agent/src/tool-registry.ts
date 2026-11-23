@@ -6,13 +6,13 @@ import { z } from 'zod';
 import { json, sql, uid } from './db.js';
 import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft, type Workflow } from './schema.js';
 import { normalizeProposalFields } from './proposal-fields.js';
-import { applyPartyMemoryToDraft, lookupPartyMemory, type MemoryLookupFn } from './party-memory.js';
+import { applyPartyMemoryToDraft, lookupPartyMemory, lookupSenderPartyMemory, type MemoryLookupFn, type SenderPartySuggestion } from './party-memory.js';
 import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, lookupExactStay, lookupFilingStay, targetLookup, targetSelection } from './stay-target.js';
 import { mailPrompt } from './mail-prompt.js';
-import { normalizePartyName } from './party-matching.js';
+import { effectiveSenderHost, normalizePartyName } from './party-matching.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
@@ -170,6 +170,7 @@ export function stagePublishedDraft(
   partyReads: Array<{input: unknown; response: unknown}>,
   quoteProperty?:string,
   memoryLookup?: MemoryLookupFn,
+  senderParties?: SenderPartySuggestion,
 ): {kind: 'valid'; draft: ProposalDraft} | {kind: 'invalid'; path: string} {
   let staffDraft = draft;
   if (['create', 'quote'].includes(staffDraft.workflow)) {
@@ -189,8 +190,8 @@ export function stagePublishedDraft(
     staffDraft = withReadParties(staffDraft, partyReads);
   }
   const normalized = normalizeProposalFields(staffDraft,quoteProperty);
-  if (normalized.kind !== 'valid' || !memoryLookup || normalized.draft.workflow !== 'create') return normalized;
-  return {kind: 'valid', draft: applyPartyMemoryToDraft(normalized.draft, memoryLookup)};
+  if (normalized.kind !== 'valid' || (!memoryLookup && !senderParties) || normalized.draft.workflow !== 'create') return normalized;
+  return {kind: 'valid', draft: applyPartyMemoryToDraft(normalized.draft, memoryLookup ?? (() => []), senderParties)};
 }
 export function sameQuoteCriteria(captured:unknown,draft:unknown) {
   const actual=groupedQuoteRequest.safeParse(captured), expected=groupedQuoteRequest.safeParse(draft);
@@ -449,16 +450,25 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           let current=normalized.draft;
           if(current.workflow==='create') {
             try {
+              const selMail=await selectedMail(session.id).catch(()=>null);
+              const host=effectiveSenderHost(selMail?.sender_email,null,null);
+              const senderProp=String(current.bookings[0]?.property_code ?? session.property_code ?? 'HRCEN').trim().toUpperCase();
+              const senderParties:SenderPartySuggestion = host ? {
+                agency: await lookupSenderPartyMemory(sql, {propertyCode:senderProp, host, kind:'agency'}).catch(()=>null),
+                organization: await lookupSenderPartyMemory(sql, {propertyCode:senderProp, host, kind:'organization'}).catch(()=>null),
+              } : {};
+              const withSender=applyPartyMemoryToDraft(current, ()=>[], senderParties);
               const cache=new Map<string, Awaited<ReturnType<typeof lookupPartyMemory>>>();
-              for(const booking of current.bookings) {
+              for(const booking of withSender.bookings) {
                 const propertyCode=String(booking.property_code ?? '').trim().toUpperCase();
                 const agencyId=typeof booking.fields.agency_id==='string'?booking.fields.agency_id:null;
                 const organizationId=typeof booking.fields.organization_id==='string'?booking.fields.organization_id:null;
-                const key=`${propertyCode}\0${agencyId}\0${organizationId}`;
-                if(!cache.has(key)) cache.set(key, await lookupPartyMemory(tx, {propertyCode, agencyId, organizationId}));
+                const board=typeof booking.fields.board==='string'?booking.fields.board:null;
+                const key=`${propertyCode}\0${agencyId}\0${organizationId}\0${board ?? ''}`;
+                if(!cache.has(key)) cache.set(key, await lookupPartyMemory(sql, {propertyCode, agencyId, organizationId, board}));
               }
-              current=applyPartyMemoryToDraft(current, args =>
-                cache.get(`${args.propertyCode}\0${args.agencyId ?? null}\0${args.organizationId ?? null}`) ?? []);
+              current=applyPartyMemoryToDraft(withSender, args =>
+                cache.get(`${args.propertyCode}\0${args.agencyId ?? null}\0${args.organizationId ?? null}\0${args.board ?? ''}`) ?? []);
             } catch { /* party memory is non-fatal */ }
           }
           proposals.push({current,selection:job.selection});
