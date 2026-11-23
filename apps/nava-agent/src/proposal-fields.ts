@@ -192,6 +192,78 @@ export function withAmendSupportedFields(draft: ProposalDraft): ProposalDraft {
   return {...draft, bookings, field_specs, warnings};
 }
 
+function blank(value:unknown):boolean {
+  return value==null || value==='';
+}
+
+function asRecord(value:unknown):Record<string,unknown> {
+  return value && typeof value==='object' && !Array.isArray(value) ? value as Record<string,unknown> : {};
+}
+
+function asNumber(value:unknown):number|null {
+  return typeof value==='number' && Number.isFinite(value) ? value : null;
+}
+
+/** Occupancy / room-type wording → adults when email already stated it. */
+function adultsFromWording(...values:unknown[]):number|null {
+  for(const value of values) {
+    if(typeof value!=='string' || !value.trim()) continue;
+    const text=value.toLowerCase();
+    if(/\bsingle\b/.test(text)) return 1;
+    if(/\b(?:double|twin|triple|family)\b/.test(text)) return /\btriple\b/.test(text) ? 3 : 2;
+  }
+  return null;
+}
+
+/** DD/MM/YYYY (and close forms) from field evidence → ISO date. */
+export function parseQuoteEvidenceDate(quote:unknown):string|null {
+  if(typeof quote!=='string') return null;
+  const match=quote.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/);
+  if(!match) return null;
+  const iso=`${match[3]}-${match[2].padStart(2,'0')}-${match[1].padStart(2,'0')}`;
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) && !Number.isNaN(Date.parse(`${iso}T00:00:00Z`))
+    && new Date(`${iso}T00:00:00Z`).toISOString().slice(0,10)===iso ? iso : null;
+}
+
+/** Lift nested criteria / wording into native quote room fields. Never invent party size. */
+export function liftQuoteRoomFields(room:Record<string,unknown>, fallback:{board?:unknown;rate_preference?:unknown}={}):Record<string,unknown> {
+  const criteria=asRecord(room.criteria);
+  const next={...room};
+  if(blank(next.room_type) && typeof criteria.room_type==='string') next.room_type=criteria.room_type;
+  if(blank(next.board)) {
+    const board=criteria.board ?? fallback.board;
+    if(typeof board==='string' && board.trim()) next.board=/bed and breakfast/i.test(board) ? 'BB'
+      : /dinner/i.test(board) ? 'DBB' : /room only/i.test(board) ? 'RO' : board;
+  }
+  if(blank(next.rate_preference) && typeof fallback.rate_preference==='string') next.rate_preference=fallback.rate_preference;
+  if(blank(next.adults)) next.adults=asNumber(criteria.adults)
+    ?? adultsFromWording(criteria.occupancy,next.room_type,criteria.room_type,next.guest_name);
+  if(blank(next.children)) next.children=asNumber(criteria.children)
+    ?? (Array.isArray(criteria.child_ages) ? criteria.child_ages.length : Array.isArray(next.child_ages) ? next.child_ages.length : 0);
+  if(blank(next.child_ages)) next.child_ages=Array.isArray(criteria.child_ages) ? criteria.child_ages
+    : (asNumber(next.children) ?? 0)===0 ? [] : next.child_ages;
+  if(blank(next.quantity) && typeof next.guest_name==='string' && next.guest_name.trim()) next.quantity=1;
+  if(blank(next.adults) && typeof next.guest_name==='string' && next.guest_name.trim()) next.adults=1;
+  return next;
+}
+
+/** Prepare-time normalize for quote action details (criteria lift + top-level rate pass-through). */
+export function normalizeQuoteActionDetails(details:unknown):unknown {
+  if(!details || typeof details!=='object' || Array.isArray(details)) return details;
+  const root={...details as Record<string,unknown>};
+  if(!Array.isArray(root.groups)) return root;
+  const rate=root.rate_preference, board=root.board;
+  root.groups=root.groups.map(value=>{
+    if(!value || typeof value!=='object' || Array.isArray(value)) return value;
+    const group={...value as Record<string,unknown>};
+    if(!Array.isArray(group.rooms)) return group;
+    group.rooms=group.rooms.map(room=>room && typeof room==='object' && !Array.isArray(room)
+      ? liftQuoteRoomFields({...room as Record<string,unknown>},{board:group.board ?? board,rate_preference:rate}) : room);
+    return group;
+  });
+  return root;
+}
+
 export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
   if(draft.workflow!=='quote') return draft;
   const fieldSpecs=[...draft.field_specs];
@@ -203,7 +275,7 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
       if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control};
       else fieldSpecs.push({path,label,editable:true,required,control,provenance:'unknown',error:null,options:[],evidence:[]});
     };
-    const details={...action.details};
+    const details={...asRecord(normalizeQuoteActionDetails(action.details))};
     if(separateQuotes || typeof details.party_name==='string') {
       if(typeof details.party_name!=='string') details.party_name='';
       add(`/actions/${actionIndex}/details/party_name`,'Guest or party name','text',false);
@@ -233,6 +305,13 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
       const groupRoot=`/actions/${actionIndex}/details/groups/${groupIndex}`;
       if(!Object.hasOwn(group,'arrival_date')) group.arrival_date=null;
       if(!Object.hasOwn(group,'departure_date')) group.departure_date=null;
+      for(const key of ['arrival_date','departure_date'] as const) {
+        if(!blank(group[key])) continue;
+        const path=`${groupRoot}/${key}`, bare=path.slice(1);
+        const evidence=fieldSpecs.find(spec=>spec.path===path || spec.path===bare)?.evidence ?? [];
+        const iso=evidence.map(item=>parseQuoteEvidenceDate(item.quote)).find((value):value is string=>!!value);
+        if(iso) group[key]=iso;
+      }
       add(`${groupRoot}/arrival_date`,'Arrival','date',true);
       add(`${groupRoot}/departure_date`,'Departure','date',true);
       if(!Array.isArray(group.rooms)) return group;
@@ -240,7 +319,8 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
       if(group.rooms.length) add(`${groupRoot}/board`,'Meal plan','text',false);
       const rooms=group.rooms.map((value:unknown,roomIndex:number)=>{
         if(!value || typeof value!=='object' || Array.isArray(value)) return value;
-        const room:Record<string,unknown>={...value};
+        const room=liftQuoteRoomFields({...value as Record<string,unknown>},{
+          board:group.board ?? details.board, rate_preference:details.rate_preference});
         const root=`${groupRoot}/rooms/${roomIndex}`;
         for(const [key,label,control,required] of [
           ['quantity','Rooms','number',true], ['adults','Adults','number',true], ['children','Children','number',false],

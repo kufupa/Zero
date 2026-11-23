@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isEmptyQuoteGroup, quoteInput as nativeGroupedQuote, type QuoteInput } from '../tools/quote/schema.js';
-import { hrcenCode } from './proposal-fields.js';
+import { hrcenCode, normalizeQuoteActionDetails } from './proposal-fields.js';
 import { CENTURION_RATE_CATALOGUE } from '../../server-pilot/src/hms/centurion-rate-catalogue.js';
 
 const id = z.string();
@@ -47,7 +47,7 @@ const calendarDate = z.string().date();
 const nativeGroup = nativeGroupedQuote.shape.groups.element;
 const board = z.string().nullish().catch(null);
 const partyField = z.string().trim().min(1).nullish().catch(null);
-export const groupedQuoteRequest = nativeGroupedQuote.strip().extend({
+export const groupedQuoteRequest = z.preprocess(normalizeQuoteActionDetails, nativeGroupedQuote.strip().extend({
   board, organization_id:partyField, organization_name:partyField, agency_id:partyField, agency_name:partyField,
   party_name:nativeGroupedQuote.shape.party_name.nullish().catch(null),
   groups:z.preprocess(value=>Array.isArray(value) ? value.filter(group=>!isEmptyQuoteGroup(group)) : value,
@@ -67,25 +67,26 @@ export const groupedQuoteRequest = nativeGroupedQuote.strip().extend({
     groups:groups.map(({board:groupBoard,rooms,...group})=>({...group,rooms:rooms.map(({board:roomBoard,room_type,rate_preference,...room})=>{
       const meal=roomBoard ?? groupBoard ?? board;
       const hrcen=quote.property_code==='HRCEN';
-      const roomCode=hrcen && room_type && /^(?:(?:standard|deluxe|exec(?:utive)?|lux(?:ury)?|single)(?: (?:queen|king|twin))?(?: room)?|suite)$/i.test(room_type)
-        ? hrcenCode('room_type',room_type,meal) : null;
+      const roomCode=hrcen ? hrcenCode('room_type',room_type,meal) : null;
       const roomCodes=hrcen && room_type && /^(?:STQN|STWN|SKNG|DLXQN|DLXTWN|DLXKNG|EXKNG|LUXKNG|SUITE)$/.test(room_type)
         ? [room_type] : /^(?:standard|deluxe)(?: room)?$/i.test(room_type ?? '') && roomCode
           ? (roomCode.startsWith('DLX')?['DLXQN','DLXTWN','DLXKNG']:['STQN','STWN','SKNG']) : roomCode ? [roomCode] : [];
       const rateCode=hrcen ? hrcenCode('rate_plan',rate_preference,meal) ??
         (rate_preference && Object.hasOwn(CENTURION_RATE_CATALOGUE,rate_preference) ? rate_preference : null) : null;
+      // Government rates need an organization bind; bare NGOV* filters crash Hotel Availability.
+      const bindRate=rateCode && (!/^NGOV/.test(rateCode) || organization_id);
       const bases=room.required?.mealPlanBases;
       const roomOnly=meal && /^(?:ro|room only|room_only)$/i.test(meal);
       const breakfast=!meal || /\b(?:bb|dbb|breakfast|dinner)\b/i.test(meal) || /^b&b$/i.test(meal);
       const dinner=(basis:string)=>/^(?:dbb|dinner_bed_breakfast|dinner[, ]+bed)/i.test(basis);
       return {...room,required:{...room.required,
         ...(!room.required?.roomCodes?.length && roomCodes.length ? {roomCodes} : {}),
-        ...(!room.required?.rateCodes?.length && rateCode ? {rateCodes:[rateCode]} : {}),
+        ...(!room.required?.rateCodes?.length && bindRate ? {rateCodes:[rateCode]} : {}),
         ...(roomOnly ? {mealPlanBases:['room_only']} : bases?.length ? {mealPlanBases:bases.map(basis=>dinner(basis)?'breakfast':basis)} :
           breakfast ? {mealPlanBases:['breakfast']} : {}),
       }};
     })})),
-  }));
+  })));
 export type Workflow = ProposalDraft['workflow'];
 const S={type:'string'};
 const J={};
