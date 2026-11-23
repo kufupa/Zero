@@ -19,26 +19,45 @@ function partyKey(value: unknown): string {
   return tokens.join('');
 }
 
-function twinLearnedSender(world: TwinWorld, host: string, kind: 'agency' | 'organization'): LearnedSenderHit | null {
+export function twinSenderHost(sender: unknown, body: unknown): string | null {
+  if (typeof sender === 'string' && /(?:^|[@.])legacyhotels\.co\.za>?\s*$/i.test(sender)) {
+    const forwarded = typeof body === 'string' ? /^\s*>?\s*From:[^\r\n<>]*<([^<>\s]+@[^<>\s]+)>/im.exec(body) : null;
+    return extractSenderHost(forwarded?.[1], '');
+  }
+  return extractSenderHost(sender, '');
+}
+
+export function twinLearnedSender(world: TwinWorld, host: string, kind: 'agency' | 'organization'): LearnedSenderHit | null {
+  if (!world.threadSenders?.size) return null;
   const matches = new Map<string, Map<string, {name: string; support: number}>>();
   const counted = new Set<string>();
+  const directMisses = new Map<string, number>();
   const cutoffDate = new Date(world.cutoff).toISOString().slice(0, 10);
   for (const anchor of world.anchors) {
-    const state = anchorCaptures(anchor).map(row => object(row.hms_fields)).find(fields => {
-      const departure = isoDate(fields.departure_date ?? fields.departuredate);
-      return departure !== null && departure < cutoffDate;
-    });
-    const agency = String(state?.ta1 ?? state?.agency_text ?? '').trim();
-    const name = kind === 'agency' ? agency : agency ? '' : String(state?.company ?? state?.company_text ?? '').trim();
-    if (!name) continue;
+    const domains = new Set<string>();
     for (const pdf of anchorPdfs(anchor)) {
       if (!beforeCutoff(pdf.sent_at, world.cutoff)) continue;
       const mail = world.threadSenders?.get(String(pdf.thread_id ?? ''));
-      if (!mail || mail.at >= world.cutoff || mail.at > Date.parse(String(pdf.sent_at))) continue;
-      const domain = mail.host;
+      if (!mail || !(mail.at < world.cutoff) || mail.at > Date.parse(String(pdf.sent_at))) continue;
+      if (host === mail.host || host.endsWith(`.${mail.host}`)) domains.add(mail.host);
+    }
+    if (!domains.size) continue;
+    const state = anchorCaptures(anchor).filter(row => beforeCutoff(row.captured_at, world.cutoff)).map(row => object(row.hms_fields)).find(fields => {
+      const departure = isoDate(fields.departure_date ?? fields.departuredate);
+      return departure !== null && departure < cutoffDate;
+    });
+    if (!state) continue;
+    const agency = String(state.ta1 ?? '').trim();
+    const name = kind === 'agency' ? agency : agency ? '' : String(state?.company ?? state?.company_text ?? '').trim();
+    if (!name && (kind !== 'agency' || agency)) continue;
+    for (const domain of domains) {
       const seen = `${anchor.confirmation}|${domain}`;
-      if (counted.has(seen) || !(host === domain || host.endsWith(`.${domain}`))) continue;
+      if (counted.has(seen)) continue;
       counted.add(seen);
+      if (!name) {
+        directMisses.set(domain, (directMisses.get(domain) ?? 0) + 1);
+        continue;
+      }
       const names = matches.get(domain) ?? new Map();
       matches.set(domain, names);
       const key = partyKey(name);
@@ -47,11 +66,12 @@ function twinLearnedSender(world: TwinWorld, host: string, kind: 'agency' | 'org
       names.set(key, best);
     }
   }
-  for (const [, names] of [...matches].sort(([a], [b]) => b.length - a.length)) {
+  for (const [domain, names] of [...matches].sort(([a], [b]) => b.length - a.length)) {
     const [best, next] = [...names.values()].sort((a, b) => b.support - a.support);
     if (!best || best.support < 2 || next && next.support === best.support) continue;
-    const hit = partyRecords(world, kind).find(row => partyKey(row.meaning ?? row.name) === partyKey(best.name));
-    return {host, kind, ...best, nativeId: hit ? String(hit.nativeId ?? hit.code ?? '') || null : null};
+    if (kind === 'agency' && (best.support < 3 || best.support / (best.support + (directMisses.get(domain) ?? 0)) < 0.85)) continue;
+    const hit = partyRecords(world, kind).find(row => partyKey(row.meaning ?? row.name ?? row.label) === partyKey(best.name));
+    return {host, kind, ...best, nativeId: hit ? String(hit.nativeId ?? hit.code ?? hit.id ?? '') || null : null};
   }
   return null;
 }
@@ -115,16 +135,21 @@ function reservationNames(stay: Record<string, unknown>) {
 function matchReservation(stay: Record<string, unknown>, criteria: Record<string, unknown>): boolean {
   const confirmation = String(stay.confirmation ?? stay.confirmationnumber ?? '');
   const rid = typeof criteria.reservation_id === 'string' ? normalizeReservationReference(criteria.reservation_id) : '';
-  if (rid && !matchesId(rid, confirmation)) return false;
+  const hasGuest = Boolean(name(criteria.last_name) || name(criteria.guest_name));
+  const useId = rid && (/^(?:\d+-\d+|\d{6,10})$/.test(rid) || !hasGuest);
+  if (useId && !matchesId(rid, confirmation)) return false;
   const {full, first, last} = reservationNames(stay);
-  const surname = stripHonorifics(name(criteria.last_name ?? criteria.guest_name));
+  const surname = stripHonorifics((name(criteria.last_name) || name(criteria.guest_name)));
   const given = stripHonorifics(name(criteria.guest_first_name));
   const hasExplicitLast = stay.last_name != null || stay.lastName != null || stay.lastname != null;
   if (surname.includes('/') && criteria.guest_name_is_surname !== true) {
     const [left, right] = surname.split(/\s*\/\s*/).map(stripHonorifics);
     if (!((left === last && right === first) || (right === last && left === first))) return false;
   } else {
-    if (surname && surname !== last && !(criteria.guest_name_is_surname === true && !hasExplicitLast && full.endsWith(` ${surname}`))) return false;
+    const fullNameMatch = !criteria.last_name && criteria.guest_name_is_surname !== true && surname === stripHonorifics(full);
+    const compoundSurname = (criteria.last_name || criteria.guest_name_is_surname === true)
+      && !hasExplicitLast && full.endsWith(` ${surname}`);
+    if (surname && surname !== last && !fullNameMatch && !compoundSurname) return false;
     if (given && given !== first && !full.startsWith(`${given} `) && !first.startsWith(`${given} `) && !first.endsWith(` ${given}`)) return false;
   }
   for (const date of ['arrival', 'departure']) {
@@ -190,7 +215,9 @@ async function searchParties(world: TwinWorld, input: Record<string, unknown>, c
   const kind = String(input.kind ?? 'guest');
   const field = String(input.field ?? 'last_name');
   const rawQuery = String(input.query ?? '').trim();
-  const host = extractSenderHost(input.sender_host, '') ?? extractSenderHost(object(card.selected_email).from_address, rawQuery);
+  const selected = object(card.selected_email);
+  const host = twinSenderHost(selected.from_address ?? selected.from, selected.body ?? selected.body_text)
+    ?? extractSenderHost(input.sender_host, rawQuery);
   if (kind === 'guest' && !world.profiles.length) {
     return fail('TWIN_PRE_CUTOFF_PROFILE_UNAVAILABLE', 'No dated guest profiles cover this property.', false, unobserved);
   }
@@ -276,7 +303,7 @@ function readReservation(stays: Stays, input: Record<string, unknown>): TwinEnve
 
 function searchReservations(stays: Stays, input: Record<string, unknown>): TwinEnvelope {
   const criteria = object(input.criteria);
-  if (!criteria.reservation_id && !criteria.guest_name && !criteria.guest_first_name) {
+  if (!criteria.reservation_id && !criteria.guest_name && !criteria.last_name && !criteria.guest_first_name) {
     return fail('INPUT_GAP', 'Provide a confirmation number or a guest surname.');
   }
   const observed = [...stays.values()];
