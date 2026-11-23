@@ -1,7 +1,9 @@
 /** Party booking memory: high-confidence usual fields from prior same-party stays. */
 import type { ProposalDraft } from './schema.js';
-import { createTrackDefault } from './proposal-fields.js';
-import type { LearnedSenderHit } from './party-matching.js';
+import { createTrackDefault, normalizeMemoryBoard } from './proposal-fields.js';
+import { normalizePartyName, type LearnedSenderHit } from './party-matching.js';
+
+export { normalizeMemoryBoard };
 
 /** Empirically gated: rate_plan ≥80%; guarantee_type ≥85% per-party (never blanket agency→GTDAGT). */
 export const MEMORY_ELIGIBLE_FIELDS = ['rate_plan', 'guarantee_type'] as const;
@@ -25,15 +27,14 @@ type HitRow = {party_kind: string; field_name: string; field_value: string; hits
 const blank = (v: unknown) => v == null || (typeof v === 'string' && !v.trim());
 const asId = (v: unknown) => typeof v === 'string' && v.trim() ? v.trim() : null;
 
-export function normalizeMemoryBoard(board: unknown): 'BB' | 'DBB' | 'RO' | null {
-  const raw = String(board ?? '').trim();
-  if (!raw) return null;
-  const upper = raw.toUpperCase();
-  if (upper === 'BB' || upper === 'DBB' || upper === 'RO') return upper;
-  if (/\bDBB\b|DINNER/.test(upper)) return 'DBB';
-  if (/\bROOM\s*ONLY\b|\bRO\b/.test(upper)) return 'RO';
-  if (/BED\s*(?:AND|&)\s*BREAKFAST|\bB\s*&\s*B\b|\bBB\b|BREAKFAST/.test(upper)) return 'BB';
-  return null;
+/** Verified direct employer/org only — never intermediary invoice addressee as organization. */
+export function verifiedDirectOrgMatch(
+  hit: LearnedSenderHit | null | undefined,
+  agencyName?: string | null,
+): LearnedSenderHit | null {
+  if (!hit || hit.kind !== 'organization' || (!hit.name && !hit.nativeId)) return null;
+  if (agencyName && normalizePartyName(hit.name) === normalizePartyName(agencyName)) return null;
+  return hit;
 }
 
 function precisionGate(fieldName: string, hits: number, total: number): boolean {
@@ -260,6 +261,15 @@ export type SenderPartySuggestion = {
   organization?: LearnedSenderHit | null;
 };
 
+function canInstallPartyDefault(
+  current: unknown,
+  spec: {provenance: string; evidence: unknown[]; error: string | null} | null,
+): boolean {
+  if (spec?.provenance === 'staff' || spec?.error) return false;
+  if (!blank(current) && (spec?.evidence?.length || spec?.provenance === 'ai' || spec?.provenance === 'hms')) return false;
+  return blank(current) || spec?.provenance === 'default' || spec?.provenance === 'unknown' || !spec;
+}
+
 /** Prefill silent Create blanks or model defaults (`provenance: 'default'`); never override explicit email evidence. */
 export function applyPartyMemoryToDraft(
   draft: ProposalDraft,
@@ -276,7 +286,7 @@ export function applyPartyMemoryToDraft(
       const agPath = `/bookings/${index}/fields/agency_name`;
       const agIdx = fieldSpecs.findIndex(field => field.path === agPath || field.path === agPath.slice(1));
       const agSpec = agIdx >= 0 ? fieldSpecs[agIdx] : null;
-      if (agSpec?.provenance !== 'staff' && !agSpec?.error) {
+      if (canInstallPartyDefault(fields.agency_name, agSpec)) {
         fields.agency_name = senderParties.agency.name;
         if (senderParties.agency.nativeId) fields.agency_id = senderParties.agency.nativeId;
         const quote = `Usual agency for ${senderParties.agency.host} (${senderParties.agency.support} stays)`;
@@ -288,7 +298,27 @@ export function applyPartyMemoryToDraft(
         });
       }
     }
-    const board = typeof fields.board === 'string' ? fields.board : null;
+    const orgHit = verifiedDirectOrgMatch(
+      senderParties?.organization,
+      typeof fields.agency_name === 'string' ? fields.agency_name : senderParties?.agency?.name,
+    );
+    if (orgHit && blank(fields.organization_id)) {
+      const orgPath = `/bookings/${index}/fields/organization_name`;
+      const orgIdx = fieldSpecs.findIndex(field => field.path === orgPath || field.path === orgPath.slice(1));
+      const orgSpec = orgIdx >= 0 ? fieldSpecs[orgIdx] : null;
+      if (canInstallPartyDefault(fields.organization_name, orgSpec)) {
+        fields.organization_name = orgHit.name;
+        if (orgHit.nativeId) fields.organization_id = orgHit.nativeId;
+        const quote = `Usual company for ${orgHit.host} (${orgHit.support} stays)`;
+        const evidence = [{message_id: 'sender_party_memory', attachment_id: null, quote}];
+        if (orgIdx >= 0) fieldSpecs[orgIdx] = {...fieldSpecs[orgIdx], path: orgPath, provenance: 'default', error: null, evidence};
+        else fieldSpecs.push({
+          path: orgPath, label: 'Company', provenance: 'default', editable: true, required: false,
+          error: null, control: 'text', options: [], evidence,
+        });
+      }
+    }
+    const board = normalizeMemoryBoard(fields.board) ?? (typeof fields.board === 'string' ? fields.board : null);
     for (const sug of lookupFn({
       propertyCode, agencyId: asId(fields.agency_id), organizationId: asId(fields.organization_id), board,
     })) {
@@ -296,6 +326,7 @@ export function applyPartyMemoryToDraft(
       const spec = fieldSpecs.findIndex(field => field.path === path || field.path === path.slice(1));
       const existing = spec >= 0 ? fieldSpecs[spec] : null;
       const isDefault = existing?.provenance === 'default' && !existing.error;
+      // Rate/guarantee: verified party(+board) default only when silent or unsubstantiated default.
       if (!blank(fields[sug.field]) && !isDefault) continue;
       if (!isDefault && existing && (existing.provenance === 'staff' || existing.evidence.length || existing.error)) continue;
       fields[sug.field] = sug.value;

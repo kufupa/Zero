@@ -21,7 +21,7 @@ import type {CaseCard} from '../types.js';
 import {rulerStamp, scoreCase, type CaseScore, type Scoreboard} from './score.js';
 import {applyGoldOverlay, loadReplayGold} from './gold-overlay.js';
 import {loadCaseCards, readOptionalJson, skillsPath, writeBoards, type ReplayOptions} from './artifacts.js';
-import {normalizePartyName} from '../../src/party-matching.js';
+import {effectiveSenderHost, normalizePartyName} from '../../src/party-matching.js';
 import {twinLearnedSender, twinSenderHost} from '../twin/tools.js';
 import {anchorCaptures, beforeCutoff, createdFieldValue, defaultWorldDir, parseCreatedOn, selectedCutoff, type ThreadSenders, type TwinWorld} from '../twin/world.js';
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
@@ -481,7 +481,9 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   const twin = createTwin(card, {worldDir: options.worldDir, property: mail.property_code, threadSenders: options.threadSenders});
   const memoryLookup = buildMemoryFromHistory(historyStaysForMemory(twin.world), twin.world.cutoff);
   const selectedForMemory = record(card.selected_email);
-  const senderHostForMemory = twinSenderHost(selectedForMemory.from_address ?? mail.source_input.selected_message.from?.email, mail.source_input.selected_message.body_text);
+  const senderHostForMemory = effectiveSenderHost(
+    selectedForMemory.from_address ?? mail.source_input.selected_message.from?.email,
+    mail.source_input.selected_message.body_text, mail.source_input.selected_message.subject);
   const senderPartiesForMemory = senderHostForMemory ? {
     agency: twinLearnedSender(twin.world, senderHostForMemory, 'agency'),
     organization: twinLearnedSender(twin.world, senderHostForMemory, 'organization'),
@@ -598,7 +600,9 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   const prefix = `nava-mail-event:${opaqueId} Read the selected thread and handle its request.`;
   let nudge = prefix;
   const selected = record(card.selected_email);
-  const host = twinSenderHost(selected.from_address ?? mail.source_input.selected_message.from?.email, mail.source_input.selected_message.body_text);
+  const host = effectiveSenderHost(
+    selected.from_address ?? mail.source_input.selected_message.from?.email,
+    mail.source_input.selected_message.body_text, mail.source_input.selected_message.subject);
   const party = host && (twinLearnedSender(twin.world, host, 'agency') ?? twinLearnedSender(twin.world, host, 'organization'));
   if (party) {
     const defaults = memoryLookup({

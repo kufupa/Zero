@@ -243,6 +243,7 @@ function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{nati
 async function selectedMail(sessionId:string) {
   const [row]=await sql`SELECT t.id AS thread_id,t.source,t.source_thread_id,t.mailbox_id,m.source_message_id AS selected_message_id,
     t.property_code,t.mode,m.received_at::text AS selected_received_at,m.payload->'from'->>'email' AS sender_email,
+    m.payload->>'subject' AS subject,COALESCE(m.payload->>'body_text', m.payload->>'body') AS body_text,
     s.config->>'input_cutoff' AS input_cutoff,s.config->>'replay_id' AS replay_id
     FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id
     LEFT JOIN nava_agent.agent_event e ON e.session_id=s.id AND e.id=s.config->>'worker_delivery_id' AND e.kind='mail_pending'
@@ -255,7 +256,7 @@ async function selectedMail(sessionId:string) {
 export async function sessionMailPrompt(sessionId:string, clientCard?:string|null):Promise<unknown|null> {
   const selected=await selectedMail(sessionId);
   if(!selected?.thread_id || !selected.selected_message_id) return null;
-  const {sender_email:_sender,input_cutoff:_cutoff,replay_id:_replay,thread_id,...thread}=selected;
+  const {sender_email:_sender,subject:_subject,body_text:_body,input_cutoff:_cutoff,replay_id:_replay,thread_id,...thread}=selected;
   const messages=await sql`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${thread_id}
     AND received_at <= ${thread.selected_received_at ?? null}::timestamptz ORDER BY received_at,id`;
   const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${sessionId} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
@@ -314,7 +315,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
       }
     } else if(name==='mail_read_thread') {
       schemas.mail_read_thread.parse(input);
-      const {sender_email: _sender, input_cutoff: _cutoff, replay_id: _replay, thread_id: _thread, ...thread}=await selectedMail(session.id) ?? {};
+      const {sender_email: _sender, subject: _subject, body_text: _body, input_cutoff: _cutoff, replay_id: _replay, thread_id: _thread, ...thread}=await selectedMail(session.id) ?? {};
       const messages=await sql`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${session.thread_id}
         AND received_at <= ${thread.selected_received_at ?? null}::timestamptz ORDER BY received_at,id`;
       const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
@@ -451,7 +452,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           if(current.workflow==='create') {
             try {
               const selMail=await selectedMail(session.id).catch(()=>null);
-              const host=effectiveSenderHost(selMail?.sender_email,null,null);
+              const host=effectiveSenderHost(selMail?.sender_email,selMail?.body_text ?? null,selMail?.subject ?? null);
               const senderProp=String(current.bookings[0]?.property_code ?? session.property_code ?? 'HRCEN').trim().toUpperCase();
               const senderParties:SenderPartySuggestion = host ? {
                 agency: await lookupSenderPartyMemory(sql, {propertyCode:senderProp, host, kind:'agency'}).catch(()=>null),

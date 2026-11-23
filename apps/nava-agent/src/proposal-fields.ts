@@ -79,6 +79,20 @@ function createOccupancyFields(draft: ProposalDraft): ProposalDraft {
   return {...draft,bookings,field_specs:fieldSpecs};
 }
 
+/** Native guarantee picker choices — mirrors cloud-create-policy.mjs CREATE_GUARANTEES (no inference). */
+export const CREATE_GUARANTEE_OPTIONS = [
+  {value: 'AVOUCH', label: 'Awaiting Voucher', meaning: null},
+  {value: 'CNFREC', label: 'Confirmation Received', meaning: null},
+  {value: 'DEPREQ', label: 'Deposit Requested', meaning: null},
+  {value: 'GRPDEF', label: 'Group Definite', meaning: null},
+  {value: 'GTDAGT', label: 'Guaranteed By Agent', meaning: null},
+  {value: 'GTDCMP', label: 'Guaranteed By Company', meaning: null},
+  {value: 'GTDCC', label: 'Guaranteed By Credit Card', meaning: null},
+  {value: 'GTDDEP', label: 'Guaranteed By Deposit', meaning: null},
+  {value: 'NGG', label: 'Non-Guaranteed Group', meaning: null},
+  {value: 'NGI', label: 'Non-Guaranteed Individual', meaning: null},
+] as const;
+
 export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
   if(draft.workflow!=='create' || !['propose','needs_info','staff_review'].includes(draft.disposition)) return draft;
   const fieldSpecs=draft.field_specs.map(spec=>Object.hasOwn(createStaffNoteLabels,spec.path.split('/').at(-1) ?? '')
@@ -93,7 +107,7 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
     for(const [key,label,required,control] of [
       ['room_type','Room type',true,'combobox'], ['rate_plan','Rate plan',true,'combobox'],
       ['source_of_business','Booking source',true,'combobox'], ['track','Track',true,'combobox'],
-      ['guarantee_type','Guarantee type',true,'text'], ['guest_profile_id','Guest profile ID',false,'text'],
+      ['guarantee_type','Guarantee type',true,'select'], ['guest_profile_id','Guest profile ID',false,'text'],
       ['first_name','Guest first name',true,'text'], ['last_name','Guest last name',true,'text'],
       ['arrival_date','Arrival',true,'date'], ['departure_date','Departure',true,'date'],
       ['guest_email','Guest email',false,'text'],
@@ -113,8 +127,13 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
       const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
       if(key==='note' && typeof fields.reservation_note==='string') fields.note=createReservationNote({note:fields.note,reservation_note:fields.reservation_note});
       if(!Object.hasOwn(fields,key)) fields[key]=createFieldDefault(key,fields);
-      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,required,control};
-      else fieldSpecs.push({path,label,editable:true,required,control,provenance:'unknown',error:null,options:[],evidence:[]});
+      const guaranteeOpts = key==='guarantee_type' ? [...CREATE_GUARANTEE_OPTIONS] : [];
+      if(existing>=0) {
+        const prev=fieldSpecs[existing];
+        fieldSpecs[existing]={...prev,path,editable:true,required,control,
+          ...(key==='guarantee_type' && !(prev.options?.length) ? {options:guaranteeOpts} : {})};
+      } else fieldSpecs.push({path,label,editable:true,required,control,provenance:'unknown',error:null,
+        options:guaranteeOpts,evidence:[]});
     }
     delete fields.reservation_note;
     return {...booking,fields};
@@ -353,7 +372,41 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
   return {...draft,actions,field_specs:fieldSpecs};
 }
 
-/** HRCEN requested rate/room wording → native code Prepare accepts. Codes pass through; unknown wording stays for staff. */
+/** Explicit BB/DBB/RO only (DBB before BB). Unrecognized → null (keep raw for staff). */
+export function normalizeMemoryBoard(board: unknown): 'BB' | 'DBB' | 'RO' | null {
+  const raw = String(board ?? '').trim();
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  if (upper === 'BB' || upper === 'DBB' || upper === 'RO') return upper;
+  if (/\bDBB\b|DINNER/.test(upper)) return 'DBB';
+  if (/\bROOM\s*ONLY\b|\bRO\b/.test(upper)) return 'RO';
+  if (/BED\s*(?:AND|&)\s*BREAKFAST|\bB\s*&\s*B\b|\bBB\b|BREAKFAST/.test(upper)) return 'BB';
+  return null;
+}
+
+/** Create-only room: catalogue code or exact category+bed (or singleton class). Bed/class alone → null. */
+export function createRoomTypeCode(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const raw = value.trim();
+  const upper = raw.toUpperCase();
+  if (/^(?:STQN|STWN|SKNG|DLXQN|DLXTWN|DLXKNG|EXKNG|LUXKNG|SUITE)$/.test(upper)) return upper;
+  const text = raw.toLowerCase();
+  const bed = /\btwin\b/.test(text) ? 'TWN' : /\bking\b/.test(text) ? 'KNG'
+    : /\bqueen\b|\bdouble\b|\bsingle\b/.test(text) ? 'QN' : null;
+  const deluxe = /\bdeluxe\b|\bdlx\b/.test(text);
+  const lux = /\blux(?:ury)?\b/.test(text);
+  const exec = /\bexec(?:utive)?\b/.test(text);
+  const std = /\bstandard\b|\bstd\b/.test(text);
+  const suite = /\bsuite\b/.test(text);
+  if (suite && !deluxe && !lux && !exec && !std) return 'SUITE';
+  if (lux) return bed === null || bed === 'KNG' ? 'LUXKNG' : null;
+  if (exec) return bed === null || bed === 'KNG' ? 'EXKNG' : null;
+  if (deluxe && bed) return `DLX${bed}`;
+  if (std && bed) return ({TWN: 'STWN', KNG: 'SKNG', QN: 'STQN'} as const)[bed];
+  return null;
+}
+
+/** HRCEN rate/room wording → native code. Shared Amend/Quote mapper — do not tighten Create guesses here. */
 export function hrcenCode(kind:'rate_plan'|'room_type',value:unknown,board:unknown):string|null {
   if(typeof value!=='string' || !value.trim()) return null;
   const text=value.toLowerCase(), meal=String(board ?? '').toUpperCase();
@@ -433,9 +486,12 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
         if(!ref || (sameParty && !/\d/.test(ref))) fields.billing_reference=null;
         else fields.billing_reference=ref;
       }
+      // Canonicalize explicit board after note/warnings keep requested wording.
+      const boardCanon=normalizeMemoryBoard(fields.board);
+      if(boardCanon) fields.board=boardCanon;
       for(const key of ['rate_plan','room_type'] as const) {
         const requested=fields[key];
-        const code=hrcenCode(key,fields[key],fields.board);
+        const code=key==='room_type' ? createRoomTypeCode(fields[key]) : hrcenCode(key,fields[key],fields.board);
         if(code) fields[key]=code;
         else if(key==='rate_plan' && /\bdbb\b|dinner/i.test(`${fields.board ?? ''} ${fields[key] ?? ''}`)
           && /\bbar\b|best available|rack|corporate|negotiated|contract|\bNCOR1B\b/i.test(String(fields[key] ?? ''))) fields[key]=null;
