@@ -381,10 +381,8 @@ export function createTrackDefault(fields: Record<string,unknown>): string | nul
     ['CMPBB','CMPDBB','CMPRO'].includes(rate)?'COM':null;
 }
 
-function createGuaranteeDefault(fields: Record<string,unknown>): string | null {
-  if(fields.agency_id || fields.agency_name) return null;
-  if(fields.rate_plan==='NG156B' && fields.organization_id) return 'GTDCMP';
-  if(fields.rate_plan==='CMPBB' && !fields.organization_id && !fields.organization_name) return 'CNFREC';
+function createGuaranteeDefault(_fields: Record<string,unknown>): string | null {
+  // Hardcoded NG156B→GTDCMP / CMPBB→CNFREC removed; party_booking_memory fills silent blanks.
   return null;
 }
 

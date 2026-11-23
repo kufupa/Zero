@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { json, sql, uid } from './db.js';
 import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft, type Workflow } from './schema.js';
 import { normalizeProposalFields } from './proposal-fields.js';
+import { applyPartyMemoryToDraft, lookupPartyMemory, type MemoryLookupFn } from './party-memory.js';
 import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
@@ -166,6 +167,7 @@ export function stagePublishedDraft(
   draft: ProposalDraft,
   partyReads: Array<{input: unknown; response: unknown}>,
   quoteProperty?:string,
+  memoryLookup?: MemoryLookupFn,
 ): {kind: 'valid'; draft: ProposalDraft} | {kind: 'invalid'; path: string} {
   let staffDraft = draft;
   if (['create', 'quote'].includes(staffDraft.workflow)) {
@@ -184,7 +186,9 @@ export function stagePublishedDraft(
     }
     staffDraft = withReadParties(staffDraft, partyReads);
   }
-  return normalizeProposalFields(staffDraft,quoteProperty);
+  const normalized = normalizeProposalFields(staffDraft,quoteProperty);
+  if (normalized.kind !== 'valid' || !memoryLookup || normalized.draft.workflow !== 'create') return normalized;
+  return {kind: 'valid', draft: applyPartyMemoryToDraft(normalized.draft, memoryLookup)};
 }
 export function sameQuoteCriteria(captured:unknown,draft:unknown) {
   const actual=groupedQuoteRequest.safeParse(captured), expected=groupedQuoteRequest.safeParse(draft);
@@ -436,7 +440,22 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
             ? stagePublishedDraft(staffDraft,partyReads,quoteProperty)
             : normalizeProposalFields(staffDraft);
           if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
-          proposals.push({current:normalized.draft,selection:job.selection});
+          let current=normalized.draft;
+          if(current.workflow==='create') {
+            try {
+              const cache=new Map<string, Awaited<ReturnType<typeof lookupPartyMemory>>>();
+              for(const booking of current.bookings) {
+                const propertyCode=String(booking.property_code ?? '').trim().toUpperCase();
+                const agencyId=typeof booking.fields.agency_id==='string'?booking.fields.agency_id:null;
+                const organizationId=typeof booking.fields.organization_id==='string'?booking.fields.organization_id:null;
+                const key=`${propertyCode}\0${agencyId}\0${organizationId}`;
+                if(!cache.has(key)) cache.set(key, await lookupPartyMemory(tx, {propertyCode, agencyId, organizationId}));
+              }
+              current=applyPartyMemoryToDraft(current, args =>
+                cache.get(`${args.propertyCode}\0${args.agencyId ?? null}\0${args.organizationId ?? null}`) ?? []);
+            } catch { /* party memory is non-fatal */ }
+          }
+          proposals.push({current,selection:job.selection});
         }
         const ids:string[]=[];
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
