@@ -625,8 +625,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
       const averageRate = fieldValue(checked.fields,'averagerate'), totalRate = fieldValue(checked.fields,'totalrate');
       const averageAmount = observedPrice(averageRate), totalAmount = observedPrice(totalRate);
-      priceUnconfirmed = averageAmount === null || totalAmount === null ||
-        Boolean(stagedCreate && (averageAmount <= 0 || totalAmount <= 0));
+      priceUnconfirmed = averageAmount === null || totalAmount === null;
       const currencyValues = [fieldValue(checked.fields,'averageratecurr'), fieldValue(checked.fields,'totalratecurr'),
         ...checked.currencies.map(clean)].filter(Boolean).map(value => /^r$/i.test(value) ? 'ZAR' : value.toUpperCase());
       if (!currencyValues.length && [averageRate,totalRate].every(value => /^(?:R|ZAR)\s*\d/i.test(value) || /\bZAR$/i.test(value))) {
