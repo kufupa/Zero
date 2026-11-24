@@ -1,7 +1,8 @@
-import {readFile, readdir, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, readdir, writeFile} from 'node:fs/promises';
 import {basename, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import type {CaseCard} from '../types.js';
+import type {DecisionReceipt} from './decision-receipt.js';
 import {buildScoreboard, gepaFeedback, type CaseScore, type RulerStamp} from './score.js';
 
 export type ReplayOptions = {
@@ -51,7 +52,7 @@ export async function loadCaseCards(casesDir: string, caseIds?: string[]) {
 
 export async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error('Positive replay concurrency required');
-  const out: R[] = new Array(items.length);
+  const out: R[] = [];
   let next = 0;
   async function worker() {
     while (next < items.length) {
@@ -61,6 +62,13 @@ export async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: 
   }
   await Promise.all(Array.from({length: Math.min(concurrency, items.length)}, worker));
   return out;
+}
+
+export async function writeDecisionReceipt(outDir: string, caseId: string, receipt: DecisionReceipt) {
+  const dir = join(outDir, 'receipts');
+  await mkdir(dir, {recursive: true});
+  await writeFile(join(dir, `${caseId}.decision.json`), JSON.stringify(receipt, null, 2));
+  return join(dir, `${caseId}.decision.json`);
 }
 
 export async function writeBoards(out: string, casesDir: string, scores: CaseScore[], ruler: RulerStamp, wallMs?: number) {

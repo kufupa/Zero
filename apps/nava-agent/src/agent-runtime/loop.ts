@@ -1,5 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+
+/** Stable content digest for receipt pairing (no extra model/native calls). */
+function eventDigest(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value ?? null)).digest('hex');
+}
 
 export type RuntimeBlock = { type: string; [key: string]: unknown };
 export interface RuntimeMessage {
@@ -216,17 +221,18 @@ export class RuntimeLoop implements AgentRuntime {
           if (current.pendingToolUseId !== null) return;
           const attemptId = randomUUID();
           const started = Date.now();
-          await this.event(sessionId, 'tool_call', { attempt_id: attemptId, status: null, tool: call.name, tool_use_id: call.id, input: call.input });
+          const requestDigest = eventDigest({tool: call.name, input: call.input});
+          await this.event(sessionId, 'tool_call', { attempt_id: attemptId, status: null, tool: call.name, tool_use_id: call.id, input: call.input, request_digest: requestDigest });
           let outcome: Awaited<ReturnType<RuntimeDeps['runTool']>>;
           try {
             outcome = await this.deps.runTool(sessionId, call);
           } catch (error) {
-            await this.event(sessionId, 'tool_call', { attempt_id: attemptId, status: 'error', tool: call.name, latency_ms: Date.now() - started });
+            await this.event(sessionId, 'tool_call', { attempt_id: attemptId, status: 'error', tool: call.name, latency_ms: Date.now() - started, request_digest: requestDigest });
             throw error;
           }
           if (outcome.kind === 'pause') {
             await this.deps.park(sessionId, call.id);
-            await this.event(sessionId, 'tool_call', { attempt_id: attemptId, status: null, paused: true, tool: call.name, latency_ms: Date.now() - started });
+            await this.event(sessionId, 'tool_call', { attempt_id: attemptId, status: null, paused: true, tool: call.name, latency_ms: Date.now() - started, request_digest: requestDigest });
             await this.event(sessionId, 'pause', { attempt_id: randomUUID(), reason: call.name, tool_use_id: call.id });
             return;
           }
@@ -238,7 +244,7 @@ export class RuntimeLoop implements AgentRuntime {
             await this.deps.recordToolOutcome(sessionId, call.id, outcome.result);
           }
           const status = typeof outcome.result === 'object' && outcome.result !== null && 'ok' in outcome.result && outcome.result.ok === false ? 'error' : 'ok';
-          await this.event(sessionId, 'tool_call', { attempt_id: attemptId, status, tool: call.name, latency_ms: Date.now() - started, result: outcome.result });
+          await this.event(sessionId, 'tool_call', { attempt_id: attemptId, status, tool: call.name, latency_ms: Date.now() - started, result: outcome.result, request_digest: requestDigest, response_digest: eventDigest(outcome.result) });
         }
         const completed = await this.depsLoad(sessionId);
         if (calls.some(call => !Object.hasOwn(completed.toolOutcomes, call.id))) return;
@@ -266,20 +272,27 @@ export class RuntimeLoop implements AgentRuntime {
       const request: ModelRequest = { messages: state.messages, tools, ...(this.options.system ? { system: this.options.system } : {}) };
       const attemptId = randomUUID();
       const started = Date.now();
-      await this.event(sessionId, 'model_call', { attempt_id: attemptId, status: null, request });
+      // Bind digest to actual request content (messages, tool schemas, system text), not just counts.
+      const requestDigest = eventDigest({
+        tools: tools.map(tool => ({name: tool.name, description: tool.description, input_schema: tool.input_schema})),
+        messages: request.messages,
+        system: request.system ?? null,
+      });
+      await this.event(sessionId, 'model_call', { attempt_id: attemptId, status: null, request, request_digest: requestDigest });
       let response: ModelResponse;
       try {
         response = await this.callModel(request);
         modelCalls++;
       } catch (error) {
-        await this.event(sessionId, 'model_call', { attempt_id: attemptId, status: 'error', latency_ms: Date.now() - started });
+        await this.event(sessionId, 'model_call', { attempt_id: attemptId, status: 'error', latency_ms: Date.now() - started, request_digest: requestDigest });
         throw error;
       }
       const hitOutputLimit = response.stop_reason === 'max_tokens';
       const assistant: RuntimeMessage = { role: 'assistant', content: hitOutputLimit ? [] : response.content };
       await this.event(sessionId, 'model_call', { attempt_id: attemptId, status: hitOutputLimit ? 'error' : 'success',
         ...(hitOutputLimit ? { error_code: 'MODEL_MAX_TOKENS' } : {}), latency_ms: Date.now() - started,
-        stop_reason: response.stop_reason, assistant_version: state.version + 1, assistant, ...response.usage });
+        stop_reason: response.stop_reason, assistant_version: state.version + 1, assistant, ...response.usage,
+        request_digest: requestDigest, response_digest: eventDigest({stop_reason: response.stop_reason, content: assistant.content}) });
       await this.deps.append(sessionId, assistant);
       fresh = { version: state.version + 1, reason: response.stop_reason };
     }

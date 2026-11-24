@@ -16,6 +16,11 @@ import { mailPrefilterRule } from './mail-ingest.js';
 import { describePrepareRejection, prepareRejection } from './prepare-feedback.js';
 import { attachmentCheckPath, attachmentsUnconfirmed } from './attachment-gate.js';
 import { targetIsBound, withAmendRoomTypeField } from './stay-target.js';
+import {
+  deliveryKeyForSelected,
+  parseImportRequestTimeContext,
+  withoutRequestTimeContext,
+} from './request-time-context.js';
 
 export type RuntimeProvider = 'bedrock' | 'azure' | 'cma';
 export function runtimeProvider(): RuntimeProvider {
@@ -82,16 +87,38 @@ function canonicalJson(value:unknown):string {
 }
 export async function importThread(input:ThreadInput, key:string, sourceInput?:unknown, options?:ImportOptions) {
   const prepareLive=process.env.NAVA_CREATE_PREPARE_ONLY==='1' && input.mode==='live';
+  const selected = input.messages.find(message => message.id === input.selected_message_id);
+  const requestTimeContext = parseImportRequestTimeContext(input.request_time_context, {
+    property: input.property_code, mailbox: input.mailbox_id, selectedId: input.selected_message_id,
+  });
+  // Reject spoofed enrichment: present but not attested/digest-valid.
+  if (input.request_time_context !== undefined && requestTimeContext === null) {
+    throw new Error('REQUEST_TIME_CONTEXT_REJECTED');
+  }
+  // Filing / selection hash ignores enrichment so prior prepare: grants stay valid.
+  const identityBase = withoutRequestTimeContext(input);
   const identityInput=prepareLive && input.source==='outlook' && !input.replay_id ? {
-    ...input,messages:input.messages.map(message=>({...message,attachments:message.attachments.map(file=>({...file,extracted_text:null}))})),
-  } : input;
+    ...identityBase,messages:identityBase.messages.map(message=>({...message,attachments:message.attachments.map(file=>({...file,extracted_text:null}))})),
+  } : identityBase;
   const payload={input:identityInput,sourceInput:sourceInput ?? null,...(options ? {options} : {})};
   const requestHash=createHash('sha256').update(prepareLive?canonicalJson(payload):JSON.stringify(payload)).digest('hex');
   const selectionKey=prepareLive?`prepare:${requestHash}`:'';
   const keyHash=createHash('sha256').update(prepareLive?canonicalJson(['prepare',input.source,input.mailbox_id,input.source_thread_id,requestHash]):key).digest('hex');
-  const selected = input.messages.find(message => message.id === input.selected_message_id);
+  const deliveryKey = selected ? deliveryKeyForSelected(input.property_code, input.mailbox_id, selected) : null;
   const ruleId = selected ? mailPrefilterRule(selected) : null;
   return sql.begin(async tx => {
+    // Lock delivery_key first so concurrent drifted-root retries cannot race past the freeze lookup.
+    if (prepareLive && deliveryKey) {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`delivery:${deliveryKey}`},0))`;
+      const [frozen]=await tx`SELECT COALESCE(e.thread_id,s.thread_id) AS thread_id,e.kind,e.payload
+        FROM nava_agent.agent_event e LEFT JOIN nava_agent.agent_session s ON s.id=e.session_id
+        WHERE e.kind IN ('import','mail_skipped') AND e.payload->>'delivery_key'=${deliveryKey}
+        ORDER BY e.sequence ASC LIMIT 1`;
+      if (frozen?.thread_id) {
+        // Ordinary retry: keep original session / selection_key even if conversation root drifted.
+        return {id:frozen.thread_id as string,created:false,skipped:frozen.kind==='mail_skipped'};
+      }
+    }
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${keyHash},0))`;
     const [prior]=await tx`SELECT COALESCE(e.thread_id,s.thread_id) AS thread_id,e.kind,e.payload FROM nava_agent.agent_event e LEFT JOIN nava_agent.agent_session s ON s.id=e.session_id WHERE e.kind IN ('import','mail_skipped') AND e.payload->>'key_hash'=${keyHash}`;
     if (prior) { if(prior.payload.request_hash!==requestHash) throw new Error('IDEMPOTENCY_CONFLICT'); return {id:prior.thread_id as string,created:false,skipped:prior.kind==='mail_skipped'}; }
@@ -113,7 +140,7 @@ export async function importThread(input:ThreadInput, key:string, sourceInput?:u
       if (rows.length) messagesNew=true;
     }
     if (ruleId) {
-      await tx`INSERT INTO nava_agent.agent_event(id,thread_id,kind,payload) VALUES (${uid('evt')},${thread.id},'mail_skipped',${json({rule_id:ruleId,message_id:input.selected_message_id,key_hash:keyHash,request_hash:requestHash})})`;
+      await tx`INSERT INTO nava_agent.agent_event(id,thread_id,kind,payload) VALUES (${uid('evt')},${thread.id},'mail_skipped',${json({rule_id:ruleId,message_id:input.selected_message_id,key_hash:keyHash,request_hash:requestHash,...(deliveryKey?{delivery_key:deliveryKey}:{})})})`;
       return {id:thread.id as string,created:!before,skipped:true};
     }
     let [session]=await tx`SELECT * FROM nava_agent.agent_session WHERE thread_id=${thread.id}`;
@@ -122,8 +149,9 @@ export async function importThread(input:ThreadInput, key:string, sourceInput?:u
     if (options && (input.mode!=='labtest' || session || before)) throw new Error('LABTEST_SEED_CONFLICT');
     if (!session) [session]=await tx`INSERT INTO nava_agent.agent_session(id,thread_id,status,mode,config) VALUES (${uid('session')},${thread.id},'pending',${input.mode},${json({decision_id:input.decision_id ?? null,input_cutoff:input.input_cutoff ?? null,...(input.replay_id ? {replay_id:input.replay_id} : {}),...(options ? {manual_create_labtest:options.manualCreateLabtest} : {})})}) RETURNING *`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
-    await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'import',${json({key_hash:keyHash,request_hash:requestHash})})`;
+    await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'import',${json({key_hash:keyHash,request_hash:requestHash,...(deliveryKey?{delivery_key:deliveryKey}:{})})})`;
     if(sourceInput !== undefined) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'train_source',${json(sourceInput)})`;
+    if(requestTimeContext) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'request_time_context',${json(requestTimeContext)})`;
     if(createSession || messagesNew || (before && before.selected_message_id!==input.selected_message_id)) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'mail_pending',${json({message_id:input.selected_message_id,delivered:false})})`;
     return {id:thread.id as string,created:!before,skipped:false};
   });

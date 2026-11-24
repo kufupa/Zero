@@ -24,15 +24,20 @@ const {values, positionals} = parseArgs({
     property: {type: 'string'},
     limit: {type: 'string'},
     gold: {type: 'string'},
+    mode: {type: 'string'},
     rescore: {type: 'boolean'},
     help: {type: 'boolean', short: 'h'},
   },
 });
 if (values.help) {
-  console.log('Usage: bench/cli.ts run | rescore <run-dir> [--cases-dir dir] [--gold-file path] [--world-dir dir] [--skills-dir dir] [--out dir] [--model slug] [--reasoning effort] [--concurrency n] [--max-concurrency n] [--cache-dir dir] [--baseline-dir dir] [--case-ids id,id] [--property HRCEN]');
+  console.log('Usage: bench/cli.ts run | rescore <run-dir> [--mode predict|grade|run] [--cases-dir dir] [--gold-file path] [--world-dir dir] [--skills-dir dir] [--out dir] [--model slug] [--reasoning effort] [--concurrency n] [--max-concurrency n] [--cache-dir dir] [--baseline-dir dir] [--case-ids id,id] [--property HRCEN]');
 } else {
   const gold = values.gold;
   if (gold !== undefined && gold !== 'v4' && gold !== 'v5') throw new Error('--gold must be v4 or v5');
+  const mode = values.mode;
+  if (mode !== undefined && mode !== 'predict' && mode !== 'grade' && mode !== 'run') {
+    throw new Error('--mode must be predict, grade, or run');
+  }
   const rescore = values.rescore || positionals[0] === 'rescore';
   const resolved = !rescore || values.cases ? resolveCasesDir(values.cases, values['cases-dir']) : undefined;
   const options: SpeedReplayOptions = {
@@ -46,6 +51,7 @@ if (values.help) {
     baselineDir: values['baseline-dir'],
     limit: values.limit !== undefined ? Number(values.limit) : resolved?.limit,
     caseIds: values['case-ids']?.split(',').map(id => id.trim()).filter(Boolean),
+    mode: mode as SpeedReplayOptions['mode'],
   };
   const runDir = positionals[0] === 'rescore' ? positionals[1] : positionals[0];
   if (rescore && !runDir) throw new Error('Usage: bench/cli.ts rescore <run-dir>');

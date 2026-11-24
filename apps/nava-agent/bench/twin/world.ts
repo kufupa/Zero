@@ -2,17 +2,7 @@ import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import type {CaseCard, TwinEnvelope} from '../types.js';
 import {extractSenderHost} from '../../src/party-matching.js';
-
-const GUARANTEE_TO_CODE: Record<string, string> = {
-  'guaranteed by agent': 'GTDAGT', gtdagt: 'GTDAGT',
-  'guaranteed by deposit': 'GTDDEP', gtddep: 'GTDDEP',
-  'deposit requested': 'DEPREQ', depreq: 'DEPREQ',
-  'guaranteed by company': 'GTDCMP', gtdcmp: 'GTDCMP',
-  'guaranteed by credit card': 'GTDCC', gtdcc: 'GTDCC',
-  'non-guaranteed individual': 'NGI', ngi: 'NGI',
-  'confirmation received': 'CNFRCV', cnfrcv: 'CNFRCV',
-  'awaiting voucher': 'AWVCH', awvch: 'AWVCH',
-};
+import {normalizeGuaranteeCode} from '../../src/guarantee-normalize.mjs';
 
 export const DEFAULT_DATA_ROOT='/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
@@ -123,7 +113,9 @@ function optionalJson(path:string):Record<string,unknown> | null {
   try {
     return object(JSON.parse(readFileSync(path,'utf8')));
   } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
+    // Missing path or accidental directory env (NAVA_BENCH_CREATED=/empty/dir) → absent, not crash.
+    if (error && typeof error === 'object' && 'code' in error
+        && (error.code === 'ENOENT' || error.code === 'EISDIR')) return null;
     throw error;
   }
 }
@@ -232,7 +224,7 @@ function loadBase(root:string):BaseWorld {
         const fieldsList = (object(object(row.record_view).details).fields);
         if (!conf || !Array.isArray(fieldsList)) continue;
         const flds = Object.fromEntries(fieldsList.filter(x => x && typeof x === 'object' && 'name' in x).map(x => [String((x as Record<string, unknown>).name), (x as Record<string, unknown>).value]));
-        const gCode = GUARANTEE_TO_CODE[String(flds.guaranteetype ?? '').trim().toLowerCase()];
+        const gCode = normalizeGuaranteeCode(flds.guaranteetype);
         const createdMs = createdOn.get(conf) ?? parseCreatedOn(flds.createddate ?? flds.createdon ?? flds.created) ?? (typeof row.arrival_hint === 'string' ? Date.parse(`${row.arrival_hint}T00:00:00Z`) : NaN);
         if (gCode && Number.isFinite(createdMs) && !readGuarantee.has(conf)) {
           readGuarantee.set(conf, {guaranteetype: gCode, ta1: String(flds.ta1 ?? '').trim(), company: String(flds.company ?? '').trim(), createdMs});
@@ -317,7 +309,10 @@ function loadBase(root:string):BaseWorld {
     }
     return prefixHit ?? raw;
   };
-  if (isRealWorld && process.env.NAVA_BENCH_DISABLE_PAIRS !== '1' && existsSync(join(devDir, 'gold.json'))) {
+  // Train gold-derived prompt hints are opt-in only (never default / never in strict world).
+  const allowGoldPairs = !strict && process.env.NAVA_BENCH_ALLOW_GOLD_PAIRS === '1'
+    && process.env.NAVA_BENCH_DISABLE_PAIRS !== '1';
+  if (allowGoldPairs && isRealWorld && existsSync(join(devDir, 'gold.json'))) {
     const devGold = optionalJson(join(devDir, 'gold.json')) ?? {};
     for (const [cid, rawRow] of Object.entries(devGold)) {
       const row = object(rawRow);
@@ -356,10 +351,22 @@ function loadBase(root:string):BaseWorld {
   return base;
 }
 
-const ordered = (value: unknown): unknown => Array.isArray(value) ? value.map(ordered) : value && typeof value === 'object'
-  ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, ordered(item)]))
-  : value;
-export const quoteKey = (value: unknown) => JSON.stringify(ordered(value));
+const SESSION_KEYS = /^(session|session_id|sessionId|page|page_id|cookie|cookies|authorization|token|csrf|trace|trace_id)$/i;
+
+/** Business criteria only: drop transient session IDs; keep LOS/dates/party/ages/restrictions. */
+const orderedQuote = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(orderedQuote);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => !SESSION_KEYS.test(key))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, item]) => [key, orderedQuote(item)]),
+    );
+  }
+  return value;
+};
+export const quoteKey = (value: unknown) => JSON.stringify(orderedQuote(value));
 
 function loadQuotes(value: unknown, target: Map<string, {at: number; response: TwinEnvelope}>, cutoff: number): void {
   for (const capture of Array.isArray(value) ? value : Object.values(object(value))) {
@@ -367,9 +374,11 @@ function loadQuotes(value: unknown, target: Map<string, {at: number; response: T
     const stamp = row.captured_at ?? row.observed_at;
     const input = object(row.input ?? row.request);
     const response = object(row.response ?? row.result);
-    // Date/room alone does not prove occupancy, filters, quantity, or restrictions matched.
+    // Date/room alone does not prove occupancy, filters, quantity, LOS, or restrictions matched.
     if (!beforeCutoff(stamp, cutoff) || !Array.isArray(input.groups) || !input.groups.length ||
         (response.ok !== true && response.ok !== false) || !Object.hasOwn(response, 'data')) continue;
+    // Keep observed unavailable/sold-out tapes — agent must see complete no-offer, not TWIN_NO_PRICE.
+    // Zero-stock is not a priced offer, but it is an observed outcome for that exact request.
     const at = Date.parse(String(stamp));
     const key = quoteKey(input);
     if ((target.get(key)?.at ?? -Infinity) < at) target.set(key, {at, response: response as TwinEnvelope});

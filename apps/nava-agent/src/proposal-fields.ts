@@ -520,14 +520,26 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
           else fieldSpecs.push({path:roomPath,label:'Room type',provenance:'default',editable:true,required:true,error:null,control:'combobox',options:[],evidence});
         }
       }
-      for(const [key,value] of [['track',createTrackDefault(fields)],['guarantee_type',createGuaranteeDefault(fields)],['source_of_business','EMA']] as const) {
+      for(const [key,value] of [['track',createTrackDefault(fields)],['guarantee_type',createGuaranteeDefault(fields)]] as const) {
         const current=fields[key];
         if(value===null || (current!=null && (typeof current!=='string' || current.trim()))) continue;
         const path=`/bookings/${index}/fields/${key}`;
-        const spec=fieldSpecs.findIndex(field=>field.path===path);
+        const spec=fieldSpecs.findIndex(field=>field.path===path || field.path===path.slice(1));
         if(spec>=0 && (fieldSpecs[spec].provenance==='staff' || fieldSpecs[spec].evidence.length || fieldSpecs[spec].error)) continue;
         fields[key]=value;
-        if(spec>=0) fieldSpecs[spec]={...fieldSpecs[spec],provenance:'default',error:null,evidence:[]};
+        if(spec>=0) fieldSpecs[spec]={...fieldSpecs[spec],path,provenance:'default',error:null,evidence:[]};
+      }
+      // Initial HRCEN email Create only: code-owned EMA with default provenance. Ignore model source.
+      // Authenticated staff edits (provenance staff) win; track/market/credit untouched. Non-HRCEN skipped above.
+      if(booking.property_code==='HRCEN') {
+        const path=`/bookings/${index}/fields/source_of_business`;
+        const spec=fieldSpecs.findIndex(field=>field.path===path || field.path===path.slice(1));
+        const existing=spec>=0 ? fieldSpecs[spec] : null;
+        if(!existing || (existing.provenance!=='staff' && !existing.error)) {
+          fields.source_of_business='EMA';
+          if(spec>=0) fieldSpecs[spec]={...fieldSpecs[spec],path,provenance:'default',error:null,evidence:[]};
+          else fieldSpecs.push({path,label:'Booking source',provenance:'default',editable:true,required:true,error:null,control:'combobox',options:[],evidence:[]});
+        }
       }
       return {...booking,fields};
     });

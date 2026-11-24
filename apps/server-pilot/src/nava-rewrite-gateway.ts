@@ -8,7 +8,11 @@ import { getDb } from './db/client.js';
 import { mailboxAccess, mailboxTransport } from './db/schema/mail.js';
 import { resolvePropertyScope } from './hms/property-registry.js';
 import { resolvePilotTrustedOrigins, type Auth } from './lib/auth.js';
-import { canonicalCenturionPaneImport, isCenturionFilingSource } from './mail/nava-outlook-import.js';
+import {
+  canonicalCenturionPaneImport,
+  deriveCenturionRequestTimeContext,
+  isCenturionFilingSource,
+} from './mail/nava-outlook-import.js';
 import { getS3Storage } from './storage/s3.js';
 
 const resourceId = '([^/]+)';
@@ -143,6 +147,7 @@ export async function canonicalImportBody(
   canonical: NonNullable<Awaited<ReturnType<typeof canonicalCenturionPaneImport>>>,
   signal: AbortSignal,
   checkAuthority: (attachmentId: string) => Promise<boolean>,
+  attestedBy: 'nava_gateway' | 'nava_arrival' = 'nava_gateway',
 ) {
   const selected = canonical.messages.find(item => item.id === canonical.selected_message_id);
   const pdfTexts = new Map<string, string>();
@@ -160,9 +165,23 @@ export async function canonicalImportBody(
       } catch { /* Import remains usable when a PDF cannot be read. */ }
     }
   }
-  return JSON.stringify({ ...canonical, messages: canonical.messages.map(item =>
-    item.id === canonical.selected_message_id ? { ...item, attachments: item.attachments.map(file =>
-      ({ ...file, extracted_text: pdfTexts.get(file.id) ?? null })) } : item) });
+  // Enrichment is derived only after equality-validated canonical selection.
+  let request_time_context: unknown;
+  try {
+    const derived = await deriveCenturionRequestTimeContext(canonical, attestedBy);
+    request_time_context = derived.state === 'observed'
+      ? derived.packet
+      : { state: 'unobserved', reason: derived.reason, contextDigest: derived.contextDigest };
+  } catch {
+    request_time_context = { state: 'unobserved', reason: 'context_derivation_failed', contextDigest: '0'.repeat(64) };
+  }
+  return JSON.stringify({
+    ...canonical,
+    request_time_context,
+    messages: canonical.messages.map(item =>
+      item.id === canonical.selected_message_id ? { ...item, attachments: item.attachments.map(file =>
+        ({ ...file, extracted_text: pdfTexts.get(file.id) ?? null })) } : item),
+  });
 }
 
 function expireEventStream(body: ReadableStream<Uint8Array>, expiresAtMs: number, shutdown?: AbortSignal) {

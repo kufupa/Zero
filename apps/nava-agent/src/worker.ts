@@ -15,7 +15,7 @@ import { writeEvent } from './session-store.js';
 import { backgroundPrepareEnabled, createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { initialSkillContext } from './initial-skill-context.js';
 import { cachedCatalogue, readCatalogue, type ToolContext as CatalogueContext } from '../tools/triage/index.js';
-import { effectiveSenderHost } from './party-matching.js';
+import { resolveSelectedSenderHost } from './party-matching.js';
 import { formatClientCard, lookupPartyMemory, lookupSenderPartyMemory } from './party-memory.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
@@ -248,18 +248,18 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
       const baseMail=await sessionMailPrompt(sessionId).catch(()=>null);
       let clientCard:string|null=null;
       try {
-        const sel=(baseMail as {selected_message?:{from?:{email?:string}|string;subject?:string;body_text?:string;body?:string}}|null)?.selected_message;
-        const fromEmail=typeof sel?.from==='string'?sel.from:sel?.from?.email;
-        const host=effectiveSenderHost(fromEmail,sel?.body_text ?? sel?.body ?? null,sel?.subject ?? null);
-        if(host) {
-          const [agency,organization]=await Promise.all([
-            lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'agency'}).catch(()=>null),
-            lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'organization'}).catch(()=>null),
-          ]);
-          const memory=agency||organization ? await lookupPartyMemory(sql,{
-            propertyCode:property,agencyId:agency?.nativeId ?? null,organizationId:organization?.nativeId ?? null,
-          }).catch(()=>[]) : [];
-          clientCard=formatClientCard({senderHost:host,agency,organization,memory});
+        if(mode==='live' && !session.config?.replay_id) {
+          const host=resolveSelectedSenderHost(baseMail);
+          if(host) {
+            const [agency,organization]=await Promise.all([
+              lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'agency'}).catch(()=>null),
+              lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'organization'}).catch(()=>null),
+            ]);
+            const memory=agency||organization ? await lookupPartyMemory(sql,{
+              propertyCode:property,agencyId:agency?.nativeId ?? null,organizationId:organization?.nativeId ?? null,
+            }).catch(()=>[]) : [];
+            clientCard=formatClientCard({senderHost:host,agency,organization,memory});
+          }
         }
       } catch { /* non-fatal client card lookup */ }
       const mail=clientCard ? await sessionMailPrompt(sessionId,clientCard).catch(()=>baseMail) : baseMail;

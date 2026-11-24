@@ -1,5 +1,8 @@
 export type Workflow = 'quote' | 'create' | 'amend' | 'cancel' | 'filing' | 'triage';
 
+/** Attempted-email roster states — never drop from primary denominator (U7). */
+export type AttemptedState = 'produced' | 'runtime_error' | 'missing_prediction' | 'not_evaluable';
+
 export type GoldField = {knowable?: boolean; aliases?: string[]; unobserved_in_twin?: boolean} & (
   | {path:string; expectation:'expected'; value:unknown; basis:string; tier?:string; hms_key?:string; before?:unknown; derivable?:string; priority?:string; source?:string}
   | {path:string; expectation:'not_expected'; basis:string; tier?:string; later_value?:unknown; hms_key?:string; priority?:string; source?:string}
@@ -38,6 +41,8 @@ export type CaseCard = {
   expected_dispositions?:string[];
   is_vcc_trap?:boolean;
   is_staff_reply_trap?:boolean;
+  /** When true, case stays in roster as not_evaluable (U7). */
+  not_evaluable?:boolean;
   doc_kind?:string;
   source?:{
     input_cutoff?:string;

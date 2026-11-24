@@ -186,6 +186,61 @@ export function buildConversationMeta(
   return out;
 }
 
+/** Edges with witness clocks for as-of request-time projection (includes superseded). */
+export async function loadConversationEdgesForTransport(
+  db: DB,
+  transportId: string,
+): Promise<{
+  srcThreadId: string;
+  dstThreadId: string;
+  srcMessageId: string | null;
+  dstMessageId: string | null;
+  linkType: MailConversationLinkType;
+  createdAt: Date | string | null;
+  supersededAt: Date | string | null;
+}[]> {
+  return db
+    .select({
+      srcThreadId: mailConversationLink.srcThreadId,
+      dstThreadId: mailConversationLink.dstThreadId,
+      srcMessageId: mailConversationLink.srcMessageId,
+      dstMessageId: mailConversationLink.dstMessageId,
+      linkType: mailConversationLink.linkType,
+      createdAt: mailConversationLink.createdAt,
+      supersededAt: mailConversationLink.supersededAt,
+    })
+    .from(mailConversationLink)
+    .where(eq(mailConversationLink.transportId, transportId));
+}
+
+/** Refilter component membership by edge/witness time, not only message timestamps. */
+export function buildConversationMetaAsOf(
+  transportId: string,
+  requestedThreadIds: readonly string[],
+  edges: readonly {
+    srcThreadId: string;
+    dstThreadId: string;
+    linkType: MailConversationLinkType;
+    createdAt?: Date | string | null;
+    supersededAt?: Date | string | null;
+  }[],
+  stats: ReadonlyMap<string, ThreadStats>,
+  cutoffMs: number,
+): Map<string, ThreadConversationMeta> {
+  // Fail closed: unknown cutoff or unknown edge creation time → edge not visible.
+  if (!Number.isFinite(cutoffMs)) {
+    return buildConversationMeta(transportId, requestedThreadIds, [], stats);
+  }
+  const visible = edges.filter((edge) => {
+    const created = toDate(edge.createdAt)?.getTime();
+    if (created == null || !Number.isFinite(created) || created > cutoffMs) return false;
+    const superseded = toDate(edge.supersededAt)?.getTime();
+    if (superseded != null && Number.isFinite(superseded) && superseded <= cutoffMs) return false;
+    return true;
+  });
+  return buildConversationMeta(transportId, requestedThreadIds, visible, stats);
+}
+
 export async function loadConversationMetaForThreads(
   db: DB,
   transportId: string,

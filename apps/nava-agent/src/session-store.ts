@@ -33,6 +33,20 @@ export async function writeEvent(tx: Tx, sessionId: string, kind: string, payloa
   await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:' + sessionId}, 0))`;
   await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${sessionId},${kind},${json(payload)})`;
 }
+
+/** Persist scrubbed decision-receipt refs at publish/finish boundaries (no private bytes). */
+export async function writeDecisionReceiptRef(tx: Tx, sessionId: string, args: {
+  evidence_digest: string;
+  proposal_id?: string | null;
+  mode?: string | null;
+}) {
+  await writeEvent(tx, sessionId, 'decision_receipt_ref', {
+    scrubber_version: 'payment-redact/v1',
+    evidence_digest: args.evidence_digest,
+    proposal_id: args.proposal_id ?? null,
+    mode: args.mode ?? null,
+  });
+}
 function resultIdsInclude(results: RuntimeMessage['content'], id: string): boolean {
   return results.some(result => result.tool_use_id === id);
 }

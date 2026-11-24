@@ -1,7 +1,10 @@
 /** Party booking memory: high-confidence usual fields from prior same-party stays. */
+import {randomUUID} from 'node:crypto';
+import type postgres from 'postgres';
 import type { ProposalDraft } from './schema.js';
 import { createTrackDefault, normalizeMemoryBoard } from './proposal-fields.js';
 import { normalizePartyName, type LearnedSenderHit } from './party-matching.js';
+import { normalizeGuaranteeCode } from './guarantee-normalize.mjs';
 
 export { normalizeMemoryBoard };
 
@@ -43,10 +46,34 @@ function precisionGate(fieldName: string, hits: number, total: number): boolean 
   return hits / total >= 0.80;
 }
 
-function pickTop(rows: HitRow[], agencyId: string | null, organizationId: string | null, board?: string | null): MemorySuggestion[] {
+/** HRCEN only: merge guarantee aliases; keep unknown hits in the precision denominator. */
+function coalesceHrcenGuaranteeRows(rows: HitRow[]): HitRow[] {
+  const out: HitRow[] = [];
+  const guarantee = new Map<string, HitRow>();
+  for (const row of rows) {
+    if (row.field_name !== 'guarantee_type') {
+      out.push(row);
+      continue;
+    }
+    const hits = Number(row.hits) || 0;
+    const code = normalizeGuaranteeCode(row.field_value);
+    if (!code) {
+      out.push({...row, hits});
+      continue;
+    }
+    const key = `${row.party_kind}\0${code}`;
+    const cur = guarantee.get(key);
+    if (cur) cur.hits += hits;
+    else guarantee.set(key, {...row, field_value: code, hits});
+  }
+  return out.concat([...guarantee.values()]);
+}
+
+function pickTop(rows: HitRow[], agencyId: string | null, organizationId: string | null, board?: string | null, propertyCode?: string): MemorySuggestion[] {
   type Acc = {partyKind: 'agency' | 'organization'; fieldName: string; value: string; hits: number; total: number};
   const groups = new Map<string, Acc>();
-  for (const row of rows) {
+  const normalized = propertyCode === 'HRCEN' ? coalesceHrcenGuaranteeRows(rows) : rows;
+  for (const row of normalized) {
     const fieldName = row.field_name;
     const baseField = fieldName.startsWith('rate_plan:') ? 'rate_plan'
       : MEMORY_ELIGIBLE_FIELDS.includes(fieldName as MemoryField) ? fieldName : null;
@@ -63,6 +90,7 @@ function pickTop(rows: HitRow[], agencyId: string | null, organizationId: string
   const byField = new Map<MemoryField, MemorySuggestion>();
 
   const consider = (cur: Acc, field: MemoryField, preferOrg = false) => {
+    if (field === 'guarantee_type' && propertyCode === 'HRCEN' && !normalizeGuaranteeCode(cur.value)) return;
     if (!precisionGate(cur.fieldName, cur.hits, cur.total)) return;
     const labelKind = cur.fieldName.startsWith('rate_plan:org=') ? 'agency+company' : cur.partyKind;
     const next: MemorySuggestion = {
@@ -111,6 +139,7 @@ function memoryFieldWrites(
   board?: string | null,
   partyKind?: 'agency' | 'organization',
   organizationId?: string | null,
+  propertyCode?: string,
 ): Array<{field: string; value: string}> {
   const out: Array<{field: string; value: string}> = [];
   const boardKey = normalizeMemoryBoard(board ?? fields.board);
@@ -118,6 +147,12 @@ function memoryFieldWrites(
   for (const field of ['rate_plan', 'guarantee_type'] as const) {
     const value = fields[field];
     if (blank(value)) continue;
+    if (field === 'guarantee_type' && propertyCode === 'HRCEN') {
+      const code = normalizeGuaranteeCode(value);
+      if (!code) continue;
+      out.push({field, value: code});
+      continue;
+    }
     out.push({field, value: String(value)});
   }
   const rate = fields.rate_plan;
@@ -129,6 +164,165 @@ function memoryFieldWrites(
   return out;
 }
 
+/** Native Record View names → memory field. Only unique observed values teach. */
+const READBACK_MEMORY_FIELDS = {
+  mealplan: 'board',
+  rateplan: 'rate_plan',
+  guaranteetype: 'guarantee_type',
+} as const;
+
+function uniqueReadbackValue(readback: unknown, nativeName: string): string | null {
+  const fields = Array.isArray((readback as {fields?: unknown})?.fields)
+    ? (readback as {fields: Array<Record<string, unknown>>}).fields : null;
+  if (!fields) return null;
+  const matches = fields.filter(row => row && String(row.name ?? '') === nativeName);
+  if (matches.length !== 1) return null;
+  const value = matches[0]!.value;
+  if (value == null || (typeof value !== 'string' && typeof value !== 'number')) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function readbackMismatchBlocks(readback: unknown, memoryField: MemoryField): boolean {
+  const mismatches = Array.isArray((readback as {mismatches?: unknown})?.mismatches)
+    ? (readback as {mismatches: unknown[]}).mismatches : null;
+  if (!mismatches) return true; // cannot confirm without mismatches array
+  if (!mismatches.length) return false;
+  const aliases: Record<MemoryField, string[]> = {
+    board: ['mealPlan', 'mealplan', 'board'],
+    rate_plan: ['ratePlan', 'rateplan'],
+    guarantee_type: ['guaranteeType', 'guaranteetype', 'guaranteeTypeCode'],
+  };
+  return mismatches.some(item => {
+    if (!item || typeof item !== 'object') return true;
+    const field = String((item as {field?: unknown}).field ?? '');
+    return aliases[memoryField].some(alias => field.toLowerCase() === alias.toLowerCase());
+  });
+}
+
+/** True when readback recorded a mismatch on party native fields (ta1/company). */
+function partyReadbackMismatch(readback: unknown, role: 'agency' | 'organization'): boolean {
+  const mismatches = Array.isArray((readback as {mismatches?: unknown})?.mismatches)
+    ? (readback as {mismatches: unknown[]}).mismatches : null;
+  if (!mismatches) return true;
+  const aliases = role === 'agency'
+    ? ['ta1', 'agency', 'travelagency']
+    : ['company', 'organization', 'org'];
+  return mismatches.some(item => {
+    if (!item || typeof item !== 'object') return false;
+    const field = String((item as {field?: unknown}).field ?? '').toLowerCase();
+    return aliases.includes(field);
+  });
+}
+
+function isLabtestReadback(readback: unknown, bookingFields: Record<string, unknown>): boolean {
+  const first = uniqueReadbackValue(readback, 'firstname')
+    ?? (typeof bookingFields.first_name === 'string' ? bookingFields.first_name : null);
+  const last = uniqueReadbackValue(readback, 'lastname')
+    ?? (typeof bookingFields.last_name === 'string' ? bookingFields.last_name : null);
+  return /^proof$/i.test(String(first ?? '').trim()) && /^labtest$/i.test(String(last ?? '').trim());
+}
+
+export type ObservedStayChoice = {
+  propertyCode: string;
+  nativeEventId: string;
+  reservationId: string | null;
+  agencyId: string | null;
+  organizationId: string | null;
+  agencyName: string | null;
+  organizationName: string | null;
+  fields: Record<string, string>;
+  host: string | null;
+  availableAt: string | null;
+  evidenceRef: string;
+  origin: 'native_readback' | 'staff_correction';
+};
+
+/**
+ * Independently verified per-room choices from native readback — never draft echo.
+ * Skip: non-live, Labtest, missing confirmation/readback, unobserved or mismatch-blocked fields.
+ */
+export function extractObservedStayChoice(args: {
+  propertyCode: string;
+  confirmation: string | null | undefined;
+  reservationId: string | null | undefined;
+  readback: unknown;
+  bookingFields?: Record<string, unknown>;
+  host?: string | null;
+  evidenceRef: string;
+  mode?: string | null;
+  availableAt?: string | null;
+}): {ok: true; choice: ObservedStayChoice} | {ok: false; reason: string} {
+  // Fail closed: missing/unknown mode never defaults to live learning.
+  const mode = typeof args.mode === 'string' && args.mode.trim() ? args.mode.trim() : '';
+  if (mode !== 'live') return {ok: false, reason: mode ? 'non_live' : 'mode_unobserved'};
+  const propertyCode = String(args.propertyCode ?? '').trim().toUpperCase();
+  if (!propertyCode) return {ok: false, reason: 'missing_property'};
+  const confirmation = typeof args.confirmation === 'string' && /^\d+-\d+$/.test(args.confirmation)
+    ? args.confirmation : null;
+  if (!confirmation) return {ok: false, reason: 'missing_confirmation'};
+  if (args.readback == null || typeof args.readback !== 'object') return {ok: false, reason: 'missing_readback'};
+  const bookingFields = args.bookingFields ?? {};
+  if (isLabtestReadback(args.readback, bookingFields)) return {ok: false, reason: 'labtest'};
+  if (!Array.isArray((args.readback as {fields?: unknown}).fields)) return {ok: false, reason: 'unobserved_fields'};
+  if (!Array.isArray((args.readback as {mismatches?: unknown}).mismatches)) {
+    return {ok: false, reason: 'readback_unconfirmed'};
+  }
+
+  const fields: Record<string, string> = {};
+  for (const [nativeName, memoryField] of Object.entries(READBACK_MEMORY_FIELDS) as Array<[keyof typeof READBACK_MEMORY_FIELDS, MemoryField]>) {
+    if (readbackMismatchBlocks(args.readback, memoryField)) continue;
+    const raw = uniqueReadbackValue(args.readback, nativeName);
+    if (!raw) continue;
+    if (memoryField === 'board') {
+      const board = normalizeMemoryBoard(raw);
+      if (board) fields.board = board;
+      continue;
+    }
+    if (memoryField === 'guarantee_type') {
+      const code = propertyCode === 'HRCEN' ? normalizeGuaranteeCode(raw) : raw;
+      if (code) fields.guarantee_type = code;
+      continue;
+    }
+    fields[memoryField] = raw;
+  }
+  if (!Object.keys(fields).length) return {ok: false, reason: 'no_confirmed_memory_fields'};
+
+  const observedAgency = uniqueReadbackValue(args.readback, 'ta1');
+  const observedOrg = uniqueReadbackValue(args.readback, 'company');
+  const draftAgencyId = asId(bookingFields.agency_id);
+  const draftOrgId = asId(bookingFields.organization_id);
+  const draftAgencyName = typeof bookingFields.agency_name === 'string' ? bookingFields.agency_name.trim() : null;
+  const draftOrgName = typeof bookingFields.organization_name === 'string' ? bookingFields.organization_name.trim() : null;
+  // Bind native IDs only when draft name AND observed name agree — blank draft name never binds a stale ID.
+  const agencyId = draftAgencyId && observedAgency && draftAgencyName
+    && !partyReadbackMismatch(args.readback, 'agency')
+    && normalizePartyName(draftAgencyName) === normalizePartyName(observedAgency)
+    ? draftAgencyId : null;
+  const organizationId = draftOrgId && observedOrg && draftOrgName
+    && !partyReadbackMismatch(args.readback, 'organization')
+    && normalizePartyName(draftOrgName) === normalizePartyName(observedOrg)
+    ? draftOrgId : null;
+
+  return {
+    ok: true,
+    choice: {
+      propertyCode,
+      nativeEventId: confirmation,
+      reservationId: typeof args.reservationId === 'string' && /^\d+$/.test(args.reservationId) ? args.reservationId : null,
+      agencyId,
+      organizationId,
+      agencyName: observedAgency,
+      organizationName: observedOrg,
+      fields,
+      host: args.host ?? null,
+      availableAt: args.availableAt ?? null,
+      evidenceRef: args.evidenceRef,
+      origin: 'native_readback',
+    },
+  };
+}
+
 /** Pure time-gated memory (`createdAtMs < cutoffMs`) — shared by Postgres lookup shape + replay bench. */
 export function buildMemoryFromHistory(stays: HistoryStay[], cutoffMs: number): MemoryLookupFn {
   const hits = new Map<string, Map<string, number>>();
@@ -137,7 +331,7 @@ export function buildMemoryFromHistory(stays: HistoryStay[], cutoffMs: number): 
     const orgId = asId(stay.organizationId);
     for (const [kind, partyId] of [['agency', asId(stay.agencyId)], ['organization', orgId]] as const) {
       if (!partyId) continue;
-      for (const {field, value} of memoryFieldWrites(stay.fields as Record<string, unknown>, stay.board, kind, orgId)) {
+      for (const {field, value} of memoryFieldWrites(stay.fields as Record<string, unknown>, stay.board, kind, orgId, stay.propertyCode)) {
         const key = `${stay.propertyCode}\0${kind}\0${partyId}\0${field}`;
         const ctr = hits.get(key) ?? new Map<string, number>();
         ctr.set(value, (ctr.get(value) ?? 0) + 1);
@@ -154,7 +348,7 @@ export function buildMemoryFromHistory(stays: HistoryStay[], cutoffMs: number): 
     rows.filter(row => row.property_code === propertyCode
       && ((agencyId && row.party_kind === 'agency' && row.party_id === agencyId)
         || (organizationId && row.party_kind === 'organization' && row.party_id === organizationId))),
-    asId(agencyId), asId(organizationId), board,
+    asId(agencyId), asId(organizationId), board, propertyCode,
   );
 }
 
@@ -168,7 +362,7 @@ export async function lookupPartyMemory(
     WHERE property_code = ${args.propertyCode} AND (
       (${agencyId}::text IS NOT NULL AND party_kind = 'agency' AND party_id = ${agencyId})
       OR (${organizationId}::text IS NOT NULL AND party_kind = 'organization' AND party_id = ${organizationId}))`;
-  return pickTop(rows as HitRow[], agencyId, organizationId, args.board);
+  return pickTop(rows as HitRow[], agencyId, organizationId, args.board, args.propertyCode);
 }
 
 export async function recordSavedStayMemory(
@@ -180,7 +374,7 @@ export async function recordSavedStayMemory(
   if (agencyId) parties.push(['agency', agencyId]);
   if (organizationId) parties.push(['organization', organizationId]);
   for (const [kind, partyId] of parties) {
-    for (const {field, value} of memoryFieldWrites(args.fields, undefined, kind, organizationId)) {
+    for (const {field, value} of memoryFieldWrites(args.fields, undefined, kind, organizationId, args.propertyCode)) {
       await sql`
         INSERT INTO nava_agent.party_booking_memory AS m
           (property_code, party_kind, party_id, field_name, field_value, hits)
@@ -189,6 +383,101 @@ export async function recordSavedStayMemory(
         DO UPDATE SET hits = m.hits + 1, updated_at = now()`;
     }
   }
+}
+
+/**
+ * Idempotent observation append by (property, native stay, party role, field).
+ * Same value → no-op; correction → new version, supersede prior. Never retries Save.
+ * Projects into legacy aggregate tables only once per new observation (shadow).
+ * Memory-only transaction — Save must never be retried or moved inside it.
+ */
+export async function recordMemoryObservation(db: postgres.Sql, choice: ObservedStayChoice): Promise<{recorded:number; skipped:string[]}> {
+  return db.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([choice.propertyCode, choice.nativeEventId])}, 0))`;
+    return appendMemoryObservation(tx, choice);
+  });
+}
+
+async function appendMemoryObservation(
+  sql: Sql,
+  choice: ObservedStayChoice,
+): Promise<{recorded: number; skipped: string[]}> {
+  const skipped: string[] = [];
+  let recorded = 0;
+  const parties: Array<['agency' | 'organization', string]> = [];
+  if (choice.agencyId) parties.push(['agency', choice.agencyId]);
+  if (choice.organizationId) parties.push(['organization', choice.organizationId]);
+  if (!parties.length) return {recorded: 0, skipped: ['no_bound_party_id']};
+
+  for (const [kind, partyId] of parties) {
+    const scopedWrites = memoryFieldWrites(choice.fields, choice.fields.board, kind, choice.organizationId, choice.propertyCode);
+    if (!scopedWrites.length) {
+      skipped.push(`no_field_writes:${kind}`);
+      continue;
+    }
+    for (const {field, value} of scopedWrites) {
+      const [latest] = await sql`
+        SELECT id, party_id, field_value, version, available_at FROM nava_agent.memory_observation
+        WHERE property_code = ${choice.propertyCode}
+          AND native_event_id = ${choice.nativeEventId}
+          AND party_kind = ${kind}
+          AND field_name = ${field}
+          AND superseded_at IS NULL
+        ORDER BY version DESC LIMIT 1`;
+      if (latest && String(latest.field_value) === value && String(latest.party_id) === partyId) {
+        skipped.push(`dup:${kind}:${field}`);
+        continue;
+      }
+      if (latest) {
+        const priorAt = latest.available_at;
+        if (priorAt != null && String(priorAt).trim()) {
+          const choiceAt = choice.availableAt;
+          const priorMs = priorAt instanceof Date ? priorAt.getTime() : Date.parse(String(priorAt));
+          const choiceMs = choiceAt != null ? Date.parse(String(choiceAt)) : NaN;
+          if (!choiceAt || Number.isNaN(choiceMs) || Number.isNaN(priorMs) || !(choiceMs > priorMs)) {
+            skipped.push('stale_or_ambiguous');
+            continue;
+          }
+        }
+      }
+      const nextVersion = latest ? Number(latest.version) + 1 : 1;
+      const id = randomUUID();
+      const availableAt = choice.availableAt ?? null;
+      const inserted = await sql`
+        INSERT INTO nava_agent.memory_observation
+          (id, property_code, native_event_id, party_kind, party_id, field_name, field_value,
+           evidence_ref, available_at, origin, coverage, version)
+        VALUES (
+          ${id}, ${choice.propertyCode}, ${choice.nativeEventId}, ${kind}, ${partyId},
+          ${field}, ${value}, ${choice.evidenceRef},
+          ${availableAt}, ${choice.origin}, 'complete', ${nextVersion}
+        )
+        ON CONFLICT (property_code, native_event_id, party_kind, field_name, version) DO NOTHING
+        RETURNING id`;
+      if (!inserted.length) {
+        skipped.push(`conflict:${kind}:${field}:v${nextVersion}`);
+        continue;
+      }
+      if (latest) {
+        await sql`
+          UPDATE nava_agent.memory_observation SET superseded_at = now()
+          WHERE id = ${String(latest.id)} AND superseded_at IS NULL`;
+        await sql`
+          UPDATE nava_agent.party_booking_memory SET hits=GREATEST(hits-1,0), updated_at=now()
+          WHERE property_code=${choice.propertyCode} AND party_kind=${kind} AND party_id=${String(latest.party_id)}
+            AND field_name=${field} AND field_value=${String(latest.field_value)} AND hits>0`;
+      }
+      // Shadow into legacy aggregate only when the observation row was newly inserted.
+      await sql`
+        INSERT INTO nava_agent.party_booking_memory AS m
+          (property_code, party_kind, party_id, field_name, field_value, hits)
+        VALUES (${choice.propertyCode}, ${kind}, ${partyId}, ${field}, ${value}, 1)
+        ON CONFLICT (property_code, party_kind, party_id, field_name, field_value)
+        DO UPDATE SET hits = m.hits + 1, updated_at = now()`;
+      recorded += 1;
+    }
+  }
+  return {recorded, skipped};
 }
 
 export async function lookupSenderPartyMemory(
