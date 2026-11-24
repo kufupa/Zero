@@ -18,9 +18,11 @@ const COMBOS = { adults: 'adults', reasonForStay: 'reasonforstay', guaranteeType
 const DANGEROUS_PATH = /save|delete|cancel|duplicate|checkin|checkout|send|crs/i;
 const CHILD_AGE_VALIDATE = '/web/base/OSRESV.HDR.validateChildAgeDetails';
 const GUARANTEE_CHANGE = '/web/base/OSRESV.HDR.changeguaranteemethod';
+const FIELD_VALIDATE = '/web/base/fieldvalidate';
 const MARKET_CHANGE = '/web/base/OSRESV.HDR.changemarketsegment';
 const GUARANTEE_BLANK_IDS = ['reservationstayid', 'reservationid', 'recordid'];
 const busyPages = new WeakSet();
+const pendingFieldValidation = new WeakMap();
 const cmsSearches = new WeakMap();
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const clean = (value) => String(value ?? '').trim();
@@ -134,6 +136,14 @@ function allowedPost(request, origin, propertyCode, kind, expectedAges) {
         !params.childAges.every((age) => Number.isInteger(age) && age >= 0 && age <= 17)) return false;
     return isRead || (JSON.stringify(params.childAges) === JSON.stringify(expectedAges) &&
       /^\d+$/.test(String(params.childCount)) && Number(params.childCount) === expectedAges.length && params.updateChildCategories === true);
+  } catch { return false; }
+}
+
+function fieldValidationRequest(request) {
+  try {
+    const url = new URL(request.url());
+    return request.method() === 'POST' && url.origin === CLOUD_ORIGIN && url.pathname === FIELD_VALIDATE &&
+      !url.search && !url.hash && !url.username && !url.password;
   } catch { return false; }
 }
 
@@ -484,7 +494,7 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
   let attempted = false, nativeDialog = false, before = null, blocked = [], active = true;
   let fence = null, approval = null, ageValidationReady = false, ageValidationCount = 0;
   let guaranteeExpected = null, guaranteeApproved = null, rejectDialog;
-  const guaranteeResponses = [];
+  const guaranteeResponses = [], validationRequests = [], validationResponses = [];
   let marketExpected = null, marketApproved = null, marketRecord = null, marketResponseTask = null, marketFinished = false;
   const marketResponses = [], marketDiagnostic = {};
   const dialogPromise = new Promise((_, reject) => { rejectDialog = reject; });
@@ -492,6 +502,7 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
     void dialog.dismiss().catch(() => {}); if (post === 'guarantee' || post === 'market') rejectDialog(new Error('UNEXPECTED_DIALOG')); };
   const onResponse = (response) => {
     if (response.request() === guaranteeApproved) guaranteeResponses.push(response);
+    if (validationRequests.includes(response.request())) validationResponses.push(response);
     if (response.request() === marketApproved) {
       marketResponses.push(response);
       marketResponseTask = observeMarketResponse(response, marketExpected).then(diagnostic => { marketDiagnostic.response = diagnostic; });
@@ -511,6 +522,13 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
         guaranteeRequest(page, request, guaranteeExpected)) {
       if (active && !guaranteeApproved && approval?.allow(request)) { guaranteeApproved = request; allowed = true; }
       else if (active) fence?.quarantine();
+    }
+    if (method === 'POST' && url.pathname === FIELD_VALIDATE && fieldValidationRequest(request)) {
+      const pending = pendingFieldValidation.get(page) === true || post === 'guarantee' && guaranteeExpected;
+      if (active && pending) {
+        validationRequests.push(request);
+        allowed = true;
+      } else if (active) fence?.quarantine();
     }
     if (post === 'market' && method === 'POST' && url.pathname === MARKET_CHANGE && marketExpected) {
       const match = marketChangeRequest(page, request, marketExpected);
@@ -539,7 +557,7 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
     ensureActive();
   };
   page.on('dialog', onDialog);
-  if (post === 'guarantee' || post === 'market') page.on('response', onResponse);
+  page.on('response', onResponse);
   if (post === 'market') { page.on('requestfinished', onFinished); page.on('requestfailed', onFailed); }
   try {
     const execute = async () => {
@@ -582,6 +600,16 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
         await page.waitForTimeout(1000); ensureActive();
         if (fence?.isQuarantined()) throw new Error('MARKET_REQUEST_UNCERTAIN');
       }
+      if (validationRequests.length) {
+        const responseDeadline = Date.now() + 8000;
+        while (validationResponses.length < validationRequests.length && Date.now() < responseDeadline) {
+          await new Promise((resolve) => setTimeout(resolve, 100)); ensureActive();
+        }
+        if (validationResponses.length !== validationRequests.length ||
+            validationResponses.some((response) => response.status() !== 200)) throw new Error('FIELD_VALIDATE_RESPONSE_UNVERIFIED');
+        for (const response of validationResponses) await bounded(response.text(), 5000, 'FIELD_VALIDATE_RESPONSE_TIMEOUT');
+        await page.waitForFunction(() => !Ext.Ajax.isLoading(), null, { timeout: 10000 }); ensureActive();
+      }
       // Child Apply has a validated response and response-derived parent counts;
       // guarantee has its matched response and draft checks. Other controls still
       // need the guarded observation window for uncorrelated blur effects.
@@ -595,6 +623,7 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
         if (JSON.stringify(current) !== JSON.stringify(guaranteeExpected?.draft)) throw new Error('GUARANTEE_DRAFT_CHANGED');
         await verifyGuaranteeResponse(guaranteeResponses[0], guaranteeExpected); ensureActive();
         await check();
+        pendingFieldValidation.set(page, true);
       }
       if (post === 'market' && result.outcome === 'updated_unsaved') {
         const current = await marketDraft(page, propertyCode, marketRecord); ensureActive();
@@ -633,7 +662,7 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
     approval?.close();
     await page.unroute('**/*', guard).catch(() => {});
     page.off('dialog', onDialog);
-    if (post === 'guarantee' || post === 'market') page.off('response', onResponse);
+    page.off('response', onResponse);
     if (post === 'market') { page.off('requestfinished', onFinished); page.off('requestfailed', onFailed); }
     if (marketRecord) await marketRecord.dispose().catch(() => {});
     busyPages.delete(page);

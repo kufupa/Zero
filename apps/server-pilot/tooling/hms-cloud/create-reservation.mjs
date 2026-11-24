@@ -696,7 +696,6 @@ export async function createReservation(input, options = {}) {
             stop('uncertain', 'requested_field_not_staged', { field: 'guaranteeType' });
           }
           output.applied.guaranteeType = state.guarantee.actual.display;
-          if (state.rateAvailabilityRequired) await new Promise(resolve => setTimeout(resolve, 1000));
           if (!commit) await dismissInformationalMessageBox(page, notices);
         }
       } else if (!commit && isSupportedLabtestGuarantee(input.guaranteeType)) {
