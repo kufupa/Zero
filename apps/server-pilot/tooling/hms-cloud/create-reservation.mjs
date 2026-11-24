@@ -646,7 +646,7 @@ export async function createReservation(input, options = {}) {
         }
       }
       // The native Create flow types the rate before selecting track and guarantee.
-      if (!commit && state.guest && typeof createAuthority?.withM1CreateRateSelection === 'function' &&
+      if (state.guest && typeof createAuthority?.withM1CreateRateSelection === 'function' &&
           code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
         const selected = await createAuthority.withM1CreateRateSelection(() => call(runTool, 'selectGuestStayRatePlan', {
           code: room.ratePlan, guestProfileId: String(state.guest.selected.nativeId),
