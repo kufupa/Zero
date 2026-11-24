@@ -224,8 +224,8 @@ export function shadowMarkdown(s: ReturnType<typeof scoreShadow>) {
     `STQN default corrections (changed/shown among Create rooms where STQN displayed): ${fmt(s.stqn_default_corrections)}.`, '',
     `**B. Live telemetry:** ${counts(s.workflow)}. Disposition: ${counts(s.disposition)}.`,
     `Staff field edits: ${s.staff_edit_count}. Go claims (including excluded Labtest): ${s.go.real_guest} real, ${s.go.labtest} Labtest.`, '',
-    '**C. Six-workflow existing-event funnel** (N/A = stage not applicable or evidence unobserved; never inferred):', '',
-    '| Workflow | received | proposal/no-action | stage_finished | go_claimed | go_finished | quote_artifacts | triage_terminal |',
+    '**C. Proposal event coverage** (any revision; rates for stage/finish/artifact events use only proposals with observed events. Raw mail, upstream filters and native correctness are not measured here):', '',
+    '| Workflow | proposal rows | proposal/no-action | stage_finished | go_claimed | go_finished | quote_artifacts | triage_terminal |',
     '|---|---:|---:|---:|---:|---:|---:|---:|',
     ...WORKFLOWS.map(w => {
       const f = s.workflow_funnel[w];
@@ -245,7 +245,8 @@ export async function readShadowRows(options: Options): Promise<Row[]> {
   try {
     return await sql.begin('read only', tx => tx<Row[]>`
       SELECT p.workflow, p.created_at, s.mode, p.original AS initial, p.current, p.result,
-        coalesce(e.paths, ARRAY[]::text[]) AS edit_paths, e.recent AS recent_edits, g.n AS go_count
+        coalesce(e.paths, ARRAY[]::text[]) AS edit_paths, e.recent AS recent_edits,
+        g.n AS go_count, g.stage_finished, g.go_finished, g.quote_artifacts_ready
       FROM nava_agent.proposal p
       JOIN nava_agent.mail_thread t ON t.id = p.thread_id
       JOIN nava_agent.agent_session s ON s.id = p.session_id
@@ -254,8 +255,13 @@ export async function readShadowRows(options: Options): Promise<Row[]> {
         FROM nava_agent.staff_edit WHERE proposal_id = p.id AND kind = 'edit' AND path IS NOT NULL AND at <= ${end}
       ) e
       CROSS JOIN LATERAL (
-        SELECT count(*)::int AS n FROM nava_agent.agent_event
-        WHERE session_id = p.session_id AND kind = 'go_claimed' AND payload->>'proposal_id' = p.id AND at <= ${end}
+        SELECT count(*) FILTER (WHERE ev.kind='go_claimed')::int AS n,
+          bool_or(ev.payload->>'ok'='true') FILTER (WHERE ev.kind='stage_finished' AND ev.payload->>'ok' IN ('true','false')) AS stage_finished,
+          bool_or(ev.payload->>'outcome'='saved') FILTER (WHERE ev.kind='go_finished' AND ev.payload->>'outcome' IN ('saved','failed','uncertain')) AS go_finished,
+          bool_or(true) FILTER (WHERE ev.kind='quote_artifacts_ready') AS quote_artifacts_ready
+        FROM nava_agent.agent_event ev
+        WHERE ev.session_id=p.session_id AND ev.payload->>'proposal_id'=p.id AND ev.at>=p.created_at AND ev.at<=${end}
+          AND ev.kind IN ('stage_finished','go_claimed','go_finished','quote_artifacts_ready')
       ) g
       WHERE t.property_code = ${options.property} AND s.mode IN ('live', 'labtest')
         AND s.config->>'replay_id' IS NULL AND (s.mode = 'labtest' OR t.source IN ('outlook', 'webmail'))
