@@ -15,6 +15,7 @@ import { lookupStay, lookupExactStay, lookupFilingStay, targetLookup, targetSele
 import { mailPrompt } from './mail-prompt.js';
 import { normalizePartyName, partyCandidateScore, partyNameMatch, resolveSelectedSenderHost } from './party-matching.js';
 import { projectStoredRequestTimeContext, type StoredRequestTimeContext } from './request-time-context.js';
+import { isHmsConfirmation } from './reservation-reference.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
@@ -172,6 +173,83 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
   return {...draft,bookings,actions,field_specs:fieldSpecs};
 }
 
+const filingGuestDate = (booking: ProposalDraft['bookings'][number]) => {
+  const f = booking.fields;
+  const first = f.first_name ?? f.guest_first_name;
+  const last = f.last_name ?? f.guest_last_name;
+  const arrival = f.arrival_date;
+  return typeof first === 'string' && first.trim() && typeof last === 'string' && last.trim()
+    && typeof arrival === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(arrival);
+};
+
+const bookingHasHmsTarget = (booking: ProposalDraft['bookings'][number]) => {
+  const conf = booking.reservation_id ?? booking.fields.confirmation_number;
+  return typeof conf === 'string' && isHmsConfirmation(conf);
+};
+
+const staySearchHadCandidates = (response: unknown): boolean => {
+  const envelope = response && typeof response === 'object' ? response as Record<string, unknown> : null;
+  const data = envelope && 'data' in envelope ? envelope.data : envelope;
+  if (!data || typeof data !== 'object') return false;
+  const row = data as Record<string, unknown>;
+  if (Array.isArray(row.candidates) && row.candidates.length > 0) return true;
+  const native = row.native && typeof row.native === 'object' ? row.native as Record<string, unknown> : null;
+  return Array.isArray(native?.rows) && native.rows.length > 0;
+};
+
+/**
+ * Filing requires a resolved HMS stay (or confirmation in the draft).
+ * After the stay-search ladder returns no candidates, voucher/booking-request with guest+dates ⇒ Create.
+ * Pure POP submissions and drafts that never searched (or that found hits) stay Filing.
+ */
+export function filingWithoutTargetToCreate(
+  draft: ProposalDraft,
+  stayReads: Array<{input?: unknown; response: unknown}> = [],
+): ProposalDraft {
+  if (draft.workflow !== 'filing' || !draft.bookings.length) return draft;
+  if (draft.bookings.some(bookingHasHmsTarget)) return draft;
+  if (!draft.bookings.every(filingGuestDate)) return draft;
+  if (!stayReads.length) return draft;
+  if (stayReads.some(read => staySearchHadCandidates(read.response))) return draft;
+  if (draft.actions.length && draft.actions.every(action => action.type === 'payment_proof_submission')) return draft;
+  const bookings = draft.bookings.map(booking => {
+    const f = booking.fields;
+    const fields: Record<string, unknown> = {
+      first_name: f.first_name ?? f.guest_first_name ?? null,
+      last_name: f.last_name ?? f.guest_last_name ?? null,
+      arrival_date: f.arrival_date ?? null,
+      departure_date: f.departure_date ?? null,
+    };
+    for (const key of ['adults', 'child_count', 'room_type', 'rate_plan', 'board', 'agency_name', 'agency_id',
+      'organization_name', 'organization_id', 'billing_reference', 'booker_name', 'booker_contact', 'note',
+      'guest_email', 'room_count', 'source_of_business', 'track', 'guarantee_type'] as const) {
+      if (f[key] != null && f[key] !== '') fields[key] = f[key];
+    }
+    return {...booking, reservation_id: null, current_state: null, fields};
+  });
+  const actions = bookings.map((booking, index) => ({
+    id: draft.actions[index]?.id ?? `create-${booking.id}`,
+    type: 'create' as const,
+    booking_ids: [booking.id],
+    details: {},
+  }));
+  const field_specs = draft.field_specs.filter(field => {
+    const path = field.path.startsWith('/') ? field.path : `/${field.path}`;
+    return /^\/bookings\/\d+\/fields\/(?!confirmation_number$).+/.test(path);
+  });
+  return {
+    ...draft,
+    workflow: 'create',
+    disposition: draft.disposition === 'propose' ? 'staff_review' : draft.disposition,
+    reason: draft.reason ?? 'No HMS stay after search ladder; Create proposal for staff confirmation.',
+    warnings: [...draft.warnings, 'No resolved HMS stay or confirmation; routed Filing → Create.'],
+    bookings,
+    actions,
+    field_specs,
+    missing: draft.missing.filter(path => /^\/?bookings\/\d+\/fields\//.test(path)),
+  };
+}
+
 /** Pure create/quote party bind + field normalize (prod publish + bench share this). */
 export function stagePublishedDraft(
   draft: ProposalDraft,
@@ -179,8 +257,9 @@ export function stagePublishedDraft(
   quoteProperty?:string,
   memoryLookup?: MemoryLookupFn,
   senderParties?: SenderPartySuggestion,
+  stayReads: Array<{input?: unknown; response: unknown}> = [],
 ): {kind: 'valid'; draft: ProposalDraft} | {kind: 'invalid'; path: string} {
-  let staffDraft = draft;
+  let staffDraft = filingWithoutTargetToCreate(draft, stayReads);
   if (['create', 'quote'].includes(staffDraft.workflow)) {
     if (staffDraft.workflow === 'create') {
       staffDraft = {
@@ -442,13 +521,24 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         }
         const incomplete=draft.workflow==='quote' && merged.incomplete;
         let partyReads: Array<{input: unknown; response: unknown}> = [];
-        if(staffPrepareOnly() && ['create','quote'].includes(draft.workflow)) {
-          partyReads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
-            FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
-              AND c.kind='tool_call' AND c.payload->>'tool_use_id'=r.payload->>'tool_event_id'
-            WHERE r.session_id=${session.id} AND r.kind='tool_result' AND r.payload->>'tool'='hms_search_parties'
-              AND r.sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0)
-            ORDER BY r.sequence`;
+        let stayReads: Array<{input: unknown; response: unknown}> = [];
+        if(staffPrepareOnly() && ['create','quote','filing'].includes(draft.workflow)) {
+          if(['create','quote'].includes(draft.workflow)) {
+            partyReads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
+              FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
+                AND c.kind='tool_call' AND c.payload->>'tool_use_id'=r.payload->>'tool_event_id'
+              WHERE r.session_id=${session.id} AND r.kind='tool_result' AND r.payload->>'tool'='hms_search_parties'
+                AND r.sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0)
+              ORDER BY r.sequence`;
+          }
+          if(draft.workflow==='filing') {
+            stayReads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
+              FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
+                AND c.kind='tool_call' AND c.payload->>'tool_use_id'=r.payload->>'tool_event_id'
+              WHERE r.session_id=${session.id} AND r.kind='tool_result' AND r.payload->>'tool'='hms_search_reservations'
+                AND r.sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0)
+              ORDER BY r.sequence`;
+          }
         }
         const proposals=[];
         for(const job of jobs) {
@@ -456,10 +546,10 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           if(staffPrepareOnly() && session.mode==='live') {
             staffDraft=withTriageLookupFields(staffDraft);
           }
-          // Staff-prepare create/quote: party bind + normalize via shared pure fn. Else normalize only
+          // Staff-prepare create/quote/filing: party bind + Filing→Create gate via shared pure fn. Else normalize only
           // (avoid forcing profile_create_new outside staff-prepare).
           const normalized=staffPrepareOnly()
-            ? stagePublishedDraft(staffDraft,partyReads,quoteProperty)
+            ? stagePublishedDraft(staffDraft,partyReads,quoteProperty,undefined,undefined,stayReads)
             : normalizeProposalFields(staffDraft);
           if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
           let current=normalized.draft;

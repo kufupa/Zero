@@ -1,4 +1,4 @@
-import {arrivalWindow, normalizeReservationReference} from '../../src/reservation-reference.js';
+import {arrivalWindow, isHmsConfirmation, normalizeReservationReference} from '../../src/reservation-reference.js';
 import type {CaseCard, TwinEnvelope} from '../types.js';
 import {
   extractSenderHost,
@@ -394,52 +394,93 @@ function readReservation(stays: Stays, world: TwinWorld, input: Record<string, u
   return ok(data);
 }
 
+/**
+ * Mirror native stay-search ladder (tools/triage searchReservations):
+ * (a) HMS-shaped confirmation alone → (b) surname + arrival ±3d → (c) surname + first.
+ * Stuffed agency/PNR reservation_id is ignored except as rung (a) when HMS-shaped.
+ */
 function searchReservations(stays: Stays, world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
   const criteria = object(input.criteria);
   const digest = queryDigest(scopeOf(world), 'hms_search_reservations', input);
-  if (!criteria.reservation_id && !criteria.guest_name && !criteria.last_name && !criteria.guest_first_name) {
+  const surname = name(criteria.guest_name) || name(criteria.last_name);
+  const given = name(criteria.guest_first_name);
+  const rid = typeof criteria.reservation_id === 'string' ? normalizeReservationReference(criteria.reservation_id) : '';
+  if (!rid && !surname && !given) {
     return fail('INPUT_GAP', 'Provide a confirmation number or a guest surname.');
   }
   const observed = [...stays.values()];
-  if (criteria.near_arrival === true && !criteria.reservation_id) {
-    const arrival = isoDate(criteria.arrival_date);
-    if (!arrival || typeof criteria.guest_name !== 'string') return fail('INVALID_INPUT', 'Provide surname and original arrival.');
-    const {from, to} = arrivalWindow(arrival);
-    const candidates = observed.flatMap(row => {
-      const {stay} = row;
-      const {first, last} = reservationNames(stay);
-      const arrival_date = isoDate(stay.arrival_date ?? stay.arrivaldate ?? stay.arrival);
-      if (!arrival_date || arrival_date < from || arrival_date > to ||
-          !matchReservation(row.stay, {guest_name: criteria.guest_name, guest_name_is_surname: true})) return [];
-      return [{reservation_id: row.confirmation, arrival_date, departure_date: isoDate(stay.departure_date ?? stay.departuredate ?? stay.departure),
-        first_name: first, last_name: last, status: stay.status}];
-    });
-    const narrowed = candidates.length > 1 && criteria.guest_first_name ?
-      candidates.filter(row => name(row.first_name) === name(criteria.guest_first_name)) : candidates;
-    if (candidates.length) {
-      return ok({
-        outcome: 'candidates', candidates: narrowed.length ? narrowed : candidates, twin_coverage: 'observed',
-        read_result: observedResult({candidates: narrowed.length ? narrowed : candidates}, narrowed.map(r => r.reservation_id), digest),
-      });
-    }
-    return missStay(observed, criteria, digest);
-  }
-  let matches = observed.filter(row => matchReservation(row.stay, criteria));
-  if (!matches.length && !criteria.reservation_id && criteria.guest_first_name && criteria.guest_name_is_surname !== true) {
-    matches = observed.filter(row => matchReservation(row.stay, {...criteria, guest_name: criteria.guest_first_name, guest_first_name: undefined}));
-  }
-  const candidates = matches.map(row => ({
+  type Cand = {
+    reservation_id: string; arrival_date: string | null; departure_date: string | null;
+    first_name: string; last_name: string; status: unknown;
+    documents_observed: boolean;
+    native: {ok: true; notes: []; method: 'twin'; details: {cards: [{title: 'Stay'; grids: []; fields: ReturnType<typeof fieldMap>}]}};
+  };
+  const toCand = (row: StayRow): Cand => {
+    const {first, last} = reservationNames(row.stay);
+    return {
       reservation_id: row.confirmation,
+      arrival_date: isoDate(row.stay.arrival_date ?? row.stay.arrivaldate ?? row.stay.arrival),
+      departure_date: isoDate(row.stay.departure_date ?? row.stay.departuredate ?? row.stay.departure),
+      first_name: first, last_name: last, status: row.stay.status,
       documents_observed: row.documents !== null,
       native: {ok: true, notes: [], method: 'twin', details: {cards: [{title: 'Stay', grids: [], fields: fieldMap(row.stay)}]}},
-    }));
-  if (!candidates.length) {
-    return missStay(observed, criteria, digest);
+    };
+  };
+  const hit = (rung: string, rows: StayRow[]) => {
+    if (!rows.length) return null;
+    const candidates = rows.map(toCand);
+    return ok({
+      outcome: 'candidates', candidates, completeness: 'twin', twin_coverage: 'observed', matched_rung: rung,
+      read_result: observedResult({candidates}, candidates.map(c => c.reservation_id), digest),
+    });
+  };
+
+  if (rid && isHmsConfirmation(rid)) {
+    const rows = observed.filter(row => matchesId(rid, row.confirmation));
+    const found = hit('confirmation', rows);
+    if (found) return found;
   }
-  return ok({
-    outcome: 'candidates', candidates, completeness: 'twin', twin_coverage: 'observed',
-    read_result: observedResult({candidates}, candidates.map(c => c.reservation_id), digest),
-  });
+
+  const arrival = isoDate(criteria.arrival_date);
+  if (surname && arrival) {
+    const {from, to} = arrivalWindow(arrival);
+    const rows = observed.filter(row => {
+      const arrival_date = isoDate(row.stay.arrival_date ?? row.stay.arrivaldate ?? row.stay.arrival);
+      return !!arrival_date && arrival_date >= from && arrival_date <= to &&
+        matchReservation(row.stay, {guest_name: surname, guest_name_is_surname: true});
+    });
+    const narrowed = rows.length > 1 && given
+      ? rows.filter(row => name(reservationNames(row.stay).first) === given)
+      : rows;
+    const found = hit('surname_near_arrival', narrowed.length ? narrowed : rows);
+    if (found) return found;
+  }
+
+  if (surname && given) {
+    const rows = observed.filter(row =>
+      matchReservation(row.stay, {guest_name: surname, guest_first_name: given, guest_name_is_surname: true}));
+    const found = hit('surname_first_name', rows);
+    if (found) return found;
+  }
+
+  // Legacy single-shot AND path for criteria that never formed a rung (e.g. surname-only).
+  if (!isHmsConfirmation(rid) && surname && !arrival && !given) {
+    let matches = observed.filter(row => matchReservation(row.stay, {
+      guest_name: surname, guest_name_is_surname: criteria.guest_name_is_surname,
+    }));
+    if (!matches.length && criteria.guest_first_name && criteria.guest_name_is_surname !== true) {
+      matches = observed.filter(row => matchReservation(row.stay, {guest_name: criteria.guest_first_name}));
+    }
+    const found = hit('surname_only', matches);
+    if (found) return found;
+  }
+
+  return missStay(observed, {
+    ...criteria,
+    // Ladder miss: do not AND stuffed reservation_id with guest/date for completeness claims.
+    ...(rid && !isHmsConfirmation(rid) ? {reservation_id: undefined} : {}),
+    near_arrival: surname && arrival ? true : criteria.near_arrival,
+  }, digest);
 }
 
 export function createTwinDispatch(world: TwinWorld, card: CaseCard) {

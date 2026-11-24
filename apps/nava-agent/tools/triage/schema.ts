@@ -12,7 +12,7 @@ export const schemas = {
       guest_first_name: { ...string, description: 'Given name, if available, used as an alternate surname when the first surname search is empty.' },
       guest_name_is_surname: { type: 'boolean', description: 'Required true for a surname containing spaces, and only when the source identifies the entire value as the surname (e.g. De Koker).' },
       arrival_date: string,
-      near_arrival: {type: 'boolean', description: 'Search arrival ±3 days by surname. When true, reservation_id is ignored; use guest_first_name to narrow hits.'},
+      near_arrival: {type: 'boolean', description: 'Prefer arrival ±3 days by surname. Tool always ladders: HMS confirmation alone → surname+near arrival → surname+first; agency/PNR reservation_id is ignored.'},
       departure_date: string,
     }, []),
   }, ['property_code', 'criteria']),
