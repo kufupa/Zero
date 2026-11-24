@@ -18,7 +18,7 @@ Read the selected message with `mail_read_thread`. Use [common rules](../referen
 
 Load each applicable workflow and use its workflow name when publishing; route and action count are independent. Keep a genuine second ask visible: if a sender asks to book and explicitly requests a fresh quote for the same stay, publish Quote as well so staff can price it before deciding on the booking. An updated voucher supporting a requested change is Amend evidence; a voucher supporting a new order is Create evidence. A genuine current submission for an existing stay is Filing even if HMS cannot resolve the exact stay.
 
-**Voucher Create vs Filing:** follow the shared decision in [routing details](references/rules.md) (document role first; bare-doc search once; unclear → review).
+**Voucher Create vs Filing:** follow the shared decision in [routing details](references/rules.md) (document role first; Filing needs a resolved stay or HMS confirmation; voucher/booking-request with guest+dates and empty ladder → Create; unclear → review).
 
 **Internal staff forwards** (`@legacyhotels.co.za` / Martha / Kamala / `hotels@` with "Please quote", "Please assist", "FYI", "FW:"): always route on the **inner forwarded client request**, not the forwarding staff member. Resolve agency/company from the **inner client sender**, never Legacy Hotels.
 
