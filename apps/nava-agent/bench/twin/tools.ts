@@ -8,6 +8,9 @@ import {
   type LearnedSenderHit,
 } from '../../src/party-matching.js';
 import {isoDate, observeStays} from './backdate.js';
+import {
+  completeNoMatch, queryDigest, unobservedResult, observedResult, type Scope,
+} from './read-result.js';
 import {anchorCaptures, anchorPdfs, beforeCutoff, quoteKey, rows, type TwinWorld} from './world.js';
 
 // Ignore legal suffixes and punctuation; keep commercial name words.
@@ -273,10 +276,24 @@ async function searchParties(world: TwinWorld, input: Record<string, unknown>, c
 }
 
 function quoteFromWorld(world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
+  const digest = queryDigest(scopeOf(world), 'hms_quote', input);
   const capture = world.quotes.get(quoteKey(input));
-  if (capture) return capture.response;
+  if (capture) {
+    const response = capture.response;
+    if (response.ok && response.data && typeof response.data === 'object') {
+      const data = response.data as Record<string, unknown>;
+      return ok({
+        ...data,
+        twin_coverage: 'observed',
+        read_result: observedResult(data, [], digest),
+      });
+    }
+    return response;
+  }
   world.coverage.quoteMisses += 1;
-  return fail('TWIN_NO_PRICE', 'No dated native quote capture matches the complete request.', false, unobserved);
+  // Missing tape is unobserved — never invent sold-out / blank Documents / successful Prepare.
+  return fail('TWIN_NO_PRICE', 'No dated native quote capture matches the complete request.', false,
+    coveragePayload(unobservedResult('no_matching_quote_receipt', digest)));
 }
 
 function matchesId(requested: string, actual: string): boolean {
@@ -284,32 +301,102 @@ function matchesId(requested: string, actual: string): boolean {
 }
 
 type Stays = ReturnType<typeof observeStays>;
-const unobserved = {twin_coverage: 'unobserved', documents_observed: false};
+type StayRow = Stays extends Map<string, infer V> ? V : never;
+const unobserved = {twin_coverage: 'unobserved' as const, documents_observed: false};
 
-function readReservation(stays: Stays, input: Record<string, unknown>): TwinEnvelope {
+function scopeOf(world: TwinWorld): Scope {
+  return {property: world.propertyCode, mailbox: null};
+}
+
+/** Identity stubs prove confirmation existence only — never guest/date completeness. */
+function isIdentityStub(row: StayRow): boolean {
+  return row.basis === 'pre_as_of_identity';
+}
+
+/**
+ * Complete no-match requires every *queryable* observed stay to carry fields the query uses.
+ * Confirmation-only identity stubs never answer guest/date queries and never prove catalogue completeness alone.
+ */
+function canClaimCompleteNoMatch(observed: StayRow[], criteria: Record<string, unknown>): boolean {
+  if (!observed.length) return false;
+  const needsGuest = Boolean(
+    name(criteria.guest_name) || name(criteria.last_name) || name(criteria.guest_first_name)
+    || criteria.arrival_date || criteria.departure_date || criteria.near_arrival === true,
+  );
+  if (needsGuest) {
+    const queryable = observed.filter(row => !isIdentityStub(row));
+    if (!queryable.length) return false;
+    return queryable.every(row => {
+      const {last, full} = reservationNames(row.stay);
+      const arrival = isoDate(row.stay.arrival_date ?? row.stay.arrivaldate ?? row.stay.arrival);
+      return Boolean(last || full) && (!(criteria.arrival_date || criteria.near_arrival) || arrival != null);
+    });
+  }
+  // ID-only: stubs alone never prove HMS absence; mixed stub+full still a partial tape.
+  if (observed.some(isIdentityStub)) return false;
+  return true;
+}
+
+function coveragePayload(result: ReturnType<typeof unobservedResult> | ReturnType<typeof completeNoMatch> | ReturnType<typeof observedResult>) {
+  if (result.state === 'observed') {
+    return {twin_coverage: 'observed' as const, documents_observed: false, read_result: result};
+  }
+  if (result.state === 'no_match') {
+    return {
+      twin_coverage: 'no_match' as const,
+      documents_observed: false,
+      query_digest: result.queryDigest,
+      complete: true as const,
+      read_result: result,
+    };
+  }
+  // Legacy envelope for existing honesty checks; read_result available via typed helpers.
+  return {twin_coverage: 'unobserved' as const, documents_observed: false};
+}
+
+function missStay(observed: StayRow[], criteria: Record<string, unknown>, digest: string): TwinEnvelope {
+  if (!observed.length) {
+    return fail('TWIN_PRE_CUTOFF_STAY_UNAVAILABLE', 'No observed stay matches the requested criteria; absence is unconfirmed.', false,
+      coveragePayload(unobservedResult('no_pre_cutoff_stay_tape', digest)));
+  }
+  if (!canClaimCompleteNoMatch(observed, criteria)) {
+    return fail('TWIN_PRE_CUTOFF_STAY_UNAVAILABLE', 'No observed stay matches the requested criteria; absence is unconfirmed.', false,
+      coveragePayload(unobservedResult('partial_or_identity_stub_tape', digest)));
+  }
+  return fail('TWIN_PRE_CUTOFF_STAY_NO_MATCH', 'Complete pre-cutoff search found no matching stay.', false,
+    coveragePayload(completeNoMatch(digest, observed.map(row => row.confirmation))));
+}
+
+function readReservation(stays: Stays, world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
+  const digest = queryDigest(scopeOf(world), 'hms_read_reservation', input);
   if (!input.reservation_id) return fail('CONFIRMATION_NOT_FOUND', 'No reservation reference supplied.');
   const matches = [...stays.values()].filter(row => matchReservation(row.stay, input));
   if (matches.length > 1) return fail('CONFIRMATION_AMBIGUOUS', 'More than one observed stay satisfies the requested criteria.');
   const found = matches[0];
-  if (!found) return fail('TWIN_PRE_CUTOFF_STAY_UNAVAILABLE', 'No observed stay matches the requested criteria.', false, unobserved);
-  return ok({
+  if (!found) {
+    return missStay([...stays.values()], input, digest);
+  }
+  const data = {
     outcome: 'ok',
     id: null,
     tool: 'read',
     shallow: {confirmation: found.confirmation},
-    twin_coverage: 'observed',
+    twin_coverage: 'observed' as const,
     documents_observed: found.documents !== null,
+    read_result: observedResult({confirmation: found.confirmation}, [found.confirmation], digest),
     record: {
       notes: [],
       details: {grids: [], fields: fieldMap(found.stay)},
       documents: found.documents,
       documents_observed: found.documents !== null,
     },
-  });
+  };
+  return ok(data);
 }
 
-function searchReservations(stays: Stays, input: Record<string, unknown>): TwinEnvelope {
+function searchReservations(stays: Stays, world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
   const criteria = object(input.criteria);
+  const digest = queryDigest(scopeOf(world), 'hms_search_reservations', input);
   if (!criteria.reservation_id && !criteria.guest_name && !criteria.last_name && !criteria.guest_first_name) {
     return fail('INPUT_GAP', 'Provide a confirmation number or a guest surname.');
   }
@@ -329,8 +416,13 @@ function searchReservations(stays: Stays, input: Record<string, unknown>): TwinE
     });
     const narrowed = candidates.length > 1 && criteria.guest_first_name ?
       candidates.filter(row => name(row.first_name) === name(criteria.guest_first_name)) : candidates;
-    return candidates.length ? ok({outcome: 'candidates', candidates: narrowed.length ? narrowed : candidates, twin_coverage: 'observed'}) :
-      fail('TWIN_PRE_CUTOFF_STAY_UNAVAILABLE', 'No observed stay matches the requested criteria; absence is unconfirmed.', false, unobserved);
+    if (candidates.length) {
+      return ok({
+        outcome: 'candidates', candidates: narrowed.length ? narrowed : candidates, twin_coverage: 'observed',
+        read_result: observedResult({candidates: narrowed.length ? narrowed : candidates}, narrowed.map(r => r.reservation_id), digest),
+      });
+    }
+    return missStay(observed, criteria, digest);
   }
   let matches = observed.filter(row => matchReservation(row.stay, criteria));
   if (!matches.length && !criteria.reservation_id && criteria.guest_first_name && criteria.guest_name_is_surname !== true) {
@@ -342,9 +434,12 @@ function searchReservations(stays: Stays, input: Record<string, unknown>): TwinE
       native: {ok: true, notes: [], method: 'twin', details: {cards: [{title: 'Stay', grids: [], fields: fieldMap(row.stay)}]}},
     }));
   if (!candidates.length) {
-    return fail('TWIN_PRE_CUTOFF_STAY_UNAVAILABLE', 'No observed stay matches the requested criteria; absence is unconfirmed.', false, unobserved);
+    return missStay(observed, criteria, digest);
   }
-  return ok({outcome: 'candidates', candidates, completeness: 'twin', twin_coverage: 'observed'});
+  return ok({
+    outcome: 'candidates', candidates, completeness: 'twin', twin_coverage: 'observed',
+    read_result: observedResult({candidates}, candidates.map(c => c.reservation_id), digest),
+  });
 }
 
 export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
@@ -356,9 +451,9 @@ export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
     }
     switch (name) {
       case 'hms_search_reservations':
-        return searchReservations(stays ??= observeStays(world, card), body);
+        return searchReservations(stays ??= observeStays(world, card), world, body);
       case 'hms_read_reservation':
-        return readReservation(stays ??= observeStays(world, card), body);
+        return readReservation(stays ??= observeStays(world, card), world, body);
       case 'hms_read_catalogue': {
         if (!Object.keys(world.catalog).length) {
           return fail('TWIN_PRE_CUTOFF_CATALOGUE_UNAVAILABLE', 'No dated catalogue predates the decision cutoff.');

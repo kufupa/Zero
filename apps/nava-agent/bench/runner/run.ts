@@ -2,7 +2,7 @@ import {createReadStream, existsSync} from 'node:fs';
 import {createInterface} from 'node:readline';
 import {createHash} from 'node:crypto';
 import {mkdir, writeFile} from 'node:fs/promises';
-import {basename, join, resolve} from 'node:path';
+import {join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {RuntimeLoop, type ModelCall} from '../../src/agent-runtime/loop.js';
 import {azureReplayModel} from './azure.js';
@@ -20,8 +20,13 @@ import {createTwin} from '../twin/index.js';
 import type {CaseCard} from '../types.js';
 import {rulerStamp, scoreCase, type CaseScore, type Scoreboard} from './score.js';
 import {applyGoldOverlay, loadReplayGold} from './gold-overlay.js';
-import {loadCaseCards, readOptionalJson, skillsPath, writeBoards, type ReplayOptions} from './artifacts.js';
-import {effectiveSenderHost, normalizePartyName} from '../../src/party-matching.js';
+import {loadCaseCards, readOptionalJson, skillsPath, writeBoards, writeDecisionReceipt, type ReplayOptions} from './artifacts.js';
+import {buildDecisionReceipt} from './decision-receipt.js';
+import {
+  attemptedStateOf, evidenceDigestFromMail, flagsDigest, predictionCacheKey,
+  publicPredictionRecord, sealPublicCaseCard, worldContentDigest,
+} from './replay-input.js';
+import {normalizePartyName, resolveSelectedSenderHost} from '../../src/party-matching.js';
 import {twinLearnedSender, twinSenderHost} from '../twin/tools.js';
 import {anchorCaptures, beforeCutoff, createdFieldValue, defaultWorldDir, parseCreatedOn, selectedCutoff, type ThreadSenders, type TwinWorld} from '../twin/world.js';
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
@@ -81,6 +86,8 @@ export type SpeedReplayOptions = ReplayOptions & {
   cacheDir?: string;
   maxConcurrency?: number;
   baselineDir?: string;
+  /** Strict predict: no gold mount for decisions; grade separately. */
+  mode?: 'predict' | 'grade' | 'run';
 };
 
 function redactPaymentCredentials(text: string): string {
@@ -120,14 +127,6 @@ const benchTools: ToolDefinition[] = [
 ].filter(tool => tool.name !== 'hms_prepare' && tool.name !== 'hms_save' && tool.name !== 'skill_read')
   .map(({name, description, input_schema}) => ({name, description, input_schema}));
 const twinTools = new Set(benchTools.filter(tool => tool.name.startsWith('hms_')).map(tool => tool.name));
-
-function cacheKey(parts: Record<string, string>): string {
-  const payload = [
-    parts.git_sha, parts.gold_sha256, parts.world_dir_basename, parts.skills_digest,
-    parts.model, parts.reasoning, parts.direct_evidence, parts.case_id,
-  ].join('\0');
-  return createHash('sha256').update(payload).digest('hex');
-}
 
 async function aimdPool<T, R>(items: T[], options: {
   concurrency: number;
@@ -480,11 +479,9 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   const {mail, skillContext, tokens, profile, started, directEvidence} = options;
   const promptMail = mailPrompt(mail);
   const twin = createTwin(card, {worldDir: options.worldDir, property: mail.property_code, threadSenders: options.threadSenders});
+  // Same selected-mail host resolver as live Turn-1 / publish; history stays only (no live DB).
   const memoryLookup = buildMemoryFromHistory(historyStaysForMemory(twin.world), twin.world.cutoff);
-  const selectedForMemory = record(card.selected_email);
-  const senderHostForMemory = effectiveSenderHost(
-    selectedForMemory.from_address ?? mail.source_input.selected_message.from?.email,
-    mail.source_input.selected_message.body_text, mail.source_input.selected_message.subject);
+  const senderHostForMemory = resolveSelectedSenderHost(mail);
   const senderPartiesForMemory = senderHostForMemory ? {
     agency: twinLearnedSender(twin.world, senderHostForMemory, 'agency'),
     organization: twinLearnedSender(twin.world, senderHostForMemory, 'organization'),
@@ -600,10 +597,7 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   const opaqueId = createHash('sha1').update(card.case_id).digest('hex').slice(0, 10);
   const prefix = `nava-mail-event:${opaqueId} Read the selected thread and handle its request.`;
   let nudge = prefix;
-  const selected = record(card.selected_email);
-  const host = effectiveSenderHost(
-    selected.from_address ?? mail.source_input.selected_message.from?.email,
-    mail.source_input.selected_message.body_text, mail.source_input.selected_message.subject);
+  const host = resolveSelectedSenderHost(mail);
   const party = host && (twinLearnedSender(twin.world, host, 'agency') ?? twinLearnedSender(twin.world, host, 'organization'));
   if (party) {
     const defaults = memoryLookup({
@@ -661,11 +655,13 @@ export async function runBench(options: SpeedReplayOptions) {
     const host = twinSenderHost(mail.from_address ?? people(record(mail.addresses).from ?? mail.from)[0]?.email, body);
     if (thread && host && at < (threadSenders.get(thread)?.at ?? Infinity)) threadSenders.set(thread, {host, at});
   };
-  const historyFile = threadMail ?? (existsSync(pairsFile) ? pairsFile : undefined);
+  // Prefer explicit thread-mail when present; if path missing, fall back to world pairs.
+  const threadMailFile = threadMail && existsSync(threadMail) ? threadMail : null;
+  const historyFile = threadMailFile ?? (existsSync(pairsFile) ? pairsFile : undefined);
   if (historyFile) for await (const line of createInterface({input: createReadStream(historyFile), crlfDelay: Infinity})) {
     if (!line.trim()) continue;
     const row = record(JSON.parse(line));
-    if (threadMail) remember(row);
+    if (threadMailFile) remember(row);
     else {
       const thread = record(row.thread);
       for (const message of list(thread.messages)) remember(record(message), thread.thread_id);
@@ -676,71 +672,162 @@ export async function runBench(options: SpeedReplayOptions) {
     remember(record(card.selected_email));
   }
   if (!cards.length) throw new Error('No replay cases selected');
-  const gold = await loadReplayGold({...options, casesDir});
+  const mode = options.mode ?? 'run';
+  // Strict predict never mounts gold for decisions; grade/run may load private labels separately.
+  const gold = mode === 'predict'
+    ? {file: null as string | null, sha256: null as string | null, map: {} as Record<string, unknown>}
+    : await loadReplayGold({...options, casesDir});
   const model = options.model ?? process.env.NAVA_AGENT_AZURE_DEPLOYMENT ?? 'gpt-6-luna';
   const reasoning = options.reasoning ?? process.env.NAVA_AGENT_REASONING_EFFORT ?? 'low';
   const callModel = azureReplayModel(model, reasoning);
   const directEvidence = process.env.NAVA_BENCH_DIRECT_EVIDENCE !== '0';
   const skillConfig = await pinReplaySkills(options.skillsDir);
   const skillContext = await initialSkillContext(skillConfig, 'bench-initial-skill-context', 'historical');
-  const ruler = rulerStamp(gold.file, gold.sha256, {model, reasoning_effort: reasoning, world_dir: worldDir, skills_digest: skillConfig.pin.version});
-  createTwin(cards[0], {worldDir, property: options.property});
-  const inputs = cards.map(card => ({card, scoreCard: applyGoldOverlay(card, gold.map[card.case_id])}));
+  const worldDigest = await worldContentDigest(worldDir);
+  // Prediction-cache flags exclude mode so predict/grade share keys; gold never enters the key.
+  const flags = flagsDigest({
+    direct_evidence: directEvidence,
+    strict_world: process.env.NAVA_BENCH_STRICT_WORLD === '1',
+    allow_gold_pairs: process.env.NAVA_BENCH_ALLOW_GOLD_PAIRS === '1',
+  });
+  const ruler = rulerStamp(gold.file, gold.sha256, {
+    model, reasoning_effort: reasoning, world_dir: worldDir, skills_digest: skillConfig.pin.version,
+  });
+  createTwin(sealPublicCaseCard(cards[0]), {worldDir, property: options.property});
+  const inputs = cards.map(card => {
+    const publicCard = sealPublicCaseCard(card);
+    const scoreCard = mode === 'predict' ? publicCard : applyGoldOverlay(card, gold.map[card.case_id]);
+    return {card: publicCard, scoreCard, privateCard: card};
+  });
   if (cacheDir) await mkdir(cacheDir, {recursive: true});
   await mkdir(outDir, {recursive: true});
+  await mkdir(join(outDir, 'receipts'), {recursive: true});
+  // Honest isolation claims: grade refuses inference; predict/run may call the approved model gateway.
+  const networkDisabled = mode === 'grade';
   await writeFile(join(outDir, 'manifest.json'), JSON.stringify({
     ...ruler, cases_dir: casesDir, case_ids: cards.map(card => card.case_id), concurrency, max_concurrency: maxConcurrency,
     cache_dir: cacheDir ?? null,
     skills_dir: skillConfig.root, direct_evidence: directEvidence, pinned_property: options.property ?? null,
-    provider: 'azure', provenance: ruler, thread_mail: threadMail ?? null,
+    provider: mode === 'grade' ? 'none' : 'azure', provenance: ruler, thread_mail: threadMail ?? null,
+    mode, world_content_digest: worldDigest, flags_digest: flags,
+    prediction_cache_excludes_gold: true, network_disabled: networkDisabled, writes_disabled: true,
   }, null, 2));
   let cacheHits = 0;
   const wallStarted = performance.now();
-  const scores = await aimdPool(inputs, {concurrency, maxConcurrency}, async ({card, scoreCard}, notify) => {
+  const scores = await aimdPool(inputs, {concurrency, maxConcurrency}, async ({card, scoreCard, privateCard}, notify) => {
     const started = performance.now();
-    const key = cacheDir ? cacheKey({
+    const mailForDigest = mailPayload(card, options.property);
+    const evidenceDigest = evidenceDigestFromMail(mailForDigest);
+    const key = cacheDir ? predictionCacheKey({
       git_sha: ruler.git_sha,
-      gold_sha256: gold.sha256,
-      world_dir_basename: basename(worldDir),
+      world_content_digest: worldDigest,
       skills_digest: skillConfig.pin.version,
       model,
       reasoning,
       direct_evidence: directEvidence ? '1' : '0',
       case_id: card.case_id,
+      evidence_digest: evidenceDigest,
+      flags_digest: flags,
     }) : null;
     const cachePath = key && cacheDir ? join(cacheDir, `${key}.json`) : null;
+    const finishReceipt = async (score: CaseScore, toolCalls: CaseScore['tool_calls'], mail = mailForDigest) => {
+      const attempted = attemptedStateOf(score);
+      const disposition = score.proposal && typeof score.proposal === 'object'
+        ? String((score.proposal as {disposition?: unknown}).disposition ?? '') || null : null;
+      const receipt = buildDecisionReceipt({
+        selected_id: mail.selected_message_id,
+        property: mail.property_code,
+        mailbox: mail.mailbox_id,
+        evidence_ids: mail.messages.map(message => message.id).filter((id): id is string => Boolean(id)),
+        evidence_digest: evidenceDigest,
+        agent_sha: ruler.git_sha,
+        model,
+        reasoning,
+        skills_digest: skillConfig.pin.version,
+        world_content_digest: worldDigest,
+        tool_calls: toolCalls ?? [],
+        proposal: score.proposal,
+        proposal_raw: score.proposal_raw ?? score.proposal,
+        elapsed_ms: score.wall_ms,
+        disposition,
+        // Predict receipts stay public: never copy private workflow/gold labels into the decision receipt.
+        workflow: mode === 'predict' ? null
+          : (typeof privateCard.workflow === 'string' ? privateCard.workflow : null),
+        attempted_state: attempted,
+        unavailable_classes: (score.twin_uncovered ?? []).filter(reason => /unobserv|unavailable|no_price|no_match/i.test(reason)),
+      });
+      await writeDecisionReceipt(outDir, card.case_id, receipt);
+      const prediction = publicPredictionRecord({
+        case_id: card.case_id,
+        evidence_digest: evidenceDigest,
+        world_content_digest: worldDigest,
+        skills_digest: skillConfig.pin.version,
+        model,
+        reasoning,
+        proposal: score.proposal,
+        proposal_raw: score.proposal_raw ?? score.proposal,
+        tool_calls: toolCalls ?? [],
+        run_error: score.run_error,
+        attempted_state: attempted,
+      });
+      await writeFile(join(outDir, `${card.case_id}.prediction.json`), JSON.stringify(prediction));
+      return {...score, raw_prediction_sha: prediction.raw_prediction_sha, attempted_state: attempted};
+    };
     if (cachePath) {
-      const cached = await readOptionalJson(cachePath) as (CaseScore & {profile?: Profile}) | null;
+      const cached = await readOptionalJson(cachePath) as (CaseScore & {profile?: Profile; tool_calls?: CaseScore['tool_calls']}) | null;
       if (cached) {
         cacheHits += 1;
         notify.ok();
-        const scored = scoreCase({
-          card: scoreCard,
-          proposal: cached.proposal,
-          proposal_raw: cached.proposal_raw ?? cached.proposal,
-          toolCalls: cached.tool_calls ?? [],
-          tokens: cached.tokens ?? {input: 0, output: 0, cached_input: 0},
-          wall_ms: cached.wall_ms ?? 0,
-          normalize: false,
-          publish_invalid: cached.publish_invalid,
-          run_error: cached.run_error,
-          model,
-          worldDir,
-        });
+        const scored = mode === 'predict'
+          ? {
+              ...cached,
+              case_id: card.case_id,
+              proposal: cached.proposal,
+              proposal_raw: cached.proposal_raw ?? cached.proposal,
+              tool_calls: cached.tool_calls ?? [],
+              tokens: cached.tokens ?? {input: 0, output: 0, cached_input: 0},
+              wall_ms: cached.wall_ms ?? 0,
+              run_error: cached.run_error,
+            } as CaseScore
+          : scoreCase({
+              card: scoreCard,
+              proposal: cached.proposal,
+              proposal_raw: cached.proposal_raw ?? cached.proposal,
+              toolCalls: cached.tool_calls ?? [],
+              tokens: cached.tokens ?? {input: 0, output: 0, cached_input: 0},
+              wall_ms: cached.wall_ms ?? 0,
+              normalize: false,
+              publish_invalid: cached.publish_invalid,
+              run_error: cached.run_error,
+              model,
+              worldDir,
+            });
         if (cached.cost_usd !== undefined) scored.cost_usd = cached.cost_usd;
         scored.twin_uncovered = (cached.twin_uncovered ?? []).filter(reason => !reason.startsWith('RUN_ERROR:'));
         if (cached.tool_quality) scored.tool_quality = cached.tool_quality;
         scored.quote_capture_ok = cached.quote_capture_ok ?? false;
         const profile = cached.profile ?? {model: [], tools: [], review_ready_ms: null, finish_reason: 'cache_hit'};
-        await writeFile(join(outDir, `${card.case_id}.json`), JSON.stringify({...scored, profile, cache_hit: true}));
-        return scored;
+        const withReceipt = await finishReceipt(scored, cached.tool_calls ?? scored.tool_calls ?? []);
+        await writeFile(join(outDir, `${card.case_id}.json`), JSON.stringify({...withReceipt, profile, cache_hit: true}));
+        return withReceipt;
       }
     }
     const tokens: Tokens = {input: 0, output: 0, cached_input: 0};
     const profile: Profile = {model: [], tools: [], review_ready_ms: null, finish_reason: null};
     let score: CaseScore;
-    try {
-      const mail = mailPayload(card, options.property);
+    // Grade never runs inference: cache miss → missing_prediction, not a live model call.
+    if (mode === 'grade') {
+      notify.ok();
+      score = scoreCase({
+        card: scoreCard, proposal: null, toolCalls: [], tokens,
+        wall_ms: Math.round(performance.now() - started),
+        run_error: 'GRADE_REQUIRES_CACHED_PREDICTION', model, worldDir,
+      });
+      score.attempted_state = 'missing_prediction';
+      score.email_outcome = 'missing_prediction';
+      score.run_error = 'GRADE_REQUIRES_CACHED_PREDICTION';
+    } else try {
+      const mail = mailForDigest;
       score = await runCase(card, scoreCard, {mail, skillContext, tokens, profile, started, directEvidence, worldDir, threadSenders, callModel, model});
       if (classifyRunError(score.run_error) === '429') notify.rateLimited();
       else notify.ok();
@@ -750,10 +837,29 @@ export async function runBench(options: SpeedReplayOptions) {
       else notify.ok();
       score = scoreCase({card: scoreCard, proposal: null, toolCalls: [], tokens, wall_ms: Math.round(performance.now() - started), run_error, model, worldDir});
     }
-    const saved = {...score, profile};
+    const withReceipt = await finishReceipt(score, score.tool_calls ?? []);
+    const saved = {...withReceipt, profile};
     await writeFile(join(outDir, `${card.case_id}.json`), JSON.stringify(saved));
-    if (cachePath && !score.run_error) await writeFile(cachePath, JSON.stringify(saved));
-    return score;
+    // Cache stores prediction only (no gold dependence).
+    if (cachePath && !score.run_error) {
+      await writeFile(cachePath, JSON.stringify({
+        proposal: score.proposal,
+        proposal_raw: score.proposal_raw ?? score.proposal,
+        tool_calls: score.tool_calls ?? [],
+        tokens: score.tokens,
+        wall_ms: score.wall_ms,
+        publish_invalid: score.publish_invalid,
+        run_error: score.run_error,
+        twin_uncovered: score.twin_uncovered,
+        tool_quality: score.tool_quality,
+        quote_capture_ok: score.quote_capture_ok,
+        cost_usd: score.cost_usd,
+        profile,
+        raw_prediction_sha: withReceipt.raw_prediction_sha,
+        attempted_state: withReceipt.attempted_state,
+      }));
+    }
+    return withReceipt;
   });
   const wallMs = Math.round(performance.now() - wallStarted);
   const boards = await writeBoards(outDir, casesDir, scores, ruler, wallMs);

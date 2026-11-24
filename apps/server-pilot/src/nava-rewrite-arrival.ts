@@ -29,7 +29,7 @@ async function prefillOne(shutdown: AbortSignal): Promise<boolean> {
     if (!canonical) throw new Error('SOURCE_UNAVAILABLE');
     const body = await canonicalImportBody(canonical, signal, attachmentId => isCenturionFilingSource({
       mailboxId, conversationId: canonical.source_thread_id, messageId, attachmentId,
-    }));
+    }), 'nava_arrival');
     const token = staffToken('nava-arrival', [mailboxId], secret).token;
     const response = await fetch(`${origin}/api/nava/v1/threads`, {
       method: 'POST', redirect: 'error', signal, body,

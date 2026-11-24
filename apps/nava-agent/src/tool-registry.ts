@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import { posix, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -12,7 +13,8 @@ import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource,
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, lookupExactStay, lookupFilingStay, targetLookup, targetSelection } from './stay-target.js';
 import { mailPrompt } from './mail-prompt.js';
-import { effectiveSenderHost, normalizePartyName } from './party-matching.js';
+import { normalizePartyName, resolveSelectedSenderHost } from './party-matching.js';
+import { projectStoredRequestTimeContext, type StoredRequestTimeContext } from './request-time-context.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
@@ -252,6 +254,12 @@ async function selectedMail(sessionId:string) {
   return row;
 }
 
+async function sessionRequestTimeContext(sessionId:string):Promise<unknown|undefined> {
+  const [row]=await sql`SELECT payload FROM nava_agent.agent_event
+    WHERE session_id=${sessionId} AND kind='request_time_context' ORDER BY sequence DESC LIMIT 1`;
+  return projectStoredRequestTimeContext(row?.payload as StoredRequestTimeContext | undefined);
+}
+
 /** Turn-1 mail evidence preload (same payload mail_read_thread returns). Optional `clientCard` appends a `[Client Memory Card]` block for callers that supply one. */
 export async function sessionMailPrompt(sessionId:string, clientCard?:string|null):Promise<unknown|null> {
   const selected=await selectedMail(sessionId);
@@ -261,7 +269,10 @@ export async function sessionMailPrompt(sessionId:string, clientCard?:string|nul
     AND received_at <= ${thread.selected_received_at ?? null}::timestamptz ORDER BY received_at,id`;
   const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${sessionId} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
   const sourceInput=source?.payload;
-  const prompt=mailPrompt({...thread,messages:messages.map(m=>m.payload),...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {})});
+  const requestTimeContext=await sessionRequestTimeContext(sessionId);
+  const prompt=mailPrompt({...thread,messages:messages.map(m=>m.payload),
+    ...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {}),
+    ...(requestTimeContext ? {request_time_context:requestTimeContext} : {})});
   if(clientCard==null || typeof clientCard!=='string' || !clientCard.trim()) return prompt;
   const card=clientCard.trimStart().startsWith('[Client Memory Card]') ? clientCard.trim() : `[Client Memory Card]\n${clientCard.trim()}`;
   if(prompt && typeof prompt==='object' && !Array.isArray(prompt)) return {...prompt as Record<string,unknown>, client_memory_card:card};
@@ -298,7 +309,7 @@ function filingJobs(draft:ProposalDraft):ProposalDraft[] {
 }
 
 async function baselineDispatch(sessionId:string,name:string,input:unknown,toolEvent:string,emit:RegistryDeps['emit'],fence?:LeaseFence,signal?:AbortSignal,nativeAdmission?:NativeAdmission) {
-  const [session]=await sql`SELECT s.*,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.id=${sessionId} OR s.managed_session_id=${sessionId}`;
+  const [session]=await sql`SELECT s.*,t.property_code,t.selected_message_id FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.id=${sessionId} OR s.managed_session_id=${sessionId}`;
   if (!session) return failure('SESSION_NOT_FOUND','Session is not registered.');
   await emit(session.id,'tool_started',{tool:name,tool_event_id:toolEvent});
   let response:string;
@@ -315,12 +326,9 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
       }
     } else if(name==='mail_read_thread') {
       schemas.mail_read_thread.parse(input);
-      const {sender_email: _sender, subject: _subject, body_text: _body, input_cutoff: _cutoff, replay_id: _replay, thread_id: _thread, ...thread}=await selectedMail(session.id) ?? {};
-      const messages=await sql`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${session.thread_id}
-        AND received_at <= ${thread.selected_received_at ?? null}::timestamptz ORDER BY received_at,id`;
-      const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
-      const sourceInput=source?.payload;
-      response=result(mailPrompt({...thread,messages:messages.map(m=>m.payload),...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {})}));
+      // Same sealed packet as Turn-1 sessionMailPrompt (selection + request_time_context).
+      const prompt=await sessionMailPrompt(session.id);
+      response=prompt==null ? failure('MAIL_UNAVAILABLE','Selected mail projection unavailable.') : result(prompt);
     } else if (name==='hms_quote') {
       const q=schemas.hms_quote.parse(input);
       if(session.mode==='historical') response=failure('HISTORICAL_HMS_UNAVAILABLE','Historical sessions cannot access live HMS.');
@@ -449,10 +457,11 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
             : normalizeProposalFields(staffDraft);
           if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
           let current=normalized.draft;
-          if(current.workflow==='create') {
+          // Live only: DB party memory. Historical/replay (incl. live+replay_id) uses twin history, never live counts.
+          if(current.workflow==='create' && session.mode==='live' && !session.config?.replay_id) {
             try {
-              const selMail=await selectedMail(session.id).catch(()=>null);
-              const host=effectiveSenderHost(selMail?.sender_email,selMail?.body_text ?? null,selMail?.subject ?? null);
+              const mailPacket=await sessionMailPrompt(session.id).catch(()=>null);
+              const host=resolveSelectedSenderHost(mailPacket);
               const senderProp=String(current.bookings[0]?.property_code ?? session.property_code ?? 'HRCEN').trim().toUpperCase();
               const senderParties:SenderPartySuggestion = host ? {
                 agency: await lookupSenderPartyMemory(sql, {propertyCode:senderProp, host, kind:'agency'}).catch(()=>null),
@@ -480,6 +489,22 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           const id=uid('proposal');
           await tx`INSERT INTO nava_agent.proposal(id,thread_id,session_id,revision,workflow,phase,original,current,execution) VALUES (${id},${session.thread_id},${session.id},1,${draft.workflow},'ready',${json(current)},${json(current)},${json({publish_event_id:toolEvent,...(selection?{staff_stay_selection:selection}:{}),native_quote_event_ids:captures.map(capture=>capture.payload.tool_event_id)})})`;
           await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'proposal',${json({proposal_id:id,workflow:draft.workflow,revision:1,fields:{bookings:current.bookings,actions:current.actions}})})`;
+          // Publish-boundary receipt refs (scrubbed digests only; no private bytes).
+          // Bind to selected mail id from the thread, not worker_delivery_id (mail_pending event).
+          const evidenceDigest=createHash('sha256').update(JSON.stringify({
+            selected_message_id:session.selected_message_id ?? null,
+            proposal_id:id,
+            workflow:draft.workflow,
+            mode:session.mode,
+          })).digest('hex');
+          await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'decision_receipt_ref',${json({
+            scrubber_version:'payment-redact/v1',
+            proposal_id:id,
+            evidence_digest:evidenceDigest,
+            mode:session.mode,
+            network_disabled:session.mode==='historical',
+            writes_disabled:session.mode==='historical',
+          })})`;
           ids.push(id);
         }
         return result({proposal_id:ids[0],revision:1,phase:'ready'});

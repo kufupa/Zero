@@ -8,8 +8,12 @@ import { claimGoInTransaction, writeEvent } from './session-store.js';
 import { groupedQuoteRequest, proposalDraft, type ProposalDraft, type Workflow } from './schema.js';
 import { createGoEnabled, createGoRealGuests, createPilotRequested, hmsSaveEnabled, isWriteWorkflow, staffPrepareOnly, staffSlotCount } from './hms-mode.js';
 import { missingCreateFields } from './proposal-fields.js';
-import { recordSavedSenderParty, recordSavedStayMemory } from './party-memory.js';
-import { effectiveSenderHost } from './party-matching.js';
+import {
+  extractObservedStayChoice,
+  recordMemoryObservation,
+  type ObservedStayChoice,
+} from './party-memory.js';
+import { resolveSelectedSenderHost } from './party-matching.js';
 import { stageFeedback } from './prepare-feedback.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, hasBoundCreateGuest, invalidGuestSelection, profileReviewFor, requiresStaffAttachmentCheck, selectedCreateGuest, selectedStageSource, stageSource, staffAttachmentsChecked, type StaffJobBinding } from './attachment-gate.js';
 import { installedStaffTools, type LeaseFence, type RegistryContext, type StaffNativeInput, type ToolRegistry, type ToolResult } from './tool-registry.js';
@@ -349,64 +353,54 @@ async function resumeFilingAfterCreate(tx: postgres.TransactionSql, p: ProposalR
     `Infor Create Go completed. Use this exact readback and selected source for the outstanding voucher or proof of payment Filing; publish a separate Filing proposal with booking.reservation_id set to this confirmation. Staff must review and select the Infor target before Prepare. ${JSON.stringify(readback)}`});
 }
 
-type StayMemoryFlush = {
-  propertyCode: string;
-  agencyId: string | null;
-  organizationId: string | null;
-  agencyName: string | null;
-  organizationName: string | null;
-  fields: Record<string, unknown>;
-  host: string | null;
-};
+type StayMemoryFlush = ObservedStayChoice;
 
 async function flushStayMemory(rows: StayMemoryFlush[]) {
-  for (const row of rows) {
+  for (const choice of rows) {
     try {
-      await recordSavedStayMemory(sql, {
-        propertyCode: row.propertyCode,
-        agencyId: row.agencyId,
-        organizationId: row.organizationId,
-        fields: row.fields,
-      });
-    } catch { /* memory flywheel non-fatal */ }
-    if (!row.host) continue;
-    try {
-      await recordSavedSenderParty(sql, {
-        propertyCode: row.propertyCode,
-        host: row.host,
-        agencyName: row.agencyName,
-        agencyId: row.agencyId,
-        organizationName: row.organizationName,
-        organizationId: row.organizationId,
-      });
-    } catch { /* sender-party memory non-fatal */ }
+      // Sender-party vote is applied atomically inside the observation transaction.
+      await recordMemoryObservation(sql, choice);
+    } catch { /* observation append non-fatal; never retry Save */ }
   }
 }
 
-function bookingMemoryFields(booking: {property_code?: unknown; fields: Record<string, unknown>}, host: string | null): StayMemoryFlush {
-  const fields = booking.fields;
-  return {
-    propertyCode: String(booking.property_code ?? '').trim().toUpperCase(),
-    agencyId: typeof fields.agency_id === 'string' ? fields.agency_id : null,
-    organizationId: typeof fields.organization_id === 'string' ? fields.organization_id : null,
-    agencyName: typeof fields.agency_name === 'string' ? fields.agency_name : null,
-    organizationName: typeof fields.organization_name === 'string' ? fields.organization_name : null,
-    fields,
-    host,
-  };
+/** Build observation from verified Go readback for one room; skip draft-only / Labtest / non-live. */
+function observedChoiceFromGo(args: {
+  mode: string;
+  propertyCode: string;
+  confirmation: string | null | undefined;
+  reservationId: string | null | undefined;
+  readback: unknown;
+  booking: {fields: Record<string, unknown>};
+  host: string | null;
+  evidenceRef: string;
+}): StayMemoryFlush | null {
+  const extracted = extractObservedStayChoice({
+    propertyCode: args.propertyCode,
+    confirmation: args.confirmation,
+    reservationId: args.reservationId,
+    readback: args.readback,
+    bookingFields: args.booking.fields,
+    host: args.host,
+    evidenceRef: args.evidenceRef,
+    mode: args.mode,
+  });
+  return extracted.ok ? extracted.choice : null;
 }
 
 async function selectedMailHost(tx: postgres.TransactionSql, threadId: string): Promise<string | null> {
-  const [row] = await tx`SELECT m.payload FROM nava_agent.mail_thread t JOIN nava_agent.mail_message m
-    ON m.thread_id=t.id AND m.source_message_id=t.selected_message_id WHERE t.id=${threadId}`;
-  const payload = row?.payload;
-  if (!payload || typeof payload !== 'object') return null;
-  const from = (payload as {from?: {email?: unknown}; from_address?: unknown; subject?: unknown; body_text?: unknown; body?: unknown});
-  const email = typeof from.from_address === 'string' ? from.from_address
-    : typeof from.from?.email === 'string' ? from.from.email : null;
-  const body = typeof from.body_text === 'string' ? from.body_text : typeof from.body === 'string' ? from.body : null;
-  const subject = typeof from.subject === 'string' ? from.subject : null;
-  return effectiveSenderHost(email, body, subject);
+  const [thread] = await tx`SELECT selected_message_id FROM nava_agent.mail_thread WHERE id=${threadId}`;
+  if (!thread?.selected_message_id) return null;
+  const messages = await tx`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${threadId}`;
+  return resolveSelectedSenderHost({
+    selected_message_id: thread.selected_message_id,
+    messages: messages.map(row => row.payload),
+  });
+}
+
+async function sessionMode(tx: postgres.TransactionSql, sessionId: string): Promise<string | null> {
+  const [row] = await tx`SELECT mode FROM nava_agent.agent_session WHERE id=${sessionId}`;
+  return typeof row?.mode === 'string' && row.mode.trim() ? row.mode.trim() : null;
 }
 
 async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId: string, result: ToolResult) {
@@ -423,9 +417,22 @@ async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId:
       await tx`UPDATE nava_agent.proposal SET phase='done',result=${json({confirmation:data.confirmation,reservation_id:data.reservation_id,readback:data.readback,...(rooms?{rooms}:{})})},
         execution=(execution-'go') || ${json({last_go:completion})}::jsonb,updated_at=now() WHERE id=${p.id}`;
       await resumeFilingAfterCreate(tx,p,data);
-      if(draft.success && draft.data.workflow==='create' && data.readback!=null) {
+      if(draft.success && draft.data.workflow==='create' && data.readback!=null && draft.data.bookings.length===1) {
         const host = await selectedMailHost(tx, p.thread_id).catch(() => null);
-        for(const booking of draft.data.bookings) pendingMemory.push(bookingMemoryFields(booking, host));
+        // Fail closed: lookup failure / missing mode → skip learning (never default to live).
+        const mode = await sessionMode(tx, lease.sessionId).catch(() => null);
+        const booking = draft.data.bookings[0]!;
+        const choice = mode ? observedChoiceFromGo({
+          mode,
+          propertyCode: String(booking.property_code ?? '').trim().toUpperCase(),
+          confirmation: data.confirmation,
+          reservationId: data.reservation_id,
+          readback: data.readback,
+          booking,
+          host,
+          evidenceRef: `go_finished:${p.id}:${executionId}`,
+        }) : null;
+        if(choice) pendingMemory.push(choice);
       }
     } else if(uncertain) {
       await tx`UPDATE nava_agent.proposal SET phase='uncertain',execution=(execution-'go') || ${json({last_go:completion,
@@ -518,11 +525,26 @@ async function finishCreateRoom(lease:LeaseFence,proposalId:string,executionId:s
       execution=${phase==='saving' ? json({...p.execution,go:next}) : json({...p.execution,go:undefined,last_go:{...next,state:complete?'saved':uncertain?'uncertain':'failed'},error})},updated_at=now() WHERE id=${proposalId}`;
     await writeEvent(tx,lease.sessionId,'create_room_finished',{proposal_id:proposalId,execution_id:executionId,booking_id:rooms[index].booking_id,
       outcome:rooms[index].state,confirmation:rooms[index].confirmation ?? null,reservation_id:rooms[index].reservation_id ?? null});
-    if(complete) {
+    // Learn each independently saved room even if a later room fails; never from draft alone.
+    if(result.ok && rooms[index].state==='saved' && rooms[index].readback!=null) {
       const draft=proposalDraft.safeParse(go.snapshot);
-      if(draft.success && draft.data.workflow==='create') {
+      const booking=draft.success
+        ? draft.data.bookings.find(item=>item.id===rooms[index].booking_id) ?? null
+        : null;
+      if(booking) {
         const host = await selectedMailHost(tx, p.thread_id).catch(() => null);
-        for(const booking of draft.data.bookings) pendingMemory.push(bookingMemoryFields(booking, host));
+        const mode = await sessionMode(tx, lease.sessionId).catch(() => null);
+        const choice = mode ? observedChoiceFromGo({
+          mode,
+          propertyCode: String(booking.property_code ?? '').trim().toUpperCase(),
+          confirmation: rooms[index].confirmation ?? null,
+          reservationId: rooms[index].reservation_id ?? null,
+          readback: rooms[index].readback,
+          booking,
+          host,
+          evidenceRef: `create_room_finished:${proposalId}:${rooms[index].booking_id}`,
+        }) : null;
+        if(choice) pendingMemory.push(choice);
       }
     }
     return phase==='saving';
@@ -543,6 +565,7 @@ export async function runStaffReconcile(lease:LeaseFence,registry:ToolRegistry,s
     ? await registry.reconcileCreate(prior.data.details,signal)
     : {ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Check the booking in Infor before taking further action.',retryable:false,outcome:'uncertain' as const}};
   const saved=z.object({confirmation:z.string().regex(/^\d+-\d+$/),reservation_id:z.string().regex(/^\d+$/),readback:z.unknown(),sibling:z.unknown()}).safeParse(recovered.data);
+  const pendingMemory: StayMemoryFlush[] = [];
   await sql.begin(async tx=>{
     const [owner]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${lease.sessionId} AND worker_id=${lease.workerId}
       AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() FOR NO KEY UPDATE`;
@@ -564,11 +587,34 @@ export async function runStaffReconcile(lease:LeaseFence,registry:ToolRegistry,s
         recovery:'Check Infor before taking further action.',retryable:false,outcome:'known',operation:'staff_stage'};
       last.rooms=rooms;
       last.state=complete?'saved':'failed';
+      const host = await selectedMailHost(tx, p.thread_id).catch(() => null);
+      const mode = await sessionMode(tx, lease.sessionId).catch(() => null);
+      // Only rooms that were uncertain (newly confirmed) — avoid double-count with finishCreateRoom.
+      const newlySaved = prior.data.rooms
+        ? rooms.filter((room, index) => room.state === 'saved' && prior.data.rooms![index]?.state === 'uncertain')
+        : rooms.filter(room => room.state === 'saved');
+      for(const room of newlySaved) {
+        if(room.readback==null) continue;
+        const booking=draft.data.bookings.find(item=>item.id===room.booking_id);
+        if(!booking || !mode) continue;
+        const choice=observedChoiceFromGo({
+          mode,
+          propertyCode:String(booking.property_code??'').trim().toUpperCase(),
+          confirmation:room.confirmation??null,
+          reservationId:room.reservation_id??null,
+          readback:room.readback,
+          booking,
+          host,
+          evidenceRef:`reconcile_finished:${row.id}:${room.booking_id}`,
+        });
+        if(choice) pendingMemory.push(choice);
+      }
     } else error={code:'SAVE_UNCERTAIN',message:'Infor did not confirm the Save. Check the booking before taking further action.',retryable:false,outcome:'uncertain'};
     const execution={...p.execution,last_go:last,reconcile:{...job,state:'finished'},error};
     await tx`UPDATE nava_agent.proposal SET phase=${phase},result=${json(result)},execution=${json(execution)},updated_at=now() WHERE id=${row.id}`;
     await writeEvent(tx,lease.sessionId,'reconcile_finished',{proposal_id:row.id,job_id:job.job_id,outcome:phase});
   });
+  await flushStayMemory(pendingMemory);
   return true;
 }
 

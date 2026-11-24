@@ -39,6 +39,7 @@ class OperationError extends Error {
   constructor(readonly code:OperationFailure|'REAL_GUEST_GO_UNAVAILABLE'|'HISTORICAL_UNAVAILABLE',readonly details:unknown=null) { super(code); }
 }
 const workflows:Workflow[]=['triage','quote','create','amend','cancel','filing'];
+const importConflicts=new Set(['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT','REQUEST_TIME_CONTEXT_REJECTED']);
 const staffGoInput=goInput.extend({create_profile:z.literal(true).optional()}).strict();
 const labtestSource = z.object({source: z.enum(['outlook','webmail','corpus','eval']), mailbox_id: z.string().min(1), source_thread_id: z.string().min(1), selected_message_id: z.string().min(1)});
 const labtestSeed = z.object({thread:threadInput, target:manualLabtestTarget}).strict();
@@ -116,7 +117,7 @@ app.post('/threads',async c=>{
     || parsed.data.messages.find(message=>message.id===parsed.data.selected_message_id)?.direction!=='inbound'
   )))) return c.json({error:{code:'FORBIDDEN',message:'Select an inbound Centurion source.',details:null}},403);
   try { if(principal.kind==='staff' && !parsed.data.replay_id) {const seeded=await findManualLabtest(parsed.data);if(seeded)return c.json(seeded,200);} const imported=await importThread(parsed.data,c.req.header('Idempotency-Key')!); const current=await snapshot(imported.id); if(process.env.NAVA_CREATE_PREPARE_ONLY==='1' && parsed.data.mode==='live' && current?.selected_message_id!==parsed.data.selected_message_id) throw new Error('IMPORT_SELECTION_MISMATCH'); if(!imported.skipped && current?.session) void startPending(current.session.id).catch(()=>{}); return c.json(current,imported.created?201:200); }
-  catch (error) { const message=error instanceof Error ? error.message : 'IMPORT_FAILED'; return c.json({error:{code:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'IMPORT_UNAVAILABLE',message:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'Unable to import thread',details:null}},['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?409:503); }
+  catch (error) { const message=error instanceof Error ? error.message : 'IMPORT_FAILED'; const conflict=importConflicts.has(message); return c.json({error:{code:conflict?message:'IMPORT_UNAVAILABLE',message:conflict?'The selected email changed. Refresh and try again.':'Unable to import thread',details:null}},conflict?409:503); }
 });
 app.get('/threads/:id',async c=>{const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);const result=await snapshot(c.req.param('id')); return result?c.json(result):c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);});
 app.get('/threads/:id/events',async c=>{

@@ -412,8 +412,10 @@ test('Create counts rooms in one grouped action, including numbered quantities',
   draft.actions[0].booking_ids = ['b0', 'b1'];
   const scored = score(card, draft);
   assert.equal(scored.roi_score, 1);
+  // Lead U7: explicit expected_action_count 0 is zero-action — do not promote inferred room count.
   const review = score({...card, expected_action_count: 0, expected_disposition: 'staff_review'}, draft);
-  assert.deepEqual([review.expected_units, review.actual_units, review.disposition_ok], [2, 2, true]);
+  assert.deepEqual([review.expected_units, review.actual_units], [0, review.actual_units]);
+  assert.equal(review.expected_units, 0);
   assert.deepEqual([scored.expected_units, scored.actual_units, scored.failure_reason], [2, 2, null]);
   const duplicate = {...draft, actions: [draft.actions[0], {...draft.actions[0], id: 'duplicate'}]};
   assert.equal(score(card, duplicate).safety_flags.spurious_action, true);

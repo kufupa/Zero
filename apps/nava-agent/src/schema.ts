@@ -8,7 +8,9 @@ const json: z.ZodType<null | boolean | number | string | unknown[] | Record<stri
 const person = z.object({name:z.string().nullable(),email:z.string()}).strict();
 const attachment = z.object({id, name:z.string(), mime_type:z.string(), size:z.number().int().nonnegative(), handle:z.string(), extracted_text:z.string().nullable()}).strict();
 const email = z.object({id, rfc_message_id:z.string().nullable(), direction:z.enum(['inbound','outbound']), from:person, to:z.array(person), cc:z.array(person), received_at:z.string().datetime({offset:true}), subject:z.string(), body_text:z.string(), body_html:z.string().nullable(), attachment_status:z.enum(['complete','unknown','has_unread']).optional(), attachments:z.array(attachment)}).strict();
-export const threadInput = z.object({source:z.enum(['outlook','webmail','corpus','eval']), source_thread_id:id, mailbox_id:id, selected_message_id:id, property_code:z.string().nullable(), mode:z.enum(['live','labtest','historical']), messages:z.array(email).min(1), decision_id:z.string().optional(), input_cutoff:z.string().optional(), replay_id:z.string().uuid().optional()}).strict().superRefine((v,ctx)=>{
+/** Optional server-attested enrichment; arbitrary client packets are rejected at import. */
+const requestTimeContext = z.unknown().optional();
+export const threadInput = z.object({source:z.enum(['outlook','webmail','corpus','eval']), source_thread_id:id, mailbox_id:id, selected_message_id:id, property_code:z.string().nullable(), mode:z.enum(['live','labtest','historical']), messages:z.array(email).min(1), decision_id:z.string().optional(), input_cutoff:z.string().optional(), replay_id:z.string().uuid().optional(), request_time_context:requestTimeContext}).strict().superRefine((v,ctx)=>{
   if(!v.messages.some(m=>m.id===v.selected_message_id)) ctx.addIssue({code:z.ZodIssueCode.custom,message:'selected message missing'});
   if(v.replay_id) {
     const cutoff=Date.parse(v.input_cutoff ?? '');
@@ -74,7 +76,7 @@ export const groupedQuoteRequest = z.preprocess(normalizeQuoteActionDetails, nat
       const rateCode=hrcen ? hrcenCode('rate_plan',rate_preference,meal) ??
         (rate_preference && Object.hasOwn(CENTURION_RATE_CATALOGUE,rate_preference) ? rate_preference : null) : null;
       // Government rates need an organization bind; bare NGOV* filters crash Hotel Availability.
-      const bindRate=rateCode && (!/^NGOV/.test(rateCode) || organization_id);
+      const bindRate=rateCode && (!rateCode.startsWith('NGOV') || organization_id);
       const bases=room.required?.mealPlanBases;
       const roomOnly=meal && /^(?:ro|room only|room_only)$/i.test(meal);
       const breakfast=!meal || /\b(?:bb|dbb|breakfast|dinner)\b/i.test(meal) || /^b&b$/i.test(meal);

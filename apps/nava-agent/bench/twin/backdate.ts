@@ -170,25 +170,12 @@ export function observeStays(world: TwinWorld, card: CaseCard): Map<string, Obse
       ...anchorPdfs(anchor).map(pdf => parseTime(pdf.sent_at) ?? Infinity),
     );
     if (at >= cutoff) continue;
-    // Identity-only: expose searchable guest/dates, never post-cutoff status/rates/notes.
-    const guestfullname = fields.guestfullname ?? fields.guest_name ?? [fields.firstname, fields.lastname].filter(Boolean).join(' ');
-    const arrival = fields.arrivaldate ?? fields.arrival_date ?? fields.arrival;
-    const departure = fields.departuredate ?? fields.departure_date ?? fields.departure;
+    // Identity stub only: confirmation existence, never later guest/dates/status/rates (U5).
     latest.set(confirmation, {
       at, confirmation,
       stay: {
         confirmation,
         confirmationnumber: confirmation,
-        guestfullname,
-        guest_name: guestfullname,
-        firstname: fields.firstname ?? fields.first_name ?? null,
-        lastname: fields.lastname ?? fields.last_name ?? null,
-        first_name: fields.firstname ?? fields.first_name ?? null,
-        last_name: fields.lastname ?? fields.last_name ?? null,
-        arrivaldate: arrival,
-        arrival_date: isoDate(arrival),
-        departuredate: departure,
-        departure_date: isoDate(departure),
         source: 'pre_as_of_identity',
       },
       documents: null,

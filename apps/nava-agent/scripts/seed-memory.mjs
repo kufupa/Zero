@@ -12,26 +12,13 @@ import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import postgres from 'postgres';
+import { normalizeGuaranteeCode } from '../src/guarantee-normalize.mjs';
 
 const DEFAULT_WORLD = join(homedir(), '.local/share/zero/bench/replay-bench-20261119/world');
 const DEFAULT_DEV_DIR = join(homedir(), '.local/share/zero/runs/overnight-20261122/data/v6/dev');
 const DEFAULT_READS_DIR = join(homedir(), '.local/share/zero/runs/overnight-20261122/data');
 const PROPERTY = 'HRCEN';
-const GUARANTEE_TO_CODE = new Map([
-  ['guaranteed by agent', 'GTDAGT'], ['gtdagt', 'GTDAGT'],
-  ['guaranteed by deposit', 'GTDDEP'], ['gtddep', 'GTDDEP'],
-  ['deposit requested', 'DEPREQ'], ['depreq', 'DEPREQ'],
-  ['guaranteed by company', 'GTDCMP'], ['gtdcmp', 'GTDCMP'],
-  ['guaranteed by credit card', 'GTDCC'], ['gtdcc', 'GTDCC'],
-  ['non-guaranteed individual', 'NGI'], ['ngi', 'NGI'],
-  ['confirmation received', 'CNFRCV'], ['cnfrcv', 'CNFRCV'],
-  ['awaiting voucher', 'AWVCH'], ['awvch', 'AWVCH'],
-]);
-
-function normalizeGuarantee(raw) {
-  const s = String(raw ?? '').trim().toLowerCase();
-  return GUARANTEE_TO_CODE.get(s) ?? null;
-}
+const normalizeGuarantee = normalizeGuaranteeCode;
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
@@ -180,7 +167,10 @@ async function main() {
       writes.push(['rate_plan', rateplan]);
       if (board) writes.push([`rate_plan:${board}`, rateplan]);
     }
-    if (guarantee != null && String(guarantee).trim()) writes.push(['guarantee_type', String(guarantee).trim()]);
+    {
+      const guarCode = normalizeGuarantee(guarantee);
+      if (guarCode) writes.push(['guarantee_type', guarCode]);
+    }
 
     for (const [kind, partyId] of [['agency', agencyId], ['organization', organizationId]]) {
       if (!partyId) continue;
@@ -209,7 +199,14 @@ async function main() {
         if (row.native_id) cur.nativeId = String(row.native_id);
         senderHits.set(key, cur);
       } else if (row.party_id && row.field_name && row.field_value != null) {
-        bump(bookingHits, partyKey(row.property_code ?? PROPERTY, row.party_kind, row.party_id, row.field_name, String(row.field_value)), Number(row.hits) || 1);
+        const property_code = row.property_code ?? PROPERTY;
+        let field_value = String(row.field_value);
+        if (property_code === 'HRCEN' && row.field_name === 'guarantee_type') {
+          const code = normalizeGuarantee(field_value);
+          if (!code) continue;
+          field_value = code;
+        }
+        bump(bookingHits, partyKey(property_code, row.party_kind, row.party_id, row.field_name, field_value), Number(row.hits) || 1);
       }
     }
     for (const row of extra.sender_direct_misses ?? []) {

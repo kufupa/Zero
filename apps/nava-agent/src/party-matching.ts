@@ -117,6 +117,41 @@ export function effectiveSenderHost(
   return extractSenderHost('', query ?? '');
 }
 
+function messageFromAddress(message: Record<string, unknown>): string | null {
+  if (typeof message.from_address === 'string' && message.from_address.trim()) return message.from_address;
+  const from = message.from;
+  if (typeof from === 'string' && from.trim()) return from;
+  if (from && typeof from === 'object' && !Array.isArray(from)) {
+    const email = (from as {email?: unknown}).email;
+    if (typeof email === 'string' && email.trim()) return email;
+  }
+  return null;
+}
+
+/**
+ * Production selected-mail host for Turn-1 client card.
+ * Unique `messages[].id === selected_message_id`; never last/head/source_input nested mail.
+ * Missing/conflicting id, non-inbound, missing address ⇒ null. Caller fences live/replay.
+ */
+export function resolveSelectedSenderHost(mail: unknown): string | null {
+  if (!mail || typeof mail !== 'object' || Array.isArray(mail)) return null;
+  const root = mail as Record<string, unknown>;
+  const selectedId = root.selected_message_id;
+  if (typeof selectedId !== 'string' || !selectedId) return null;
+  if (!Array.isArray(root.messages)) return null;
+  const matches = root.messages.filter((item): item is Record<string, unknown> =>
+    !!item && typeof item === 'object' && !Array.isArray(item) && (item as {id?: unknown}).id === selectedId);
+  if (matches.length !== 1) return null;
+  const selected = matches[0]!;
+  if (selected.direction !== 'inbound') return null;
+  const fromEmail = messageFromAddress(selected);
+  if (!fromEmail) return null;
+  const subject = typeof selected.subject === 'string' ? selected.subject : null;
+  const body = typeof selected.body_text === 'string' ? selected.body_text
+    : typeof selected.body === 'string' ? selected.body : null;
+  return effectiveSenderHost(fromEmail, body, subject);
+}
+
 export async function searchPartyWithFallback(query: string, kind: string,
   search: (term: string) => Promise<Record<string, unknown>>,
   history: () => Promise<LearnedSenderHit | null>) {

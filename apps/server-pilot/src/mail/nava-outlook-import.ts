@@ -6,9 +6,19 @@ import { attachment, mailThread, message } from '../db/schema/mail.js';
 import { isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import { resolvePropertyScope } from '../hms/property-registry.js';
 import { toParsedMessage } from '../trpc/wire-compat.js';
-import { loadConversationMetaForThread } from './conversation-group.js';
+import {
+  buildConversationMetaAsOf,
+  loadConversationEdgesForTransport,
+  loadConversationMetaForThread,
+  type ThreadStats,
+} from './conversation-group.js';
 import { htmlToPlainText } from './inbound-reaction-parser.js';
 import { paneAttachmentStatus } from './ingest/attachment-evidence.js';
+import {
+  projectRequestTimeContext,
+  type RequestTimeContextPacket,
+  type RequestTimeContextResult,
+} from './request-time-context.js';
 
 const address = z.object({ name: z.string().nullable(), email: z.string() }).strict();
 const paneImport = z.object({
@@ -118,6 +128,131 @@ export async function canonicalCenturionPaneImport(payload: unknown, mailboxId: 
       item.id === input.selected_message_id ? { ...item, attachments: pdfs } : item) };
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 }
+
+/**
+ * After canonical identity validation: derive server-owned as-of context from
+ * historically admissible bytes. Does not change message equality / filing grants.
+ */
+export async function deriveCenturionRequestTimeContext(
+  canonical: NonNullable<Awaited<ReturnType<typeof canonicalCenturionPaneImport>>>,
+  attestedBy: 'nava_gateway' | 'nava_arrival',
+): Promise<RequestTimeContextResult> {
+  const cutoff = canonical.input_cutoff
+    ?? canonical.messages.find((item) => item.id === canonical.selected_message_id)?.received_at;
+  if (!cutoff) {
+    return {
+      state: 'unobserved',
+      reason: 'cutoff_unavailable',
+      contextDigest: '0'.repeat(64),
+    };
+  }
+  const cutoffMs = Date.parse(cutoff);
+  return getDb().transaction(async (tx) => {
+    const [selected] = await tx.select({
+      threadId: message.threadId,
+    }).from(message).where(and(
+      eq(message.id, canonical.selected_message_id),
+      eq(message.transportId, canonical.mailbox_id),
+    )).limit(1);
+    if (!selected) {
+      return { state: 'unobserved' as const, reason: 'selected_unavailable', contextDigest: '0'.repeat(64) };
+    }
+
+    const edges = await loadConversationEdgesForTransport(tx, canonical.mailbox_id);
+    const seedIds = [selected.threadId];
+    const ufStats = new Map<string, ThreadStats>();
+    // Expand candidate threads from edges that were visible at cutoff (includes later-superseded).
+    // Never merge live/post-cutoff linkedThreadIds — those leak future conversation graph.
+    const asOfMeta = buildConversationMetaAsOf(
+      canonical.mailbox_id, seedIds, edges, ufStats, cutoffMs,
+    );
+    const candidateThreadIds = new Set<string>([
+      selected.threadId,
+      ...(asOfMeta.get(selected.threadId)?.linkedThreadIds ?? []),
+    ]);
+    // Also include both endpoints of every edge that touches the seed and is visible at cutoff.
+    // Fail closed on unknown createdAt / bad cutoff.
+    if (Number.isFinite(cutoffMs)) {
+      for (const edge of edges) {
+        const created = edge.createdAt instanceof Date ? edge.createdAt.getTime()
+          : edge.createdAt ? Date.parse(String(edge.createdAt)) : NaN;
+        if (!Number.isFinite(created) || created > cutoffMs) continue;
+        const superseded = edge.supersededAt instanceof Date ? edge.supersededAt.getTime()
+          : edge.supersededAt ? Date.parse(String(edge.supersededAt)) : NaN;
+        if (Number.isFinite(superseded) && superseded <= cutoffMs) continue;
+        if (edge.srcThreadId === selected.threadId || edge.dstThreadId === selected.threadId
+          || candidateThreadIds.has(edge.srcThreadId) || candidateThreadIds.has(edge.dstThreadId)) {
+          candidateThreadIds.add(edge.srcThreadId);
+          candidateThreadIds.add(edge.dstThreadId);
+        }
+      }
+    }
+
+    const rows = await tx.select({
+      id: message.id,
+      threadId: message.threadId,
+      direction: message.direction,
+      messageIdHeader: message.messageIdHeader,
+      inReplyTo: message.inReplyTo,
+      references: message.references,
+      fromAddress: message.fromAddress,
+      subject: message.subject,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+      createdAt: message.createdAt,
+    }).from(message).where(and(
+      eq(message.transportId, canonical.mailbox_id),
+      inArray(message.threadId, [...candidateThreadIds]),
+    )).orderBy(asc(message.receivedAt), asc(message.id));
+
+    const authorized = rows.flatMap((row) => {
+      const received = row.receivedAt ?? row.sentAt ?? row.createdAt;
+      const receivedMs = received instanceof Date ? received.getTime() : Date.parse(String(received ?? ''));
+      // Hard receipt-time bound: drop post-cutoff / unparseable timestamps before projection.
+      if (!Number.isFinite(cutoffMs) || !Number.isFinite(receivedMs) || receivedMs > cutoffMs) return [];
+      const receivedAt = received instanceof Date ? received.toISOString() : String(received ?? '');
+      const body = row.textBody?.trim()
+        ? row.textBody
+        : row.htmlBody ? htmlToPlainText(row.htmlBody) : '';
+      return [{
+        id: row.id,
+        threadId: row.threadId,
+        rfcMessageId: row.messageIdHeader,
+        inReplyTo: row.inReplyTo,
+        references: row.references ?? [],
+        direction: row.direction as 'inbound' | 'outbound',
+        receivedAt,
+        subject: row.subject ?? '',
+        bodyText: body,
+        fromEmail: (/<([^<>]+)>/.exec(row.fromAddress)?.[1] ?? row.fromAddress).trim().toLowerCase(),
+      }];
+    });
+
+    return projectRequestTimeContext({
+      scope: { property: canonical.property_code, mailbox: canonical.mailbox_id },
+      selectedId: canonical.selected_message_id,
+      cutoff,
+      messages: authorized,
+      recordedEdges: edges.map((edge) => ({
+        srcThreadId: edge.srcThreadId,
+        dstThreadId: edge.dstThreadId,
+        srcMessageId: edge.srcMessageId,
+        dstMessageId: edge.dstMessageId,
+        linkType: edge.linkType,
+        createdAt: edge.createdAt instanceof Date ? edge.createdAt.toISOString() : edge.createdAt ? String(edge.createdAt) : null,
+        supersededAt: edge.supersededAt instanceof Date ? edge.supersededAt.toISOString()
+          : edge.supersededAt ? String(edge.supersededAt) : null,
+      })),
+      attested_by: attestedBy,
+    });
+  }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
+}
+
+export type CenturionImportWithContext = NonNullable<Awaited<ReturnType<typeof canonicalCenturionPaneImport>>> & {
+  request_time_context?: RequestTimeContextPacket | { state: 'unobserved'; reason: string; contextDigest: string };
+};
 
 export async function isCenturionFilingSource(input: { mailboxId: string; conversationId: string; messageId: string; attachmentId: string }): Promise<boolean> {
   try {
