@@ -271,7 +271,9 @@ function loadBase(root:string):BaseWorld {
       // Strict validation/test worlds must not learn commercial party hints from
       // weak train-derived temporal pairings.  Only direct evidence that the
       // sender thread produced this hotel confirmation is admissible there.
-      if (strict && methods.direct_confirmation !== true && methods.direct_header !== true) continue;
+      // Production memory learns sender→party from every past booking, not only direct-header pairs.
+      // Pairs stay time-gated per case (mailAtMs/sentAtMs vs cutoff). Opt out: NAVA_BENCH_NO_TRAIN_MEMORY=1.
+      if (strict && process.env.NAVA_BENCH_NO_TRAIN_MEMORY === '1' && methods.direct_confirmation !== true && methods.direct_header !== true) continue;
       const anchor = object(row.anchor);
       const fields = object(anchor.hms_fields);
       const sentAtMs = Date.parse(String(anchor.sent_at ?? ''));
@@ -314,8 +316,8 @@ function loadBase(root:string):BaseWorld {
     }
     return prefixHit ?? raw;
   };
-  // Train gold-derived prompt hints are opt-in only (never default / never in strict world).
-  const allowGoldPairs = !strict && process.env.NAVA_BENCH_ALLOW_GOLD_PAIRS === '1'
+  // Train gold-derived sender hints (earlier splits only, time-gated) mirror production party memory.
+  const allowGoldPairs = (strict ? process.env.NAVA_BENCH_NO_TRAIN_MEMORY !== '1' : process.env.NAVA_BENCH_ALLOW_GOLD_PAIRS === '1')
     && process.env.NAVA_BENCH_DISABLE_PAIRS !== '1';
   if (allowGoldPairs && isRealWorld && existsSync(join(devDir, 'gold.json'))) {
     const devGold = optionalJson(join(devDir, 'gold.json')) ?? {};
