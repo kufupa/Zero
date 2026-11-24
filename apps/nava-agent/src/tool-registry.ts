@@ -13,7 +13,7 @@ import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource,
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, lookupExactStay, lookupFilingStay, targetLookup, targetSelection } from './stay-target.js';
 import { mailPrompt } from './mail-prompt.js';
-import { normalizePartyName, resolveSelectedSenderHost } from './party-matching.js';
+import { normalizePartyName, partyCandidateScore, partyNameMatch, resolveSelectedSenderHost } from './party-matching.js';
 import { projectStoredRequestTimeContext, type StoredRequestTimeContext } from './request-time-context.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
@@ -106,28 +106,34 @@ function readProfileId(booking:Booking,values:unknown[]):string|null {
 }
 const partyCandidate=z.object({nativeId:z.string().min(1),name:z.string().min(1)});
 const partyRead=z.object({
-  input:z.object({kind:z.enum(['agency','organization']),field:z.literal('name'),property_code:z.string()}),
+  input:z.object({kind:z.enum(['agency','organization']),field:z.literal('name'),property_code:z.string(),query:z.string().optional()}),
   response:z.object({ok:z.literal(true),data:z.object({
     native:z.object({candidates:z.array(partyCandidate)}),
     selection:z.union([partyCandidate,z.literal('none')]),
   })}),
 });
 function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],kind:'agency'|'organization') {
-  if(typeof name!=='string' || !name.trim()) return null;
+  const requested=typeof name==='string' && name.trim() ? name.trim() : '';
   const ids=new Set<string>();
-  let nativeName:string|null=null;
-  const key=normalizePartyName(name);
+  const names=new Map<string,string>();
+  const addName=(candidate:{nativeId:string;name:string},selected:boolean)=>{
+    names.set(normalizePartyName(candidate.name).replace(/\s/g,''),candidate.name);
+    if(selected) ids.add(candidate.nativeId);
+  };
   for(const value of values) {
     const read=partyRead.safeParse(value);
     if(!read.success || read.data.input.kind!==kind || read.data.input.property_code!==propertyCode) continue;
     const {native,selection}=read.data.response.data;
+    const query=read.data.input.query ?? '';
+    const selected=selection==='none' ? null : native.candidates.find(candidate=>candidate.nativeId===selection.nativeId) ?? null;
+    if(selected && (!requested || partyNameMatch(requested,selected.name,kind) || partyNameMatch(requested,query,kind) || !query)) addName(selected,true);
     for(const candidate of native.candidates) {
-      if(!key || key!==normalizePartyName(candidate.name)) continue;
-      nativeName ??= candidate.name;
-      if(selection!=='none' && selection.nativeId===candidate.nativeId) ids.add(candidate.nativeId);
+      const fitsRequest=requested && (partyNameMatch(requested,candidate.name,kind) || partyCandidateScore(requested,candidate.name,kind)>=82);
+      if(fitsRequest) addName(candidate,false);
     }
   }
-  return nativeName === null ? null : {name:nativeName,nativeId:ids.size===1 ? [...ids][0] : null};
+  if(names.size!==1) return null;
+  return {name:[...names.values()][0]!,nativeId:ids.size===1 ? [...ids][0] : null};
 }
 function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
   const fieldSpecs=[...draft.field_specs];
