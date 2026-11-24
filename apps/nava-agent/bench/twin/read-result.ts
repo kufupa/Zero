@@ -38,7 +38,7 @@ export function queryDigest(scope: Scope, method: string, input: unknown): strin
 }
 
 export function contentDigest(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(orderedBusinessValue(value))).digest('hex');
+  return createHash('sha256').update(JSON.stringify(orderedBusinessValue(value)) ?? 'null').digest('hex');
 }
 
 export function observedResult<T>(data: T, refs: string[], digest: string): ReadResult<T> {
