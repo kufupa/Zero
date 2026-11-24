@@ -548,7 +548,9 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
         const parsed = proposalDraft.safeParse(input);
         const staged = parsed.success ? stagePublishedDraft(parsed.data, toolCalls
           .filter(call => call.name === 'hms_search_parties')
-          .map(call => ({input: call.input, response: call.result})), undefined, memoryLookup, senderPartiesForMemory) : null;
+          .map(call => ({input: call.input, response: call.result})), undefined, memoryLookup, senderPartiesForMemory,
+          toolCalls.filter(call => call.name === 'hms_search_reservations')
+            .map(call => ({input: call.input, response: call.result}))) : null;
         if (staged?.kind === 'valid') {
           proposal = staged.draft;
           profile.review_ready_ms = Math.round(performance.now() - started);

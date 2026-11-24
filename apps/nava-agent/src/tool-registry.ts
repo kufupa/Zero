@@ -187,14 +187,31 @@ const bookingHasHmsTarget = (booking: ProposalDraft['bookings'][number]) => {
   return typeof conf === 'string' && isHmsConfirmation(conf);
 };
 
+const staySearchHadCandidates = (response: unknown): boolean => {
+  const envelope = response && typeof response === 'object' ? response as Record<string, unknown> : null;
+  const data = envelope && 'data' in envelope ? envelope.data : envelope;
+  if (!data || typeof data !== 'object') return false;
+  const row = data as Record<string, unknown>;
+  if (Array.isArray(row.candidates) && row.candidates.length > 0) return true;
+  const native = row.native && typeof row.native === 'object' ? row.native as Record<string, unknown> : null;
+  return Array.isArray(native?.rows) && native.rows.length > 0;
+};
+
 /**
  * Filing requires a resolved HMS stay (or confirmation in the draft).
- * Voucher/booking-request with guest+dates and no target after search ⇒ Create (staff still confirm).
+ * After the stay-search ladder returns no candidates, voucher/booking-request with guest+dates ⇒ Create.
+ * Pure POP submissions and drafts that never searched (or that found hits) stay Filing.
  */
-export function filingWithoutTargetToCreate(draft: ProposalDraft): ProposalDraft {
+export function filingWithoutTargetToCreate(
+  draft: ProposalDraft,
+  stayReads: Array<{input?: unknown; response: unknown}> = [],
+): ProposalDraft {
   if (draft.workflow !== 'filing' || !draft.bookings.length) return draft;
   if (draft.bookings.some(bookingHasHmsTarget)) return draft;
   if (!draft.bookings.every(filingGuestDate)) return draft;
+  if (!stayReads.length) return draft;
+  if (stayReads.some(read => staySearchHadCandidates(read.response))) return draft;
+  if (draft.actions.length && draft.actions.every(action => action.type === 'payment_proof_submission')) return draft;
   const bookings = draft.bookings.map(booking => {
     const f = booking.fields;
     const fields: Record<string, unknown> = {
@@ -240,8 +257,9 @@ export function stagePublishedDraft(
   quoteProperty?:string,
   memoryLookup?: MemoryLookupFn,
   senderParties?: SenderPartySuggestion,
+  stayReads: Array<{input?: unknown; response: unknown}> = [],
 ): {kind: 'valid'; draft: ProposalDraft} | {kind: 'invalid'; path: string} {
-  let staffDraft = filingWithoutTargetToCreate(draft);
+  let staffDraft = filingWithoutTargetToCreate(draft, stayReads);
   if (['create', 'quote'].includes(staffDraft.workflow)) {
     if (staffDraft.workflow === 'create') {
       staffDraft = {
@@ -503,13 +521,24 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         }
         const incomplete=draft.workflow==='quote' && merged.incomplete;
         let partyReads: Array<{input: unknown; response: unknown}> = [];
-        if(staffPrepareOnly() && ['create','quote'].includes(draft.workflow)) {
-          partyReads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
-            FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
-              AND c.kind='tool_call' AND c.payload->>'tool_use_id'=r.payload->>'tool_event_id'
-            WHERE r.session_id=${session.id} AND r.kind='tool_result' AND r.payload->>'tool'='hms_search_parties'
-              AND r.sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0)
-            ORDER BY r.sequence`;
+        let stayReads: Array<{input: unknown; response: unknown}> = [];
+        if(staffPrepareOnly() && ['create','quote','filing'].includes(draft.workflow)) {
+          if(['create','quote'].includes(draft.workflow)) {
+            partyReads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
+              FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
+                AND c.kind='tool_call' AND c.payload->>'tool_use_id'=r.payload->>'tool_event_id'
+              WHERE r.session_id=${session.id} AND r.kind='tool_result' AND r.payload->>'tool'='hms_search_parties'
+                AND r.sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0)
+              ORDER BY r.sequence`;
+          }
+          if(draft.workflow==='filing') {
+            stayReads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
+              FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
+                AND c.kind='tool_call' AND c.payload->>'tool_use_id'=r.payload->>'tool_event_id'
+              WHERE r.session_id=${session.id} AND r.kind='tool_result' AND r.payload->>'tool'='hms_search_reservations'
+                AND r.sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0)
+              ORDER BY r.sequence`;
+          }
         }
         const proposals=[];
         for(const job of jobs) {
@@ -517,10 +546,10 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           if(staffPrepareOnly() && session.mode==='live') {
             staffDraft=withTriageLookupFields(staffDraft);
           }
-          // Staff-prepare create/quote: party bind + normalize via shared pure fn. Else normalize only
+          // Staff-prepare create/quote/filing: party bind + Filing→Create gate via shared pure fn. Else normalize only
           // (avoid forcing profile_create_new outside staff-prepare).
           const normalized=staffPrepareOnly()
-            ? stagePublishedDraft(staffDraft,partyReads,quoteProperty)
+            ? stagePublishedDraft(staffDraft,partyReads,quoteProperty,undefined,undefined,stayReads)
             : normalizeProposalFields(staffDraft);
           if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
           let current=normalized.draft;
