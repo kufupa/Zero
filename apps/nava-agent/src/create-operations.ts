@@ -11,7 +11,6 @@ import { missingCreateFields } from './proposal-fields.js';
 import {
   extractObservedStayChoice,
   recordMemoryObservation,
-  recordSavedSenderParty,
   type ObservedStayChoice,
 } from './party-memory.js';
 import { resolveSelectedSenderHost } from './party-matching.js';
@@ -358,24 +357,10 @@ type StayMemoryFlush = ObservedStayChoice;
 
 async function flushStayMemory(rows: StayMemoryFlush[]) {
   for (const choice of rows) {
-    let recorded = 0;
     try {
-      const result = await recordMemoryObservation(sql, choice);
-      recorded = result.recorded;
+      // Sender-party vote is applied atomically inside the observation transaction.
+      await recordMemoryObservation(sql, choice);
     } catch { /* observation append non-fatal; never retry Save */ }
-    // Sender card only when a new observation landed (no double-count on dup skips).
-    if (!recorded || !choice.host) continue;
-    if (!choice.agencyName && !choice.organizationName) continue;
-    try {
-      await recordSavedSenderParty(sql, {
-        propertyCode: choice.propertyCode,
-        host: choice.host,
-        agencyName: choice.agencyName,
-        agencyId: choice.agencyId,
-        organizationName: choice.organizationName,
-        organizationId: choice.organizationId,
-      });
-    } catch { /* sender-party memory non-fatal */ }
   }
 }
 

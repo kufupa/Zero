@@ -200,6 +200,33 @@ function readbackMismatchBlocks(readback: unknown, memoryField: MemoryField): bo
   });
 }
 
+/** Per-role sender attribution signal: positive name, confirmed negative (explicit empty), or unobserved (abstain). */
+export type PartyAttribution = 'positive' | 'negative' | 'unobserved';
+
+/**
+ * ta1/company readback → attribution signal. Exactly one field with an explicit
+ * empty value and no role mismatch is a confirmed negative; a unique non-empty
+ * value is positive; anything else (absent, duplicate, null, invalid, mismatched)
+ * is unobserved — the writer must abstain, not guess a negative.
+ */
+function readbackRoleAttribution(
+  readback: unknown,
+  nativeName: string,
+  role: 'agency' | 'organization',
+): { signal: 'positive'; name: string } | { signal: 'negative' | 'unobserved' } {
+  const fields = Array.isArray((readback as {fields?: unknown})?.fields)
+    ? (readback as {fields: Array<Record<string, unknown>>}).fields : null;
+  if (!fields) return {signal: 'unobserved'};
+  const matches = fields.filter(row => row && String(row.name ?? '') === nativeName);
+  if (matches.length !== 1) return {signal: 'unobserved'};
+  const value = matches[0]!.value;
+  if (value == null) return {signal: 'unobserved'};
+  if (typeof value !== 'string' && typeof value !== 'number') return {signal: 'unobserved'};
+  const name = String(value).trim();
+  if (partyReadbackMismatch(readback, role)) return {signal: 'unobserved'};
+  return name ? {signal: 'positive', name} : {signal: 'negative'};
+}
+
 /** True when readback recorded a mismatch on party native fields (ta1/company). */
 function partyReadbackMismatch(readback: unknown, role: 'agency' | 'organization'): boolean {
   const mismatches = Array.isArray((readback as {mismatches?: unknown})?.mismatches)
@@ -236,6 +263,7 @@ export type ObservedStayChoice = {
   availableAt: string | null;
   evidenceRef: string;
   origin: 'native_readback' | 'staff_correction';
+  attribution: {agency: PartyAttribution; organization: PartyAttribution};
 };
 
 /**
@@ -288,8 +316,10 @@ export function extractObservedStayChoice(args: {
   }
   if (!Object.keys(fields).length) return {ok: false, reason: 'no_confirmed_memory_fields'};
 
-  const observedAgency = uniqueReadbackValue(args.readback, 'ta1');
-  const observedOrg = uniqueReadbackValue(args.readback, 'company');
+  const agencyAttr = readbackRoleAttribution(args.readback, 'ta1', 'agency');
+  const orgAttr = readbackRoleAttribution(args.readback, 'company', 'organization');
+  const observedAgency = agencyAttr.signal === 'positive' ? agencyAttr.name : null;
+  const observedOrg = orgAttr.signal === 'positive' ? orgAttr.name : null;
   const draftAgencyId = asId(bookingFields.agency_id);
   const draftOrgId = asId(bookingFields.organization_id);
   const draftAgencyName = typeof bookingFields.agency_name === 'string' ? bookingFields.agency_name.trim() : null;
@@ -319,6 +349,7 @@ export function extractObservedStayChoice(args: {
       availableAt: args.availableAt ?? null,
       evidenceRef: args.evidenceRef,
       origin: 'native_readback',
+      attribution: {agency: agencyAttr.signal, organization: orgAttr.signal},
     },
   };
 }
@@ -394,7 +425,20 @@ export async function recordSavedStayMemory(
 export async function recordMemoryObservation(db: postgres.Sql, choice: ObservedStayChoice): Promise<{recorded:number; skipped:string[]}> {
   return db.begin(async tx => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([choice.propertyCode, choice.nativeEventId])}, 0))`;
-    return appendMemoryObservation(tx, choice);
+    const result = await appendMemoryObservation(tx, choice);
+    // Sender vote only when a new observation landed (no double-count on dup skips) —
+    // applied in this same stay-locked transaction so retries/replays stay atomic.
+    // Attribution must be known positive or negative; missing/unobserved abstains.
+    const att = choice.attribution ?? {agency: 'unobserved' as const, organization: 'unobserved' as const};
+    if (result.recorded > 0 && choice.host && (att.agency !== 'unobserved' || att.organization !== 'unobserved')) {
+      await recordSavedSenderParty(tx, {
+        propertyCode: choice.propertyCode, nativeEventId: choice.nativeEventId, host: choice.host,
+        agencyName: choice.agencyName, agencyId: choice.agencyId,
+        organizationName: choice.organizationName, organizationId: choice.organizationId,
+        attribution: att,
+      });
+    }
+    return result;
   });
 }
 
@@ -510,44 +554,101 @@ export async function lookupSenderPartyMemory(
   };
 }
 
+/**
+ * Stay-scoped sender vote: one contribution per (property, native stay, role, host).
+ * Field corrections, reconcile retries and replays reuse the same contribution and
+ * add no hit; a proven party-name correction moves the vote instead of stacking.
+ * Per-role attribution is tri-state: positive name votes once, a confirmed
+ * negative (explicit empty) records at most one miss, unobserved abstains
+ * entirely — never inferred as a negative. Call inside the memory observation
+ * transaction — never in the Save transaction.
+ */
 export async function recordSavedSenderParty(
   sql: Sql,
   args: {
-    propertyCode: string; host: string;
+    propertyCode: string; nativeEventId: string; host: string;
     agencyName?: string | null; agencyId?: string | null;
     organizationName?: string | null; organizationId?: string | null;
+    attribution?: {agency?: PartyAttribution; organization?: PartyAttribution};
   },
 ): Promise<void> {
   const host = args.host.trim().toLowerCase();
-  if (!host || !args.propertyCode) return;
-  const agencyName = typeof args.agencyName === 'string' && args.agencyName.trim() ? args.agencyName.trim() : null;
-  const organizationName = typeof args.organizationName === 'string' && args.organizationName.trim() ? args.organizationName.trim() : null;
-
-  if (agencyName) {
-    await sql`
+  if (!host || !args.propertyCode || !args.nativeEventId) return;
+  const nameOf = (v: unknown) => typeof v === 'string' && v.trim() ? v.trim() : null;
+  const hit = (kind: 'agency' | 'organization', partyName: string, nativeId: string | null, delta: 1 | -1) => delta === 1
+    ? sql`
       INSERT INTO nava_agent.sender_party_memory AS m
         (property_code, host, party_kind, party_name, native_id, hits, direct_misses)
-      VALUES (${args.propertyCode}, ${host}, 'agency', ${agencyName}, ${asId(args.agencyId)}, 1, 0)
+      VALUES (${args.propertyCode}, ${host}, ${kind}, ${partyName}, ${nativeId}, 1, 0)
       ON CONFLICT (property_code, host, party_kind, party_name)
       DO UPDATE SET hits = m.hits + 1,
         native_id = COALESCE(EXCLUDED.native_id, m.native_id),
-        updated_at = now()`;
-  } else {
-    await sql`
+        updated_at = now()`
+    : sql`
       UPDATE nava_agent.sender_party_memory
-      SET direct_misses = direct_misses + 1, updated_at = now()
-      WHERE property_code = ${args.propertyCode} AND host = ${host} AND party_kind = 'agency'`;
-  }
+      SET hits = GREATEST(hits - 1, 0), updated_at = now()
+      WHERE property_code = ${args.propertyCode} AND host = ${host} AND party_kind = ${kind}
+        AND party_name = ${partyName} AND hits > 0`;
 
-  if (organizationName) {
+  for (const [kind, sig, rawName, nativeId] of [
+    ['agency', args.attribution?.agency ?? 'unobserved', nameOf(args.agencyName), asId(args.agencyId)],
+    ['organization', args.attribution?.organization ?? 'unobserved', nameOf(args.organizationName), asId(args.organizationId)],
+  ] as const) {
+    // Unobserved (absent/duplicate/invalid/mismatched) never writes; a positive signal
+    // without a name is internally inconsistent — fail closed in both cases.
+    if (sig === 'unobserved' || (sig === 'positive' && !rawName)) continue;
+    const name = sig === 'positive' ? rawName : null;
+    const miss = (delta: 1 | -1) => kind !== 'agency' ? Promise.resolve([]) : sql`
+      UPDATE nava_agent.sender_party_memory
+      SET direct_misses = GREATEST(direct_misses + ${delta}, 0), updated_at = now()
+      WHERE property_code = ${args.propertyCode} AND host = ${host} AND party_kind = 'agency'`;
+    const lockRow = async () => (await sql`
+      SELECT party_name, native_id FROM nava_agent.sender_party_stay
+      WHERE property_code = ${args.propertyCode} AND native_event_id = ${args.nativeEventId}
+        AND party_kind = ${kind} AND host = ${host}
+      FOR UPDATE`)[0];
+    let stay = await lockRow();
+    if (!stay) {
+      // Claim the contribution; only the inserter may add the vote or the miss.
+      const inserted = await sql`
+        INSERT INTO nava_agent.sender_party_stay
+          (property_code, native_event_id, party_kind, host, party_name, native_id)
+        VALUES (${args.propertyCode}, ${args.nativeEventId}, ${kind}, ${host}, ${name}, ${name ? nativeId : null})
+        ON CONFLICT (property_code, native_event_id, party_kind, host) DO NOTHING
+        RETURNING party_name`;
+      if (inserted.length) {
+        if (name) await hit(kind, name, nativeId, 1);
+        else await miss(1); // confirmed negative — one miss per stay, replay-safe via the row
+        continue;
+      }
+      // Concurrent contributor committed first — re-read and reconcile below.
+      stay = await lockRow();
+      if (!stay) continue; // contributor rolled back — fail closed, no vote
+    }
+    const prior = stay.party_name == null ? null : String(stay.party_name);
+    if (prior === name) {
+      // Same attribution: no new vote or miss. Freshen the bound native id if newly known.
+      if (name && nativeId && nativeId !== (stay.native_id == null ? null : String(stay.native_id))) {
+        await sql`
+          UPDATE nava_agent.sender_party_memory SET native_id = ${nativeId}, updated_at = now()
+          WHERE property_code = ${args.propertyCode} AND host = ${host} AND party_kind = ${kind} AND party_name = ${name}`;
+        await sql`
+          UPDATE nava_agent.sender_party_stay SET native_id = ${nativeId}, updated_at = now()
+          WHERE property_code = ${args.propertyCode} AND native_event_id = ${args.nativeEventId}
+            AND party_kind = ${kind} AND host = ${host}`;
+      }
+      continue;
+    }
+    // Proven transition on this stay's contribution — move, never accumulate.
+    if (prior !== null) await hit(kind, prior, null, -1);
+    else await miss(-1); // prior contribution was a recorded negative — undo it
+    if (name) await hit(kind, name, nativeId, 1);
+    else await miss(1); // correction emptied the party — one confirmed miss
     await sql`
-      INSERT INTO nava_agent.sender_party_memory AS m
-        (property_code, host, party_kind, party_name, native_id, hits, direct_misses)
-      VALUES (${args.propertyCode}, ${host}, 'organization', ${organizationName}, ${asId(args.organizationId)}, 1, 0)
-      ON CONFLICT (property_code, host, party_kind, party_name)
-      DO UPDATE SET hits = m.hits + 1,
-        native_id = COALESCE(EXCLUDED.native_id, m.native_id),
-        updated_at = now()`;
+      UPDATE nava_agent.sender_party_stay
+      SET party_name = ${name}, native_id = ${name ? nativeId : null}, updated_at = now()
+      WHERE property_code = ${args.propertyCode} AND native_event_id = ${args.nativeEventId}
+        AND party_kind = ${kind} AND host = ${host}`;
   }
 }
 
