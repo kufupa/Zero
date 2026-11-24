@@ -22,6 +22,7 @@ const readPosts = new Set([
   '/web/base/OSRESV.FOL', '/web/base/OSRESV.FOL.xmlhttp', '/web/base/OSRESV.RAN',
   '/web/base/OSRESV.DOC', '/web/base/OSRESV.DOC.xmlhttp', '/web/base/OSRESV.NTE',
   '/web/base/OSRESV.MSG', '/web/base/OSRESV.HDR.getChildAges', '/web/base/LOVPOP',
+  '/web/base/fieldvalidate',
   '/web/base/GRIDDATA', '/web/base/GETCACHE', '/web/base/BSMSLV', '/web/base/OSRASD',
   '/web/base/OSMPAV', '/web/base/OSMPAV.HDR', '/web/base/FSGSPF', '/web/base/FSGSPF.HDR',
   '/web/base/FSGSPF.LST', '/web/base/FSGSPF.xmlhttp', '/web/jsp/7iosress_getstaydata.jsp',

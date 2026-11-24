@@ -439,7 +439,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
   };
   page.on('dialog',onDialog); page.on('request',onRequest); page.on('response',onResponse);
   try {
-    fence = await installPageRequestFence(page,[VALIDATE,CHANGE,CHECK_AVAILABILITY]);
+    fence = await installPageRequestFence(page,[CHANGE,CHECK_AVAILABILITY]);
     before = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
     const dates = await bounded(checkedDraft(before,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
     const previousCode = clean(before.rate) || null, prior = selectedOnPage.get(page);
