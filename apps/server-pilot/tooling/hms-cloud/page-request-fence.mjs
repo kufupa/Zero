@@ -3,6 +3,12 @@
 const pages = new WeakMap();
 const authorizations = new WeakMap();
 
+export function consumePageRequestFenceBlocked(page) {
+  const state = pages.get(page), blocked = state?.blocked ?? [];
+  if (state) state.blocked = [];
+  return blocked;
+}
+
 // A writer context may forward only a request which passed the owning page's
 // lifetime fence. Closing or quarantining the scope revokes its authorization.
 export function hasPageRequestAuthorization(request, page) {
@@ -24,7 +30,7 @@ export async function installPageRequestFence(page, paths) {
   }
   let state = pages.get(page);
   if (!state) {
-    state = {paths:new Set(),active:null,quarantined:false};
+    state = {paths:new Set(),active:null,quarantined:false,blocked:[]};
     const current = state;
     current.api = {
       open() {
@@ -46,7 +52,14 @@ export async function installPageRequestFence(page, paths) {
       let pathname;
       try { pathname = new URL(request.url()).pathname; } catch { return route.abort(); }
       if (!current.paths.has(pathname.toLowerCase())) return route.fallback();
-      if (current.quarantined || !current.active?.has(request)) return route.abort();
+      if (current.quarantined || !current.active?.has(request)) {
+        if (current.blocked.length < 20) {
+          const method = String(request.method() || '').toUpperCase();
+          current.blocked.push({ method: /^[A-Z]{2,10}$/.test(method) ? method : 'UNKNOWN',
+            path: [...String(pathname || '')].filter((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127).join('').slice(0, 180) });
+        }
+        return route.abort();
+      }
       current.active.delete(request);
       authorizations.set(request, { page, state: current, scope: current.active });
       return route.fallback();

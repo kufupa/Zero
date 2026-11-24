@@ -208,6 +208,18 @@ async function bindCredentialMetadata(property, credentialVersionHmacSha256) {
   } finally { key?.fill(0); client.destroy(); }
 }
 
+
+function blockedRequestSummary(value) {
+  if (!Array.isArray(value)) return null;
+  const safe = value.map((item) => {
+    const method = String(item?.method ?? '').toUpperCase(), path = String(item?.path ?? '');
+    return /^[A-Z]{2,10}$/.test(method) && path.startsWith('/') && path.length <= 180 &&
+      ![...path].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127 || character === '?' || character === '#')
+      ? { method, path } : null;
+  }).filter(Boolean).slice(0, 20);
+  return safe.length ? safe : null;
+}
+
 function safeNativeResult(result) {
   const safe = Object.fromEntries(['outcome', 'issue', 'confirmation', 'status', 'httpStatus', 'requestSeen',
     'requestDispatched', 'dispatchCallbacksDrained', 'blockedRequests', 'blockedRequestsAfterDispatch',
@@ -218,7 +230,7 @@ function safeNativeResult(result) {
   for (const key of ['blockedRequests', 'blockedRequestsAfterDispatch']) {
     if (Array.isArray(result?.[key])) {
       safe[`${key}Count`] = result[key].length;
-      if (result[key].length === 0) safe[key] = [];
+      safe[key] = result[key].length === 0 ? [] : blockedRequestSummary(result[key]) ?? [];
     }
   }
   // Keep native fee evidence in the private journal, never in status stdout.
@@ -463,6 +475,7 @@ async function main() {
         await persist({ ...journal, createResult: { outcome: saved.outcome,
           issue: saved.issue ?? null, field: saved.field ?? null, stage: saved.stage ?? null,
           missing: saved.missing ?? null, writerSessionClosed: saved.writerSessionClosed === true,
+          blockedRequests: blockedRequestSummary(saved.blockedRequests ?? saved.detail?.blockedRequests),
           savePresent: Object.hasOwn(saved, 'save'), save: safeNativeResult(saved.save),
           confirmation: saved.confirmation ?? null, nativeStayId: saved.nativeStayId ?? null,
           mismatches: saved.readback?.mismatches ?? null, readback: {
