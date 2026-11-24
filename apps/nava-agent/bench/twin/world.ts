@@ -267,6 +267,11 @@ function loadBase(root:string):BaseWorld {
   const senderPairs: SenderPairRow[] = [];
   if (pairsPath && process.env.NAVA_BENCH_DISABLE_PAIRS !== '1') {
     for (const row of optionalJsonl<Record<string, unknown>>(pairsPath)) {
+      const methods = object(row.methods);
+      // Strict validation/test worlds must not learn commercial party hints from
+      // weak train-derived temporal pairings.  Only direct evidence that the
+      // sender thread produced this hotel confirmation is admissible there.
+      if (strict && methods.direct_confirmation !== true && methods.direct_header !== true) continue;
       const anchor = object(row.anchor);
       const fields = object(anchor.hms_fields);
       const sentAtMs = Date.parse(String(anchor.sent_at ?? ''));
