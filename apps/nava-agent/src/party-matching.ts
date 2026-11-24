@@ -2,6 +2,12 @@ const aliases = [
   ['MISA', 'Municipal Infrastructure Support Agent'],
   ['IEC', 'Independent Electoral Commission'],
   ['IMERYS', 'Imerys Refractory Minerals SA (Pty) Ltd'],
+  ['NWU', 'North West University', 'North West University Potchefstroom'],
+  ['SITA', 'State Information Technology Agency', 'State Information Technology Agency - SITA'],
+  ['TFG', 'Foschini Retail Group', 'Foschini Retail Group (Pty) Ltd'],
+  ['SKA', 'Square Kilometre Array', 'Square Kilometre Array SKA'],
+  ['MTPA', 'Mpumalanga Tourism and Parks Agency'],
+  ['SAFCOL', 'South African Forestry Company', 'SAFCOL - Gov - Forestry'],
 ] as const;
 
 export const PARTY_STOPWORDS = new Set([
@@ -12,10 +18,14 @@ export const PARTY_STOPWORDS = new Set([
   'national', 'provincial', 'office', 'the', 'and', 'for', 'of', 'sa',
 ]);
 
-const partyNameParts = (value:string) => value.toLowerCase().split(/\bt\s*\/\s*a\b/).map(part =>
-  part.replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-    .replace(/(?:\s+(?:pty|ltd|limited|cc))+$/, ''),
-).filter(Boolean);
+const legalSuffixes = new Set(['pty', 'ltd', 'limited', 'ptyltd', 'cc', 'inc', 'llc', 'plc', 'proprietary', 'npc', 'rf']);
+
+const partyNameParts = (value:string) => value.toLowerCase().split(/\bt\s*\/\s*a\b/).map(part => {
+  const tokens = (part.normalize('NFKD').replace(/\p{M}/gu, '').replace(/&/g, ' and ')
+    .match(/[\p{L}\p{N}]+/gu) ?? []).map(token => token.toLowerCase());
+  while (tokens.length > 1 && legalSuffixes.has(tokens.at(-1) ?? '')) tokens.pop();
+  return tokens.join(' ');
+}).filter(Boolean);
 
 export const normalizePartyName = (value:string) => partyNameParts(value).join(' ');
 
@@ -37,10 +47,79 @@ export function partySearchQueries(name:string, kind:string):string[] {
   return [...new Set([...out, ...tokens.slice(0, 2)].filter(Boolean))];
 }
 
-function samePartyName(left:string,right:string,kind:string):boolean {
+function aliasPartyName(left:string,right:string,kind:string):boolean {
   const a = normalizePartyName(left), b = normalizePartyName(right);
-  return !!a && (a === b || kind === 'organization' && aliases.some(names =>
-    names.some(name => normalizePartyName(name) === a) && names.some(name => normalizePartyName(name) === b)));
+  return kind === 'organization' && aliases.some(names =>
+    names.some(name => normalizePartyName(name) === a) && names.some(name => normalizePartyName(name) === b));
+}
+
+function allPartyTokens(value:string):string[] {
+  return normalizePartyName(value).split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function bigramSimilarity(left:string,right:string):number {
+  if (left === right) return 1;
+  const grams=(value:string)=>new Set([...value].slice(1).map((_,i)=>value.slice(i,i+2)));
+  const a=grams(left), b=grams(right);
+  if (!a.size || !b.size) return 0;
+  let overlap=0; for (const gram of a.keys()) if (b.has(gram)) overlap++;
+  return 2*overlap/(a.size+b.size);
+}
+
+function editSimilarity(left:string,right:string):number {
+  const width=left.length+1, height=right.length+1, dist:number[]=Array(width*height).fill(0);
+  for(let i=0;i<width;i++) dist[i]=i;
+  for(let j=0;j<height;j++) dist[j*width]=j;
+  for(let j=1;j<height;j++) for(let i=1;i<width;i++) {
+    const cost=left[i-1]===right[j-1]?0:1;
+    dist[j*width+i]=Math.min(dist[j*width+i-1]+1,dist[(j-1)*width+i]+1,dist[(j-1)*width+i-1]+cost);
+    if(i>1&&j>1&&left[i-1]===right[j-2]&&left[i-2]===right[j-1]) dist[j*width+i]=Math.min(dist[j*width+i],dist[(j-2)*width+i-2]+1);
+  }
+  return 1-dist[width*height-1]/Math.max(left.length,right.length);
+}
+
+function tokenSimilarity(left:string,right:string):number {
+  if (left === right) return 1;
+  if (left.length >= 5 && right.length >= 5) {
+    const similarity=Math.max(bigramSimilarity(left,right),editSimilarity(left,right));
+    return similarity >= 0.74 ? similarity : 0;
+  }
+  return 0;
+}
+
+function acronymPartyName(left:string,right:string):boolean {
+  const a=normalizePartyName(left), b=normalizePartyName(right);
+  const acronym=(one:string,other:string)=>!one.includes(' ') && one.length>=3 && partyAcronym(other)===one;
+  return !!a && !!b && (acronym(a,b) || acronym(b,a));
+}
+
+/** Exact/legal/alias/acronym party identity. Deliberately stricter than candidate scoring. */
+export function partyNameMatch(left:string,right:string,kind:string):boolean {
+  const a=normalizePartyName(left), b=normalizePartyName(right);
+  return !!a && (a===b || a.replace(/\s/g,'')===b.replace(/\s/g,'') || aliasPartyName(left,right,kind) || acronymPartyName(left,right));
+}
+
+/** Deterministic fit for native candidates: exact/distinctive-token cover, with typo-tolerant token matching. */
+export function partyCandidateScore(query:string,candidate:string,kind:string):number {
+  if (!query.trim()) return 0;
+  if (partyNameMatch(query,candidate,kind)) return 100;
+  const q=allPartyTokens(query), c=allPartyTokens(candidate);
+  if (!q.length || !c.length) return 0;
+  const sim=(a:string,b:string)=>tokenSimilarity(a,b);
+  const qDistinct=[...new Set(distinctivePartyTokens(query))];
+  const cDistinct=[...new Set(distinctivePartyTokens(candidate))];
+  const hit=(token:string,pool:string[])=>pool.some(other=>sim(token,other)>0);
+  const qDistinctHits=qDistinct.filter(token=>hit(token,c)).length;
+  const cDistinctHits=cDistinct.filter(token=>hit(token,q)).length;
+  const qHits=q.filter(token=>hit(token,c)).length;
+  const qCover=(qDistinct.length?qDistinctHits/qDistinct.length:qHits/q.length);
+  const cPrecision=(cDistinct.length?cDistinctHits/cDistinct.length:qHits/c.length);
+  const allCover=qHits/q.length;
+  return Math.round(45*qCover+45*cPrecision+10*allCover);
+}
+
+function samePartyName(left:string,right:string,kind:string):boolean {
+  return partyNameMatch(left,right,kind);
 }
 
 export type LearnedSenderHit = { host: string; kind: 'agency' | 'organization'; name: string; nativeId: string | null; support: number };
@@ -167,9 +246,12 @@ export async function searchPartyWithFallback(query: string, kind: string,
   let result: Record<string, unknown> = {outcome: 'no_match', candidates: [], coverage};
   for (const term of terms) {
     result = await search(term);
-    if (result.outcome !== 'no_match' || Array.isArray(result.candidates) && result.candidates.length ||
+    const candidates=Array.isArray(result.candidates)?result.candidates.filter(row=>row && typeof row==='object' && !Array.isArray(row)) as Array<Record<string,unknown>>:[];
+    const bestFit=candidates.reduce((best,candidate)=>Math.max(best,partyCandidateScore(query || term,String(candidate.displayName ?? candidate.name ?? ''),kind)),0);
+    const weakCompanyHit=company && candidates.length>0 && query && bestFit<82;
+    if (!weakCompanyHit && (result.outcome !== 'no_match' || candidates.length ||
         !(typeof result.coverage === 'object' && result.coverage !== null &&
-          'possiblyTruncated' in result.coverage && result.coverage.possiblyTruncated === false)) {
+          'possiblyTruncated' in result.coverage && result.coverage.possiblyTruncated === false))) {
       return {result, learned: preferred ?? (learned?.name === term ? learned : null)};
     }
   }
@@ -178,23 +260,40 @@ export async function searchPartyWithFallback(query: string, kind: string,
 
 export function resolvePartySelection(kind: string, candidates: Array<Record<string, unknown>>, truncated: boolean, learned: LearnedSenderHit | null, query: string) {
   const ok = ['organization', 'agency'].includes(kind) && !truncated;
-  if (ok && candidates.length > 1 && learned) {
+  if (!ok) return { selection: 'none' as const, ambiguity: 'Multiple or incomplete candidates require staff selection.' };
+  if (candidates.length > 1 && learned) {
     const hit = learnedCandidateHits(candidates, learned);
     if (hit.length === 1) return { selection: hit[0]!, ambiguity: null as string | null };
   }
-  if (ok && candidates.length === 1) {
-    const only = candidates[0]!;
-    if (learned && !candidateMatchesLearned(only, learned) && query && !samePartyName(query, learned.name, kind)) {
-      // Unique HMS hit, but learned party is a different specific name and query disagrees.
-      return { selection: 'none' as const, ambiguity: 'Sender history suggests a different party; staff selection is required.' };
-    }
-    return { selection: only, ambiguity: null as string | null };
+  if (learned && query && !samePartyName(query, learned.name, kind) && !learnedCandidateHits(candidates, learned).length) {
+    return { selection: 'none' as const, ambiguity: 'Sender history suggests a different party; staff selection is required.' };
   }
-  if (learned && query && !samePartyName(query, learned.name, kind)) {
-    const hit = learned ? learnedCandidateHits(candidates, learned) : [];
-    if (hit.length === 0) {
-      return { selection: 'none' as const, ambiguity: 'Sender history suggests a different party; staff selection is required.' };
+
+  const nameOf=(candidate:Record<string, unknown>)=>String(candidate.displayName ?? candidate.name ?? '');
+  if (candidates.length === 1) {
+    const only=candidates[0]!;
+    const score=partyCandidateScore(query,nameOf(only),kind);
+    if (!query || score>=82 || learned && candidateMatchesLearned(only, learned)) return { selection: only, ambiguity: null as string | null };
+    return { selection: 'none' as const, ambiguity: 'Single candidate does not fit the sourced party; staff selection is required.' };
+  }
+
+  const groups=new Map<string,{key:string;candidates:Array<Record<string, unknown>>;score:number}>();
+  for (const candidate of candidates) {
+    const name=nameOf(candidate);
+    const key=normalizePartyName(name).replace(/\s/g,'');
+    const score=partyCandidateScore(query,name,kind);
+    const cur=groups.get(key) ?? {key,candidates:[],score:0};
+    cur.candidates.push(candidate); cur.score=Math.max(cur.score,score); groups.set(key,cur);
+  }
+  const ranked=[...groups.values()].sort((a,b)=>b.score-a.score);
+  const [best,next]=ranked;
+  if (best && best.score>=82 && best.score-(next?.score ?? 0)>=6) {
+    if (best.candidates.length===1) return { selection: best.candidates[0]!, ambiguity: null as string | null };
+    if (learned) {
+      const hit=learnedCandidateHits(best.candidates, learned);
+      if (hit.length===1) return { selection: hit[0]!, ambiguity: null as string | null };
     }
+    return { selection: 'none' as const, ambiguity: 'Duplicate native records share the best party name; name may be used without an ID.' };
   }
   return { selection: 'none' as const, ambiguity: 'Multiple or incomplete candidates require staff selection.' };
 }
