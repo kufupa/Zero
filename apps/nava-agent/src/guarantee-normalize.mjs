@@ -18,6 +18,25 @@ const LEGACY_ALIASES = Object.freeze({
   CNFRCV: 'CNFREC',
 });
 
+/** Email / voucher phrases staff map to native guarantee codes. */
+const PHRASE_ALIASES = Object.freeze({
+  'agency to pay supplier': 'GTDAGT',
+  'agency to pay': 'GTDAGT',
+  'bill-back': 'GTDAGT',
+  billback: 'GTDAGT',
+  'bill back': 'GTDAGT',
+  'guaranteed by agent': 'GTDAGT',
+  'guaranteed by company': 'GTDCMP',
+  'guaranteed by deposit': 'GTDDEP',
+  'guaranteed by credit card': 'GTDCC',
+  'deposit requested': 'DEPREQ',
+  'awaiting voucher': 'AVOUCH',
+  'confirmation received': 'CNFREC',
+  'non-guaranteed individual': 'NGI',
+  'non guaranteed individual': 'NGI',
+  '6pm hold': 'NGI',
+});
+
 /**
  * Accept native codes + display labels; map legacy aliases; refuse unknown.
  * @param {unknown} raw
@@ -30,7 +49,8 @@ export function normalizeGuaranteeCode(raw) {
   const upper = trimmed.toUpperCase();
   if (Object.hasOwn(CREATE_GUARANTEES, upper)) return upper;
   if (Object.hasOwn(LEGACY_ALIASES, upper)) return LEGACY_ALIASES[upper];
-  const lower = trimmed.toLowerCase();
+  const lower = trimmed.toLowerCase().replace(/\s+/g, ' ');
+  if (Object.hasOwn(PHRASE_ALIASES, lower)) return PHRASE_ALIASES[lower];
   for (const [code, label] of Object.entries(CREATE_GUARANTEES)) {
     if (label.toLowerCase() === lower) return code;
   }

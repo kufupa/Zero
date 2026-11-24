@@ -2,6 +2,7 @@ import type { ProposalDraft } from './schema.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { createNonNativeFields, createNoteAliases, createReservationNote, createStaffNoteLabels, isCreateRateCode } from '../tools/create/schema.js';
 import { isEmptyQuoteGroup } from '../tools/quote/schema.js';
+import { normalizeGuaranteeCode } from './guarantee-normalize.mjs';
 
 export function pointerParts(path: string): string[] | null {
   if (!path.startsWith('/') || /~(?![01])/.test(path)) return null;
@@ -452,6 +453,25 @@ function createGuaranteeDefault(_fields: Record<string,unknown>): string | null 
   return null;
 }
 
+/** Keep digit-bearing PO/order/voucher refs; prefer Order/PO token when compound. */
+function normalizeBillingReference(raw: string, fields: Record<string, unknown>): string | null {
+  const ref = raw.trim();
+  if (!ref) return null;
+  const agency = typeof fields.agency_name === 'string' ? fields.agency_name.trim() : '';
+  const org = typeof fields.organization_name === 'string' ? fields.organization_name.trim() : '';
+  const sameParty = (agency && ref.toLowerCase() === agency.toLowerCase())
+    || (org && ref.toLowerCase() === org.toLowerCase());
+  // Strip purely alphabetic company-name copies only.
+  if (sameParty && !/\d/.test(ref)) return null;
+  // Compound "Voucher X; Order Y" → prefer Order/PO segment when present.
+  const parts = ref.split(/[;|,]/).map(part => part.trim()).filter(Boolean);
+  if (parts.length > 1) {
+    const orderish = parts.find(part => /\b(?:order|po|p\.?o\.?)\b/i.test(part) && /\d/.test(part));
+    if (orderish) return orderish.slice(0, 50);
+  }
+  return ref.slice(0, 50);
+}
+
 function expandCreateQuantity(draft: ProposalDraft): ProposalDraft {
   const [first]=draft.bookings;
   const count=first?.fields.quantity;
@@ -486,14 +506,12 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
         fields.billing_reference=String(fields.billing_reference);
       }
       if(typeof fields.billing_reference==='string') {
-        const ref=fields.billing_reference.trim();
-        const agency=typeof fields.agency_name==='string' ? fields.agency_name.trim() : '';
-        const org=typeof fields.organization_name==='string' ? fields.organization_name.trim() : '';
-        const sameParty=ref && ((agency && ref.toLowerCase()===agency.toLowerCase())
-          || (org && ref.toLowerCase()===org.toLowerCase()));
-        // Keep digit-bearing PO/voucher refs; strip purely alphabetic company-name copies only.
-        if(!ref || (sameParty && !/\d/.test(ref))) fields.billing_reference=null;
-        else fields.billing_reference=ref;
+        const ref=normalizeBillingReference(fields.billing_reference, fields);
+        fields.billing_reference=ref;
+      }
+      if(typeof fields.guarantee_type==='string' && fields.guarantee_type.trim()) {
+        const code=normalizeGuaranteeCode(fields.guarantee_type);
+        if(code) fields.guarantee_type=code;
       }
       // Canonicalize explicit board after note/warnings keep requested wording.
       const boardCanon=normalizeMemoryBoard(fields.board);

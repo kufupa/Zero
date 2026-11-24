@@ -260,9 +260,13 @@ function mergeQuoteRooms(proposal: unknown): unknown {
 /** Staff-did HMS code gold: `{code, alt_codes?}` — hit only on a native code, never prose. */
 function codeGoldHit(expected: unknown, actual: unknown): boolean | null {
   const code = dig(expected, '/code');
-  if (typeof code !== 'string' || dig(expected, '/source') !== 'hms_anchor') return null;
+  if (typeof code !== 'string') return null;
+  const alts = array(dig(expected, '/alt_codes'));
+  // Honor alt_codes whenever present (email "standard" → any STD bed). Legacy hms_anchor still gates code-only rows.
+  if (dig(expected, '/source') !== 'hms_anchor' && alts.length === 0) return null;
   const got = String(nativeCode(actual) ?? actual ?? '').trim().toUpperCase();
-  return [code, ...array(dig(expected, '/alt_codes'))].some(value => String(value).toUpperCase() === got);
+  if (!got) return false;
+  return [code, ...alts].some(value => String(value).toUpperCase() === got);
 }
 
 function normalize(value: unknown): string {
@@ -299,8 +303,12 @@ function normalizePerson(value: unknown): string {
 /** Extra guarantee spellings beyond native catalogue meanings. */
 const GUARANTEE_ALIASES: Record<string, string[]> = {
   // GTDAGT = Guaranteed By Agent (NOT DEPREQ)
-  'guaranteed by agent': ['gtdagt', 'gtdagent', 'guaranteedbyagent'],
-  gtdagt: ['guaranteed by agent', 'gtdagent', 'guaranteedbyagent'],
+  'guaranteed by agent': ['gtdagt', 'gtdagent', 'guaranteedbyagent', 'agency to pay supplier', 'agency to pay', 'bill-back', 'billback'],
+  gtdagt: ['guaranteed by agent', 'gtdagent', 'guaranteedbyagent', 'agency to pay supplier', 'agency to pay', 'bill-back', 'billback'],
+  'agency to pay supplier': ['gtdagt', 'agency to pay', 'guaranteed by agent'],
+  'agency to pay': ['gtdagt', 'agency to pay supplier', 'guaranteed by agent'],
+  'bill-back': ['gtdagt', 'billback', 'guaranteed by agent'],
+  billback: ['gtdagt', 'bill-back', 'guaranteed by agent'],
   // DEPREQ = Deposit Requested
   'deposit requested': ['depreq'],
   depreq: ['deposit requested'],
@@ -555,6 +563,20 @@ function equalish(expected: unknown, actual: unknown): boolean {
     if (bucket.has(compactAlnum(a)) && bucket.has(compactAlnum(b))) return true;
   }
   return a === b || compactAlnum(a) === compactAlnum(b);
+}
+
+/** Billing refs: digit-bearing token match / containment (Order 36484 ⊂ "Voucher X; Order 36484"). */
+function billingRefHit(expected: unknown, actual: unknown): boolean {
+  if (equalish(expected, actual)) return true;
+  const tokens = (value: unknown) => normalize(value).match(/[a-z]*\d[a-z0-9-]*/g) ?? [];
+  const want = tokens(expected);
+  const got = tokens(actual);
+  if (!want.length || !got.length) return false;
+  const gotSet = new Set(got.map(compactAlnum).filter(Boolean));
+  return want.some(token => {
+    const needle = compactAlnum(token);
+    return needle.length >= 3 && [...gotSet].some(hay => hay === needle || hay.includes(needle) || needle.includes(hay));
+  });
 }
 
 function bookingFields(booking: unknown): Record<string, unknown> {
@@ -1313,7 +1335,8 @@ export function scoreCase(input: {
       field.expectation === 'expected' && field.path.startsWith(`/bookings/${bookingPath[1]}/`) && idField(field.path));
     const binding = expectedBookingId?.expectation === 'expected' ? actionForTarget(expectedBookingId.value) : undefined;
     if (targeted && !reviewOnly && bookingPath && !idField(gold.path) && expectedBookingId) {
-      digPath = binding && binding.bookingIndex >= 0 ? `/bookings/${binding.bookingIndex}${bookingPath[2]}` : null;
+      // Bound stay → remap; unbound amend/cancel draft → still score extracted fields on gold path.
+      digPath = binding && binding.bookingIndex >= 0 ? `/bookings/${binding.bookingIndex}${bookingPath[2]}` : gold.path;
     }
     const filingDocument = workflow === 'filing' && /^\/actions\/\d+\/(?:type|details\/(?:attachment_id|doc_kind))$/.test(gold.path);
     if (workflow === 'filing' && !filingDocument && !reviewOnly && /^\/actions\/\d+\//.test(gold.path) && stayGoldIds.length === 1) {
@@ -1368,6 +1391,8 @@ export function scoreCase(input: {
           || catalogueMatch(catalog, 'ratePlans', expectedValue, actual, board));
     } else if (gold.path.endsWith('/guarantee_type')) {
       hit = catalogueCodeHit(catalog, ['guaranteeTypes'], expectedValue, actual) ?? equalish(expectedValue, actual);
+    } else if (gold.path.endsWith('/billing_reference')) {
+      hit = billingRefHit(expectedValue, actual);
     } else if ((workflow === 'create' || workflow === 'quote') && gold.path.endsWith('/board')) {
       const meal = boardLabel(expectedValue);
       hit = (meal !== null && meal === boardLabel(actual)) || equalish(expectedValue, actual);
