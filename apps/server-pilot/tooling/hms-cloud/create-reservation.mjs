@@ -6,6 +6,7 @@ import { getPropertyRegistration } from './property-registry.mjs';
 import { pathToFileURL } from 'node:url';
 import { withBookingLookupSession } from './booking-lookup-session.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
+import { consumePageRequestFenceBlocked } from './page-request-fence.mjs';
 import { readLabtestCreate, reconcileLabtestCreate } from './labtest-create-readback.mjs';
 import { readCreateParties } from './create-party-readback.mjs';
 import { isSupportedLabtestGuarantee, validCreateBillingReference } from './guest-stay-save.mjs';
@@ -21,6 +22,16 @@ const date = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '') &&
   !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const stop = (outcome, issue, extra = {}) => { throw Object.assign(new Error(issue), { result: { outcome, issue, ...extra } }); };
 const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,100}$/.test(error?.message || '') ? error.message : 'SESSION_FAILED';
+
+function blockedRequestSummary(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const method = String(item?.method ?? '').toUpperCase(), path = String(item?.path ?? '');
+    return /^[A-Z]{2,10}$/.test(method) && path.startsWith('/') && path.length <= 180 &&
+      ![...path].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127 || character === '?' || character === '#')
+      ? { method, path } : null;
+  }).filter(Boolean).slice(0, 20);
+}
 const candidate = ({ nativeId, firstName, lastName, email, phoneNumber, city, country }) =>
   ({ nativeId, firstName, lastName, email, phoneNumber, city, country });
 
@@ -542,6 +553,7 @@ export async function createReservation(input, options = {}) {
   if (commit) output.screenshots = {};
   try {
     await withSession(async ({ page, runTool, labtestPreimage, createAuthority }) => {
+      state.page = page;
       const diagnosticKey = process.env.NAVA_CREATE_DIALOG_DIAGNOSTIC_PUBLIC_KEY_B64;
       const diagnostic = !commit && process.env.NAVA_CREATE_PREPARE_ONLY === '1' && diagnosticKey
         ? prepareDialogDiagnostic(page, diagnosticKey, { guest: expectedGuest, arrival: stay.arrival, rate: room.ratePlan }) : null;
@@ -684,7 +696,7 @@ export async function createReservation(input, options = {}) {
             stop('uncertain', 'requested_field_not_staged', { field: 'guaranteeType' });
           }
           output.applied.guaranteeType = state.guarantee.actual.display;
-          if (!commit && state.rateAvailabilityRequired) await new Promise(resolve => setTimeout(resolve, 1000));
+          if (state.rateAvailabilityRequired) await new Promise(resolve => setTimeout(resolve, 1000));
           if (!commit) await dismissInformationalMessageBox(page, notices);
         }
       } else if (!commit && isSupportedLabtestGuarantee(input.guaranteeType)) {
@@ -1030,6 +1042,9 @@ export async function createReservation(input, options = {}) {
     state.sessionFailedAfterSave = Boolean(state.saveAttempted);
     Object.assign(output, error.result || (error.phase === 'labtest_preimage' ? { outcome: error.labtestPreimage?.outcome === 'existing_matches' ? 'needs_input' : 'uncertain',
       issue: 'labtest_preimage_not_clear', preimage: error.labtestPreimage } : { outcome: state.saveAttempted ? 'uncertain' : 'refused', issue: safeIssue(error) }));
+    const blockedRequests = blockedRequestSummary(error.result?.blockedRequests ?? error.result?.detail?.blockedRequests ??
+      (state.page ? consumePageRequestFenceBlocked(state.page) : []));
+    if (blockedRequests.length && !Object.hasOwn(output, 'blockedRequests')) output.blockedRequests = blockedRequests;
   }
   if (!state.save) return output;
   output.save = state.save;
