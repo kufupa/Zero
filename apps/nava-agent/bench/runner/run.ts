@@ -66,6 +66,7 @@ function historyStaysForMemory(world: TwinWorld): HistoryStay[] {
       organizationId: company ? organizations.get(normalizePartyName(company)) ?? null : null,
       board: board != null && board !== '' ? String(board) : null,
       fields: {
+        board: board != null && board !== '' ? String(board) : null,
         rate_plan: fields.rateplan != null && fields.rateplan !== '' ? String(fields.rateplan) : null,
         guarantee_type: guarantee != null && guarantee !== '' ? String(guarantee) : null,
       },

@@ -159,6 +159,8 @@ function guestChoices(result: NativeResult) {
     returned:shown.length,truncated}};
 }
 
+const STANDARD_ROOM_SIBLINGS = ['STQN', 'STWN', 'SKNG'] as const;
+
 // Use the native rate shop for the same stay and party; its rows are observations,
 // not a claim that a particular rate is the customer's contract.
 async function scopedRateChoices(request: NativeRequest, lease: Lease, transportId: string, roomType?: string, sellableOnly = false) {
@@ -180,9 +182,13 @@ async function scopedRateChoices(request: NativeRequest, lease: Lease, transport
     if (typeof id !== 'string' || !/^\d+$/.test(id) || typeof name !== 'string' || !name.trim()) return noChoices;
     rateContext[kind] = {nativeId:id,name:name.trim()};
   }
+  // When a Standard room (e.g. default STQN) is sold out, widen shop to Standard siblings so staff can 1-click STWN/SKNG (never auto-mutate draft).
+  const shopRoomCodes = roomType
+    ? (sellableOnly && (STANDARD_ROOM_SIBLINGS as readonly string[]).includes(roomType) ? [...STANDARD_ROOM_SIBLINGS] : [roomType])
+    : undefined;
   const shopRequest = {schemaVersion:2,propertyCode:request.propertyCode,arrivalDate:arrival,departureDate:departure,
     rooms:[{id:'create',quantity:1,adults,children:childCount,childAges,
-      ...(roomType ? {required:{roomCodes:[roomType]}} : {})}],
+      ...(shopRoomCodes ? {required:{roomCodes:shopRoomCodes}} : {})}],
     ...(Object.keys(rateContext).length ? {rateContext} : {}),
     search:{includeAlternatives:false,includeRestricted:sellableOnly},details:'summary',maxOptionsPerGroup:200};
   try {
@@ -210,11 +216,11 @@ async function scopedRateChoices(request: NativeRequest, lease: Lease, transport
     const rooms = new Map<string,{value:string;label:string;meaning:string}>();
     for (const option of group.options) {
       if (!object(option) || !object(option.rate) || !object(option.room) || option.eligibility !== 'verified' ||
-          (sellableOnly && (option.matchStatus !== 'match' || option.availability !== 'available' || option.rate.code === request.room.ratePlan)) ||
+          (sellableOnly && (option.matchStatus !== 'match' || option.availability !== 'available' || (option.rate.code === request.room.ratePlan && option.room.code === roomType))) ||
           typeof option.rate.code !== 'string' || !/^[A-Z0-9_-]{1,100}$/.test(option.rate.code) ||
           typeof option.rate.label !== 'string' || !option.rate.label.trim() || option.rate.label.length > 200 ||
           /[\r\n\p{Cc}]/u.test(option.rate.label) || typeof option.room.code !== 'string' ||
-          !/^[A-Z0-9_-]{1,100}$/.test(option.room.code) || (roomType && option.room.code !== roomType) ||
+          !/^[A-Z0-9_-]{1,100}$/.test(option.room.code) || (shopRoomCodes && !shopRoomCodes.includes(option.room.code)) ||
           !['public','contextual','unknown'].includes(String(option.rateScope)) ||
           !['available','unavailable','restricted','unknown'].includes(String(option.availability))) continue;
       const value = option.rate.code, meaning = [option.rate.label.trim(),
@@ -229,9 +235,9 @@ async function scopedRateChoices(request: NativeRequest, lease: Lease, transport
     }
     const all = [...choices.values()], items = all.slice(0,50);
     const truncated = completeness.optionsTruncated !== false || completeness.matchingRowsUnseen !== false || items.length !== all.length;
-    const soldOut = sellableOnly && !!roomType && !truncated && group.options.length > 0 &&
+    const soldOut = sellableOnly && !!shopRoomCodes && !truncated && group.options.length > 0 &&
       group.options.every(option => object(option) && object(option.room) &&
-        option.room.code === roomType && option.availability === 'unavailable');
+        shopRoomCodes.includes(option.room.code) && option.availability === 'unavailable');
     if (sellableOnly && !items.length && !soldOut) return noChoices;
     const roomItems = [...rooms.values()].slice(0,50);
     return {rateChoices:{status:soldOut?'sold_out':'available',items,coverage:{complete:!truncated,possibly_truncated:truncated,

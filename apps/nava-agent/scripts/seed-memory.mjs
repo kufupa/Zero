@@ -175,6 +175,7 @@ async function main() {
     const organizationId = company ? organizations.get(normalizePartyName(company)) ?? `name:${normalizePartyName(company)}` : null;
 
     const writes = [];
+    if (board) writes.push(['board', board]);
     if (rateplan) {
       writes.push(['rate_plan', rateplan]);
       if (board) writes.push([`rate_plan:${board}`, rateplan]);
@@ -185,6 +186,10 @@ async function main() {
       if (!partyId) continue;
       for (const [field, value] of writes) {
         bump(bookingHits, partyKey(PROPERTY, kind, partyId, field, value));
+      }
+      if (kind === 'agency' && organizationId && !organizationId.startsWith('name:') && rateplan) {
+        bump(bookingHits, partyKey(PROPERTY, 'agency', partyId, `rate_plan:org=${organizationId}`, rateplan));
+        if (board) bump(bookingHits, partyKey(PROPERTY, 'agency', partyId, `rate_plan:org=${organizationId}:${board}`, rateplan));
       }
     }
   }

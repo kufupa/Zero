@@ -5,8 +5,8 @@ import { normalizePartyName, type LearnedSenderHit } from './party-matching.js';
 
 export { normalizeMemoryBoard };
 
-/** Empirically gated: rate_plan ≥80%; guarantee_type ≥85% per-party (never blanket agency→GTDAGT). */
-export const MEMORY_ELIGIBLE_FIELDS = ['rate_plan', 'guarantee_type'] as const;
+/** Empirically gated: board ≥85%; rate_plan ≥80% (composites ≥85%); guarantee_type ≥85% per-party. */
+export const MEMORY_ELIGIBLE_FIELDS = ['board', 'rate_plan', 'guarantee_type'] as const;
 export type MemoryField = (typeof MEMORY_ELIGIBLE_FIELDS)[number];
 export type MemorySuggestion = {
   field: MemoryField; value: string; hits: number; total: number;
@@ -39,7 +39,7 @@ export function verifiedDirectOrgMatch(
 
 function precisionGate(fieldName: string, hits: number, total: number): boolean {
   if (total < 3) return false;
-  if (fieldName === 'guarantee_type') return hits / total >= 0.85;
+  if (fieldName === 'guarantee_type' || fieldName === 'board' || fieldName.startsWith('rate_plan:org=')) return hits / total >= 0.85;
   return hits / total >= 0.80;
 }
 
@@ -60,45 +60,72 @@ function pickTop(rows: HitRow[], agencyId: string | null, organizationId: string
     groups.set(key, cur);
   }
 
-  const boardKey = normalizeMemoryBoard(board);
   const byField = new Map<MemoryField, MemorySuggestion>();
 
-  const consider = (cur: Acc, field: MemoryField) => {
-    if (!precisionGate(field === 'guarantee_type' ? 'guarantee_type' : 'rate_plan', cur.hits, cur.total)) return;
+  const consider = (cur: Acc, field: MemoryField, preferOrg = false) => {
+    if (!precisionGate(cur.fieldName, cur.hits, cur.total)) return;
+    const labelKind = cur.fieldName.startsWith('rate_plan:org=') ? 'agency+company' : cur.partyKind;
     const next: MemorySuggestion = {
       field, value: cur.value, hits: cur.hits, total: cur.total, partyKind: cur.partyKind,
-      reason: `Usual for ${cur.partyKind} (${cur.hits}/${cur.total} stays)`,
+      reason: `Usual for ${labelKind} (${cur.hits}/${cur.total} stays)`,
     };
     const prev = byField.get(field);
-    const better = !prev || (cur.partyKind === 'agency' && prev.partyKind !== 'agency')
+    const preferredKind = preferOrg ? 'organization' : 'agency';
+    const better = !prev || (cur.partyKind === preferredKind && prev.partyKind !== preferredKind)
       || (cur.partyKind === prev.partyKind && (cur.hits / cur.total > prev.hits / prev.total
         || (cur.hits / cur.total === prev.hits / prev.total && cur.total > prev.total)));
     if (better) byField.set(field, next);
   };
 
-  // Board-specific rate_plan first when requested, then plain rate_plan / guarantee_type.
-  if (boardKey) {
+  // 1. Resolve board first (never overrides explicit email board at apply time) so rate_plan can cascade on it.
+  for (const cur of groups.values()) {
+    if (cur.fieldName === 'board') consider(cur, 'board');
+  }
+  const boardKey = normalizeMemoryBoard(board) ?? normalizeMemoryBoard(byField.get('board')?.value);
+
+  // 2. Rate plan cascade: agency+org+board → agency+org → org/agency+board → plain rate_plan.
+  if (agencyId && organizationId && boardKey) {
     for (const cur of groups.values()) {
-      if (cur.fieldName === `rate_plan:${boardKey}`) consider(cur, 'rate_plan');
+      if (cur.partyKind === 'agency' && cur.fieldName === `rate_plan:org=${organizationId}:${boardKey}`) consider(cur, 'rate_plan');
+    }
+  }
+  if (agencyId && organizationId && !byField.has('rate_plan')) {
+    for (const cur of groups.values()) {
+      if (cur.partyKind === 'agency' && cur.fieldName === `rate_plan:org=${organizationId}`) consider(cur, 'rate_plan');
+    }
+  }
+  if (boardKey && !byField.has('rate_plan')) {
+    for (const cur of groups.values()) {
+      if (cur.fieldName === `rate_plan:${boardKey}`) consider(cur, 'rate_plan', true);
     }
   }
   for (const cur of groups.values()) {
     if (cur.fieldName === 'rate_plan' && !byField.has('rate_plan')) consider(cur, 'rate_plan');
     if (cur.fieldName === 'guarantee_type') consider(cur, 'guarantee_type');
   }
-  return [...byField.values()];
+  return MEMORY_ELIGIBLE_FIELDS.flatMap(f => byField.has(f) ? [byField.get(f)!] : []);
 }
 
-function memoryFieldWrites(fields: Record<string, unknown>, board?: string | null): Array<{field: string; value: string}> {
+function memoryFieldWrites(
+  fields: Record<string, unknown>,
+  board?: string | null,
+  partyKind?: 'agency' | 'organization',
+  organizationId?: string | null,
+): Array<{field: string; value: string}> {
   const out: Array<{field: string; value: string}> = [];
-  for (const field of MEMORY_ELIGIBLE_FIELDS) {
+  const boardKey = normalizeMemoryBoard(board ?? fields.board);
+  if (boardKey) out.push({field: 'board', value: boardKey});
+  for (const field of ['rate_plan', 'guarantee_type'] as const) {
     const value = fields[field];
     if (blank(value)) continue;
     out.push({field, value: String(value)});
   }
   const rate = fields.rate_plan;
-  const boardKey = normalizeMemoryBoard(board ?? fields.board);
   if (!blank(rate) && boardKey) out.push({field: `rate_plan:${boardKey}`, value: String(rate)});
+  if (partyKind === 'agency' && organizationId && !blank(rate)) {
+    out.push({field: `rate_plan:org=${organizationId}`, value: String(rate)});
+    if (boardKey) out.push({field: `rate_plan:org=${organizationId}:${boardKey}`, value: String(rate)});
+  }
   return out;
 }
 
@@ -107,9 +134,10 @@ export function buildMemoryFromHistory(stays: HistoryStay[], cutoffMs: number): 
   const hits = new Map<string, Map<string, number>>();
   for (const stay of stays) {
     if (!(stay.createdAtMs < cutoffMs)) continue;
-    for (const [kind, partyId] of [['agency', stay.agencyId], ['organization', stay.organizationId]] as const) {
+    const orgId = asId(stay.organizationId);
+    for (const [kind, partyId] of [['agency', asId(stay.agencyId)], ['organization', orgId]] as const) {
       if (!partyId) continue;
-      for (const {field, value} of memoryFieldWrites(stay.fields as Record<string, unknown>, stay.board)) {
+      for (const {field, value} of memoryFieldWrites(stay.fields as Record<string, unknown>, stay.board, kind, orgId)) {
         const key = `${stay.propertyCode}\0${kind}\0${partyId}\0${field}`;
         const ctr = hits.get(key) ?? new Map<string, number>();
         ctr.set(value, (ctr.get(value) ?? 0) + 1);
@@ -152,7 +180,7 @@ export async function recordSavedStayMemory(
   if (agencyId) parties.push(['agency', agencyId]);
   if (organizationId) parties.push(['organization', organizationId]);
   for (const [kind, partyId] of parties) {
-    for (const {field, value} of memoryFieldWrites(args.fields)) {
+    for (const {field, value} of memoryFieldWrites(args.fields, undefined, kind, organizationId)) {
       await sql`
         INSERT INTO nava_agent.party_booking_memory AS m
           (property_code, party_kind, party_id, field_name, field_value, hits)
@@ -331,7 +359,7 @@ export function applyPartyMemoryToDraft(
       if (!isDefault && existing && (existing.provenance === 'staff' || existing.evidence.length || existing.error)) continue;
       fields[sug.field] = sug.value;
       const evidence = [{message_id: 'party_memory', attachment_id: null, quote: sug.reason}];
-      const label = sug.field === 'guarantee_type' ? 'Guarantee type' : 'Rate plan';
+      const label = sug.field === 'guarantee_type' ? 'Guarantee type' : sug.field === 'board' ? 'Meal plan' : 'Rate plan';
       if (spec >= 0) fieldSpecs[spec] = {...fieldSpecs[spec], path, provenance: 'default', error: null, evidence};
       else fieldSpecs.push({
         path, label, provenance: 'default', editable: true, required: false,

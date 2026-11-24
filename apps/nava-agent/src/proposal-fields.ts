@@ -406,6 +406,15 @@ export function createRoomTypeCode(value: unknown): string | null {
   return null;
 }
 
+const CREATE_STQN_DEFAULT_QUOTE = 'Default Standard Queen (STQN) — verify bed/availability';
+function shouldDefaultCreateRoomToStqn(value: unknown): boolean {
+  if (value == null) return true;
+  if (typeof value !== 'string') return false;
+  const raw = value.trim();
+  if (!raw) return true;
+  return /^(?:(?:a|1|one)\s+)?(?:standard|std|single)(?:\s+(?:standard|std|single))?(?:\s+rooms?)?$/i.test(raw);
+}
+
 /** HRCEN rate/room wording → native code. Shared Amend/Quote mapper — do not tighten Create guesses here. */
 export function hrcenCode(kind:'rate_plan'|'room_type',value:unknown,board:unknown):string|null {
   if(typeof value!=='string' || !value.trim()) return null;
@@ -498,6 +507,17 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
         if(key==='rate_plan' && requested!=null && requested!=='' && !isCreateRateCode(fields[key])) {
           warnings.push(forRoom+'Requested rate: '+String(requested)+'. Select an Infor rate plan.');
           fields[key]=null;
+        }
+      }
+      if(shouldDefaultCreateRoomToStqn(fields.room_type)) {
+        const roomPath=`/bookings/${index}/fields/room_type`;
+        const roomSpec=fieldSpecs.findIndex(field=>field.path===roomPath || field.path===roomPath.slice(1));
+        const existing=roomSpec>=0 ? fieldSpecs[roomSpec] : null;
+        if(!existing || (existing.provenance!=='staff' && !existing.error)) {
+          fields.room_type='STQN';
+          const evidence=[{message_id:'default_room',attachment_id:null,quote:CREATE_STQN_DEFAULT_QUOTE}];
+          if(roomSpec>=0) fieldSpecs[roomSpec]={...fieldSpecs[roomSpec],path:roomPath,provenance:'default',error:null,evidence};
+          else fieldSpecs.push({path:roomPath,label:'Room type',provenance:'default',editable:true,required:true,error:null,control:'combobox',options:[],evidence});
         }
       }
       for(const [key,value] of [['track',createTrackDefault(fields)],['guarantee_type',createGuaranteeDefault(fields)],['source_of_business','EMA']] as const) {
