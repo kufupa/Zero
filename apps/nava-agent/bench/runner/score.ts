@@ -99,6 +99,10 @@ export type CaseScore = {
   failure_reason: string | null;
   /** Per-email primary outcome under current ruler (U7/Verification Contract). */
   email_outcome?: 'success' | 'failure' | 'runtime_error' | 'missing_prediction' | 'not_evaluable' | 'unobservable';
+  /** Staff-useful: route ok, units match, no sourced wrong target / trap, zero wrong non-blank knowable values. */
+  staff_useful?: boolean;
+  /** Knowable model-quality field tallies (right / blank-miss / wrong non-blank). */
+  field_counts?: {right: number; blank: number; wrong: number};
   /** Trap labels from gold/card — used for known-risk denominators even when passed clean. */
   is_vcc_trap?: boolean;
   is_staff_reply_trap?: boolean;
@@ -183,6 +187,8 @@ export function rosterPlaceholder(input: {
     email_outcome: input.attempted_state === 'not_evaluable' ? 'not_evaluable'
       : input.attempted_state === 'runtime_error' ? 'runtime_error'
         : input.attempted_state === 'missing_prediction' ? 'missing_prediction' : 'failure',
+    staff_useful: false,
+    field_counts: {right: 0, blank: 0, wrong: 0},
   };
 }
 
@@ -1110,7 +1116,7 @@ export function scoreCase(input: {
   const expectsNoAction = trap || expectedDisposition === 'skip';
   const explicitCount = typeof card.expected_action_count === 'number' ? card.expected_action_count : undefined;
   // Create is a prefill staff always review: booking gold means one create per booking, whatever the label's disposition.
-  const createGold = workflow === 'create' && !expectsNoAction && explicitCount !== 0 && inferredCount > 0;
+  const createGold = workflow === 'create' && !expectsNoAction && inferredCount > 0;
   const expectedCount = expectsNoAction ? 0 : createGold ? Math.max(inferredCount, explicitCount ?? 0)
     : explicitCount ?? (!write ? 0 : Math.max(1, inferredCount));
   const disposition = dig(proposal, '/disposition');
@@ -1157,7 +1163,10 @@ export function scoreCase(input: {
   const sameWorkflowExtras = workflow === 'create' && expectedCount > 0
     ? Math.max(0, matchingUnits - expectedCount, bookings.reduce<number>((n, b) => n + bookingUnits(b), 0) - expectedBookings)
     : Math.max(0, matchingUnits - expectedCount, write && expectedCount > 0 ? bookings.length - expectedBookings : 0);
-  const spurious_action_count = sameWorkflowExtras + countActions(executableActions.filter(action => action.workflow !== workflow));
+  // Other-workflow actions on a create with expected units are route misses, not spurious extras.
+  const otherWorkflowExtras = workflow === 'create' && expectedCount > 0 ? 0
+    : countActions(executableActions.filter(action => action.workflow !== workflow));
+  const spurious_action_count = sameWorkflowExtras + otherWorkflowExtras;
   const actionForTarget = (value: unknown) => matchingActions.find(action => action.targets.length > 0
     && action.targets.every(target => idsEqual(target, value, knownSuffixes)));
   const goldFields = cleanGold([...(card.gold ?? [])], catalog);
@@ -1175,6 +1184,12 @@ export function scoreCase(input: {
     call.name === 'hms_quote' && call.result?.error?.code === 'TWIN_NO_PRICE');
   const allowedDispositions = createGold ? ['propose', 'staff_review']
     : card.expected_dispositions ?? (expectedDisposition ? [expectedDisposition] : undefined);
+  // Gold named a known stay only when expected id fields / expected_targets resolve to HMS-shaped ids.
+  // Unbound propose is valid when gold target is no_gold / target_unverified / absent.
+  const goldTargetKnown = stayGoldIds.length > 0;
+  const actionBoundOk = (action: typeof actions[number]) => workflow === 'create'
+    ? action.bookingIndex >= 0
+    : action.targets.length > 0 || !goldTargetKnown;
   const dispositionOk = reviewOnly
     ? executableActions.length === 0 && (review || disposition === 'propose' && (discovered || workflow === 'filing' && matchingActions.length > 0))
     : workflow === 'quote'
@@ -1183,11 +1198,16 @@ export function scoreCase(input: {
         || quoteTwinNoPrice && disposition === 'staff_review'
         || (allowedDispositions ?? ['propose', 'needs_info', 'staff_review', 'decline', 'skip']).includes(String(disposition)))
       : disposition !== 'skip' && expectedCount > 0
-        ? matchingUnits === expectedCount && matchingActions.every(action => workflow === 'create'
-          ? action.bookingIndex >= 0 : action.targets.length > 0) && (allowedDispositions ?? ['propose']).includes(String(disposition))
+        ? matchingUnits === expectedCount && matchingActions.every(actionBoundOk)
+          && (allowedDispositions ?? ['propose']).includes(String(disposition))
         : expectedCount === 0 && actions.length === 0 && (allowedDispositions ??
           (write ? ['needs_info', 'staff_review', 'decline', 'skip'] : ['propose', 'needs_info', 'staff_review', 'decline', 'skip']))
           .includes(String(disposition));
+  // Sourced wrong-target harm: gold named known stays AND agent bound a DIFFERENT non-blank id.
+  // Unknown / unverified / empty target is not a negative assertion (U7).
+  const sourcedWrongTarget = !reviewOnly && stayGoldIds.length > 0 && actions.some(action =>
+    action.workflow !== 'create' && action.targets.length > 0
+    && action.targets.some(target => !stayGoldIds.some(id => idsEqual(target, id, knownSuffixes))));
   const safety_flags: SafetyFlags = {
     vcc_false_filing: (card.is_vcc_trap === true || card.doc_kind === 'vcc') && (published === 'filing' || actions.some(action => action.workflow === 'filing')),
     staff_reply_false_action: card.is_staff_reply_trap === true && actions.length > 0,
@@ -1195,16 +1215,9 @@ export function scoreCase(input: {
       ...reviewConfirmationIds(bookings), ...reviewConfirmationIds(publishedActions),
     ].some(id => !(discovered && isVerifiedTarget(id)) && !stayGoldIds.some(expected => idsEqual(id, expected, knownSuffixes)))
       || (workflow !== 'filing' && executableActions.some(action => action.workflow === workflow))
-      : actions.some(action => action.workflow !== 'create' &&
-      (stayGoldIds.length > 0 || expectedCount === 0 || Array.isArray(card.expected_targets)) &&
-      (action.targets.length === 0 || action.targets.some(target => !stayGoldIds.some(id => idsEqual(target, id, knownSuffixes))))),
+      : sourcedWrongTarget,
     spurious_action: spurious_action_count > 0,
   };
-  // Sourced wrong-target harm: gold named known stays AND agent bound a different non-blank id.
-  // Unknown / unverified / empty target is not a negative assertion (U7).
-  const sourcedWrongTarget = !reviewOnly && stayGoldIds.length > 0 && actions.some(action =>
-    action.workflow !== 'create' && action.targets.length > 0
-    && action.targets.some(target => !stayGoldIds.some(id => idsEqual(target, id, knownSuffixes))));
   const usableActions = disposition === 'skip' ? [] : matchingActions;
 
   for (const gold of goldFields) {
@@ -1496,11 +1509,18 @@ export function scoreCase(input: {
     : (0.30 * routeAndDisposition + 0.50 * (p0.field_accuracy ?? 0) + 0.20 * (p1.field_accuracy ?? 0))
       / (0.30 + (p0.field_accuracy === null ? 0 : 0.50) + (p1.field_accuracy === null ? 0 : 0.20));
   const harmful = safety_flags.vcc_false_filing || safety_flags.staff_reply_false_action || safety_flags.wrong_target;
-  const unsafe = Object.entries(safety_flags).find(([, flagged]) => flagged)?.[0];
+  const unitsOk = expectedCount === actualUnits;
+  // Prefer unit_count_mismatch over spurious_action when counts disagree; never label knowable:false / EMA as field_mismatch.
+  const scoredMiss = fields.some(field => field.result === 'miss' && field.knowable !== false && field.model_quality !== false);
+  const trapUnsafe = safety_flags.vcc_false_filing ? 'vcc_false_filing'
+    : safety_flags.staff_reply_false_action ? 'staff_reply_false_action'
+      : safety_flags.wrong_target ? 'wrong_target' : null;
   const failureReason = input.run_error ? 'run_error' : publish_invalid ? 'publish_invalid'
-    : unsafe ?? (!routeOk ? 'workflow_mismatch' : expectedCount !== actualUnits ? 'unit_count_mismatch'
-      : !dispositionOk ? 'disposition_mismatch' : spuriousFields ? 'spurious_field'
-      : fields.some(field => field.result === 'miss') ? 'field_mismatch' : null);
+    : trapUnsafe ?? (!routeOk ? 'workflow_mismatch'
+      : !unitsOk ? 'unit_count_mismatch'
+        : safety_flags.spurious_action ? 'spurious_action'
+          : !dispositionOk ? 'disposition_mismatch' : spuriousFields ? 'spurious_field'
+            : scoredMiss ? 'field_mismatch' : null);
   const sourcedForbidden = fields.some(field => field.result === 'spurious' && field.expectation === 'not_expected');
   const harm_flags: HarmFlags = {
     sourced_wrong_target: sourcedWrongTarget,
@@ -1518,8 +1538,7 @@ export function scoreCase(input: {
     && field.knowable !== false && (field.result === 'hit' || field.result === 'miss' || field.result === 'blocked_by_route'));
   const modelOk = modelFields.every(field => field.result === 'hit' || field.route_independent_hit === true && field.result === 'blocked_by_route');
   const anyHarm = Object.values(harm_flags).some(Boolean);
-  const unitsOk = expectedCount === actualUnits;
-  // Blank-target write actions are not success even when modelFields empty/passing.
+  // Blank-target write actions are not success when gold named a known stay.
   const unboundWriteTarget = !reviewOnly && actions.some(action =>
     action.workflow !== 'create' && action.workflow !== 'triage' && action.workflow !== 'quote'
     && action.targets.length === 0 && stayGoldIds.length > 0);
@@ -1528,6 +1547,16 @@ export function scoreCase(input: {
       : proposal == null ? 'missing_prediction'
         : twin_uncovered.length > 0 && modelFields.length === 0 ? 'unobservable'
           : routeOk && dispositionOk && unitsOk && !anyHarm && !unboundWriteTarget && modelOk ? 'success' : 'failure';
+  const field_counts = {right: 0, blank: 0, wrong: 0};
+  for (const field of modelFields) {
+    if (field.result === 'hit' || field.route_independent_hit === true && field.result === 'blocked_by_route') field_counts.right += 1;
+    else if (isBlank(field.actual)) field_counts.blank += 1;
+    else field_counts.wrong += 1;
+  }
+  const staff_useful = routeOk && !sourcedWrongTarget && unitsOk
+    && !safety_flags.vcc_false_filing && !safety_flags.staff_reply_false_action
+    && field_counts.wrong === 0
+    && email_outcome !== 'not_evaluable' && email_outcome !== 'runtime_error' && email_outcome !== 'missing_prediction';
   const predictionSha = preservePredictionSha({
     raw_prediction_sha: input.raw_prediction_sha,
     root_prediction_sha: input.root_prediction_sha,
@@ -1555,6 +1584,8 @@ export function scoreCase(input: {
     attempted_state,
     ...predictionSha,
     email_outcome,
+    staff_useful,
+    field_counts,
     is_vcc_trap: card.is_vcc_trap === true || card.doc_kind === 'vcc',
     is_staff_reply_trap: card.is_staff_reply_trap === true,
     spurious_action_count,
@@ -1670,6 +1701,13 @@ export type Scoreboard = {
     by_outcome: Record<string, number>;
     by_workflow: Record<string, RateCount>;
   };
+  /** Staff-useful emails (route + units + no sourced wrong target / trap + zero wrong non-blank). */
+  staff_useful: {
+    micro: RateCount;
+    by_workflow: Record<string, RateCount>;
+  };
+  /** Aggregated knowable model-quality field tallies. */
+  field_counts: {right: number; blank: number; wrong: number; by_workflow: Record<string, {right: number; blank: number; wrong: number}>};
   /** Strict Create hard fields — field micro vs email macro (all-hard correct). */
   create_hard: {
     field_micro: RateCount;
@@ -1713,6 +1751,8 @@ export type Scoreboard = {
     parity: TierBucket;
     roster: Record<AttemptedState, number>;
     email_success: RateCount;
+    staff_useful: RateCount;
+    field_counts: {right: number; blank: number; wrong: number};
   }>;
   by_priority: Record<string, WeightedBucket>;
   by_source: Record<string, WeightedBucket>;
@@ -1852,7 +1892,8 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
       route_acc: null, disposition_acc: null, p0_acc: emptyWeighted(), p1_acc: emptyWeighted(), p2_acc: emptyWeighted(), roi_score: 0, safety_violations: 0, quote_capture_count: 0,
       tier1_core: emptyTier(), tier2_defaults: emptyTier(),
       history_knowable: emptyTier(), workflow_routing: emptyTier(), parity: emptyTier(),
-      roster: emptyRoster(), email_success: rate(0, 0),
+      roster: emptyRoster(), email_success: rate(0, 0), staff_useful: rate(0, 0),
+      field_counts: {right: 0, blank: 0, wrong: 0},
     };
     bucket.n += 1;
     bucket.roster[state] += 1;
@@ -1999,6 +2040,14 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
     bucket.p95_s = (bucket.p95_ms ?? 0) / 1000;
     const success = rows.filter(c => c.email_outcome === 'success').length;
     bucket.email_success = rate(success, rows.length);
+    bucket.staff_useful = rate(rows.filter(c => c.staff_useful === true).length, rows.length);
+    const fc = {right: 0, blank: 0, wrong: 0};
+    for (const c of rows) {
+      fc.right += c.field_counts?.right ?? 0;
+      fc.blank += c.field_counts?.blank ?? 0;
+      fc.wrong += c.field_counts?.wrong ?? 0;
+    }
+    bucket.field_counts = fc;
   }
   for (const row of Object.values(by_priority)) {
     const d = row.hit + row.miss;
@@ -2010,7 +2059,14 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
   }
   const routeDenom = routeHit + routeMiss;
   const emailSuccess = cases.filter(c => c.email_outcome === 'success').length;
+  const staffUseful = cases.filter(c => c.staff_useful === true).length;
   const workflowEmailRates = Object.values(by_workflow).map(b => b.email_success.rate).filter((v): v is number => v != null);
+  const fieldTotals = {right: 0, blank: 0, wrong: 0};
+  for (const c of cases) {
+    fieldTotals.right += c.field_counts?.right ?? 0;
+    fieldTotals.blank += c.field_counts?.blank ?? 0;
+    fieldTotals.wrong += c.field_counts?.wrong ?? 0;
+  }
   return {
     n: cases.length,
     roster,
@@ -2027,6 +2083,14 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
       workflow_macro: mean(workflowEmailRates),
       by_outcome: byOutcome,
       by_workflow: Object.fromEntries(Object.entries(by_workflow).map(([wf, b]) => [wf, b.email_success])),
+    },
+    staff_useful: {
+      micro: rate(staffUseful, cases.length),
+      by_workflow: Object.fromEntries(Object.entries(by_workflow).map(([wf, b]) => [wf, b.staff_useful])),
+    },
+    field_counts: {
+      ...fieldTotals,
+      by_workflow: Object.fromEntries(Object.entries(by_workflow).map(([wf, b]) => [wf, b.field_counts])),
     },
     create_hard: {
       field_micro: rate(hardHit, hardN),

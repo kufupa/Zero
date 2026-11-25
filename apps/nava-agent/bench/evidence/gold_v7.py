@@ -215,7 +215,8 @@ def build(tr,m,all_older,visible,own,related,l):
         if path.endswith('/room_type') and f['basis']=='luna_evidence':
             if route!='create' and (room:=commercial('room_type',f['value'])): f['value']=room
             else: entries.pop(path)
-    if disp!='propose': n=0
+    # Create stays countable under staff_review (prefill staff always review). Zero only for skip / no-action.
+    if disp=='skip' or (disp!='propose' and route!='create'): n=0
     target_ids=list(targets.values())
     pvs=sorted((p for c in target_ids for p in tr.versions.get(c,[]) if p['sent_at']<=at),key=lambda p:p['sent_at'])
     hms={'exists':False,'confirmation':None,'basis':'unknown_before_as_of','stay':None,'documents':[]}; c=target_ids[0] if len(target_ids)==1 else None
@@ -420,6 +421,33 @@ def canonical_outcome_value(k,v):
     if v is None: return None
     return commercial(k,v)
 
+PRE_ARRIVAL_HARD={'guarantee_type','rate_plan','billing_reference'}
+DEPARTURE_SAFE={'room_type','arrival_date','departure_date','board','organization_name','agency_name','first_name','last_name','adults','child_count'}
+
+def _stay_dates(tr,c):
+    arr=dep=None
+    for cap in tr.anchors.get(c,{}).get('captures',[]) or []:
+        h=cap.get('hms_fields') or {}
+        arr=arr or iso(h.get('arrivaldate')); dep=dep or iso(h.get('departuredate'))
+    h=tr.hms(c) or {}
+    return arr or iso(h.get('arrivaldate')), dep or iso(h.get('departuredate'))
+
+def _hms_capture_ok(k,cap,arr,dep,captures,cap_at):
+    """Time-safe HMS acceptance: pre-arrival Reserved for hard fields; on/before departure + stable for others."""
+    day=(cap_at or '')[:10]; status=str((cap.get('hms_fields') or {}).get('status') or '')
+    if k in PRE_ARRIVAL_HARD:
+        return bool(arr and day and day<arr and status=='Reserved')
+    if k in DEPARTURE_SAFE or k not in PRE_ARRIVAL_HARD:
+        if dep and day and day>dep: return False
+        hv=canonical_outcome_value(k,hms_field_value(cap.get('hms_fields') or {},k))
+        for later in captures:
+            lat=later.get('captured_at') or ''
+            if lat<=(cap_at or ''): continue
+            lv=canonical_outcome_value(k,hms_field_value(later.get('hms_fields') or {},k))
+            if lv is not None and hv is not None and stable_value(lv)!=stable_value(hv): return False
+        return True
+    return False
+
 def create_action_value(tr,c,k,at):
     """Return (value,basis,captured_at) for staff state attributable to create time."""
     letter=first_action_letter(tr,c,at)
@@ -429,22 +457,97 @@ def create_action_value(tr,c,k,at):
     changes=changed_keys(tr,c,at).get(k,[])
     if changes:
         return None,'action_time_unknown',changes[0].get('after_sent_at')
-    for cap in sorted(tr.anchors.get(c,{}).get('captures',[]),key=lambda x:x.get('captured_at','')):
-        if cap.get('captured_at','')<at: continue
+    captures=sorted(tr.anchors.get(c,{}).get('captures',[]),key=lambda x:x.get('captured_at',''))
+    arr,dep=_stay_dates(tr,c)
+    for cap in captures:
+        cap_at=cap.get('captured_at') or ''
+        if cap_at<at: continue
         hv=canonical_outcome_value(k,hms_field_value(cap.get('hms_fields') or {},k))
-        if hv is not None:
-            return hv,'hms_post_action_stable',cap.get('captured_at')
-    # Anchors sometimes have only the rolled-up final capture, never use it when a
-    # modification chain exists; otherwise it is the same stable post-action state.
-    h=tr.hms(c)
-    hv=canonical_outcome_value(k,hms_field_value(h,k))
-    if hv is not None and not changes:
-        return hv,'hms_post_action_stable',tr.anchors.get(c,{}).get('captured_at')
+        if hv is None: continue
+        if _hms_capture_ok(k,cap,arr,dep,captures,cap_at):
+            return hv,'hms_post_action_stable',cap_at
+    # Rolled-up final capture — same timing gates; never when a modification chain exists.
+    h=tr.hms(c); hv=canonical_outcome_value(k,hms_field_value(h,k))
+    rolled=tr.anchors.get(c,{}).get('captured_at')
+    if hv is not None and not changes and rolled and rolled>=at:
+        fake=dict(hms_fields=h or {},captured_at=rolled)
+        if _hms_capture_ok(k,fake,arr,dep,captures,rolled):
+            return hv,'hms_post_action_stable',rolled
+    if k in PRE_ARRIVAL_HARD:
+        return None,'post_stay_unverifiable',None
     return None,'action_time_unknown',None
+
+def is_catalogue_value(k,v):
+    """True when value is a catalogue code or exact catalogue meaning/name."""
+    cat=DIRS.get(ALIASES.get(k),{})
+    if not cat or v is None: return False
+    if isinstance(v,dict):
+        code=str(v.get('code') or '').strip()
+        if code and code in cat: return True
+        label=v.get('meaning') if k in ('rate_plan','room_type','guarantee_type') else v.get('name') or v.get('meaning')
+        if label and any(name(r.get('meaning'))==name(label) for r in cat.values()): return True
+        # Name-only dicts without a catalogue code match are free text, not gold.
+        return False
+    token=str(v).strip()
+    if not token: return False
+    if token in cat: return True
+    if any(name(r.get('meaning'))==name(token) for r in cat.values()): return True
+    if k=='guarantee_type':
+        return any(name(r.get('meaning'))==name(token) or name(r.get('code'))==name(token) for r in cat.values())
+    return False
+
+def scrub_non_catalogue(row):
+    """Drop rate/guarantee/org/agency free-text junk to no_gold."""
+    keys={'rate_plan','guarantee_type','organization_name','agency_name'}
+    out=[]
+    for f in row.get('gold') or []:
+        f=deepcopy(f); k=leaf(f.get('path',''))
+        if k in keys and f.get('expectation')=='expected' and not is_catalogue_value(k,f.get('value')):
+            f=unknown_field(f,'non_catalogue_value')
+        out.append(f)
+    row['gold']=out
+    return row
+
+def fix_create_action_count(row):
+    """Keep create unit count under staff_review; zero only for skip."""
+    if row.get('workflow')!='create': return row
+    if row.get('skip') or row.get('expected_disposition')=='skip' or row.get('not_evaluable'):
+        row['expected_action_count']=0; return row
+    indices={booking_index(f.get('path')) for f in row.get('gold') or []
+             if f.get('expectation')=='expected' and booking_index(f.get('path')) is not None}
+    confs=(row.get('staff_outcome_only') or {}).get('create_confirmations') or {}
+    n=max(len(indices),len(confs),int(row.get('expected_action_count') or 0))
+    if n>0: row['expected_action_count']=n
+    return row
+
+def scrub_shared_billing(rows_by_split):
+    """Billing refs shared by >=3 distinct bookings → no_gold (group/house account)."""
+    owners={}
+    for split,rows in rows_by_split.items():
+        for cid,row in rows.items():
+            if row.get('workflow')!='create': continue
+            confs=(row.get('staff_outcome_only') or {}).get('create_confirmations') or {}
+            for f in row.get('gold') or []:
+                if leaf(f.get('path',''))!='billing_reference' or f.get('expectation')!='expected' or not f.get('value'): continue
+                bi=booking_index(f.get('path')); book=confs.get(str(bi)) if bi is not None else None
+                key=str(f['value']).strip(); owners.setdefault(key,set()).add(book or f'{cid}:{bi}')
+    shared={k for k,v in owners.items() if len(v)>=3}
+    if not shared: return
+    for rows in rows_by_split.values():
+        for row in rows.values():
+            if row.get('workflow')!='create': continue
+            out=[]
+            for f in row.get('gold') or []:
+                f=deepcopy(f)
+                if leaf(f.get('path',''))=='billing_reference' and f.get('expectation')=='expected' and str(f.get('value') or '').strip() in shared:
+                    f=unknown_field(f,'shared_billing_reference')
+                out.append(f)
+            row['gold']=out
 
 def correct_create(row,card,tr):
     at=card.get('as_of') or ''
     confs=(row.get('staff_outcome_only') or {}).get('create_confirmations') or {}
+    explicit=explicit_label_values(card.get('case_id') or '')
     out=[]
     for f in row.get('gold') or []:
         f=deepcopy(f); p=f.get('path',''); k=leaf(p); bi=booking_index(p)
@@ -453,7 +556,16 @@ def correct_create(row,card,tr):
         if c and (basis.startswith('hms') or basis.startswith('letter')):
             v,nb,cap=create_action_value(tr,c,k,at)
             if v is None:
-                f=unknown_field(f,nb,dict(confirmation=c,captured_at=cap) if cap else dict(confirmation=c))
+                # Prefer email-explicit value when HMS timing rejects the snapshot.
+                if p in explicit and explicit[p] is not None:
+                    ev=canonical_outcome_value(k,explicit[p])
+                    if ev is not None and (k not in ('rate_plan','guarantee_type','organization_name','agency_name') or is_catalogue_value(k,ev)):
+                        f.update(value=ev,expectation='expected',basis='luna_evidence',source='email_explicit')
+                        f.pop('captured_at',None)
+                    else:
+                        f=unknown_field(f,nb or 'post_stay_unverifiable',dict(confirmation=c,captured_at=cap) if cap else dict(confirmation=c))
+                else:
+                    f=unknown_field(f,nb or 'post_stay_unverifiable',dict(confirmation=c,captured_at=cap) if cap else dict(confirmation=c))
             else:
                 f.update(value=v,expectation='expected',basis=nb,captured_at=cap,confirmation=c)
                 f['source']='hms_truth' if nb.startswith('hms') else 'email_explicit' if nb=='luna_evidence' else 'heuristic'
@@ -635,7 +747,7 @@ def transform_all(outdir=SHIP_OUT):
             card=jload(cp) if cp.exists() else {'case_id':cid,'as_of':'','selected_email':{}}
             cases[(split,cid)]=card; rows.append((split,cid,deepcopy(row),card))
     owners=amend_attribution(rows,tr)
-    output={s:{} for s,_ in SPLITS}; stats={'scope_excluded':[],'quote_child_path':[],'unverified_targets':[],'amend_rewritten':[],'create_rewritten':[]}
+    output={s:{} for s,_ in SPLITS}; stats={'scope_excluded':[],'quote_child_path':[],'unverified_targets':[],'amend_rewritten':[],'create_rewritten':[],'create_count_restored':[]}
     for split,cid,old,card in rows:
         row=deepcopy(old)
         before=stable_value(row)
@@ -643,25 +755,34 @@ def transform_all(outdir=SHIP_OUT):
         if any(x.get('basis')=='target_unverified' and x.get('expectation')=='no_gold' for x in row.get('gold') or []): stats['unverified_targets'].append(cid)
         row=fix_quote_child_paths(row)
         if row.get('workflow')=='quote' and any('|v7_quote_children_path' in str(x.get('basis','')) for x in row.get('gold') or []): stats['quote_child_path'].append(cid)
-        if row.get('workflow')=='create': row=correct_create(row,card,tr)
+        if row.get('workflow')=='create':
+            prior_n=row.get('expected_action_count')
+            row=correct_create(row,card,tr)
+            row=scrub_non_catalogue(row)
+            row=fix_create_action_count(row)
+            if (prior_n or 0)==0 and (row.get('expected_action_count') or 0)>0: stats['create_count_restored'].append(cid)
         if row.get('workflow')=='amend': row=correct_amend(row,card,tr,owners)
+        if row.get('workflow') in ('amend','filing','cancel','quote'): row=scrub_non_catalogue(row)
         row,excluded=apply_scope(row,card)
         if excluded: stats['scope_excluded'].append(cid)
         if stable_value(row)!=before:
             if row.get('workflow')=='create': stats['create_rewritten'].append(cid)
             if row.get('workflow')=='amend': stats['amend_rewritten'].append(cid)
         output[split][cid]=row
+    scrub_shared_billing(output)
     recovered=recover_skipped_creates(tr)
     for cid,(row,m,c) in recovered.items():
         # Newly recovered dev decisions enter train only; locked validation/test rosters stay immutable.
+        row=scrub_non_catalogue(row); row=fix_create_action_count(row)
         output['train'][cid]=row
     diff=make_diff(rows,output,recovered)
     outdir=Path(outdir); outdir.mkdir(parents=True,exist_ok=True)
+    # v8 seal: never overwrite gold-v7-*.json
     for split,_ in SPLITS:
-        jdump(outdir/f'gold-v7-{split}.json',output[split])
-    jdump(outdir/'v6-to-v7-diff.json',diff)
-    summary={'counts':{s:len(output[s]) for s,_ in SPLITS},'recovered_skip_count':len(recovered),'recovered_skip_ids':sorted(recovered)[:20],**{k:sorted(set(v))[:20] for k,v in stats.items()}}
-    jdump(outdir/'build-summary.json',summary)
+        jdump(outdir/f'gold-v8-{split}.json',output[split])
+    jdump(outdir/'v6-to-v8-diff.json',diff)
+    summary={'version':'v8','counts':{s:len(output[s]) for s,_ in SPLITS},'recovered_skip_count':len(recovered),'recovered_skip_ids':sorted(recovered)[:20],**{k:sorted(set(v))[:20] for k,v in stats.items()}}
+    jdump(outdir/'build-summary-v8.json',summary)
     return output,diff,stats,recovered
 
 def make_diff(old_rows,output,recovered):
