@@ -4,11 +4,11 @@ export const HISTORY_FIELDS = {
   araccountname: 'ar_account_name', billingreference: 'billing_reference', company: 'organization_name', ta1: 'agency_name',
 } as const;
 type NativeField = keyof typeof HISTORY_FIELDS;
-export type HistoryKey = 'booker_email' | 'booker_domain' | 'company' | 'ta1' | 'guest_id';
+export type HistoryKey = 'booker_email' | 'booker_domain' | 'company' | 'ta1';
 export type PolicyKeys = Partial<Record<HistoryKey, string | null>>;
 export type PolicyRow = {key_type: HistoryKey; key: string; field: NativeField; value: string; support: number; agreement: number; last_seen: string};
 
-const KEY_ORDER = ['booker_email', 'company', 'ta1', 'guest_id', 'booker_domain'] as const;
+const KEY_ORDER = ['booker_email', 'company', 'ta1', 'booker_domain'] as const;
 const aliases: Record<string, NativeField> = Object.fromEntries(Object.entries(HISTORY_FIELDS).map(([key, field]) => [field, key as NativeField]));
 export const exactHistoryKey = (value: unknown) => typeof value === 'string' || typeof value === 'number' ? String(value).trim().toLowerCase() : '';
 
@@ -44,22 +44,6 @@ export function policyValue(field: NativeField, value: unknown): string {
   return text;
 }
 
-export function canonicalPolicyValue(field: NativeField, value: string) {
-  if (field === 'company' || field === 'ta1' || field === 'araccountname') return exactPartyPolicyKey(value);
-  return field === 'billingreference' ? value : value.replace(/\s+/g, ' ').toUpperCase();
-}
-
-export function historyFieldAllowed(type: HistoryKey, field: NativeField) {
-  if (field === 'company' || field === 'ta1') return type === 'booker_email' || type === 'booker_domain';
-  if (field === 'billingreference') return type !== 'booker_domain';
-  return field !== 'araccountname' || type !== 'booker_domain';
-}
-
-export function eligiblePolicyRow(row: PolicyRow) {
-  return row.support >= 2 && row.agreement >= 0.6 && row.agreement <= 1
-    && historyFieldAllowed(row.key_type, row.field) && (row.field !== 'billingreference' || row.agreement === 1);
-}
-
 export function indexHistoryPolicy(input: unknown): Record<string, PolicyRow[]> {
   if (!Array.isArray(input)) throw new Error('Expected history policy rows');
   const index: Record<string, PolicyRow[]> = {};
@@ -73,7 +57,7 @@ export function indexHistoryPolicy(input: unknown): Record<string, PolicyRow[]> 
       key_type: keyType, key, field, value: policyValue(field, raw.value),
       support: Number(raw.support), agreement: Number(raw.agreement), last_seen: String(raw.last_seen ?? ''),
     };
-    if (!key || !row.value || !Number.isSafeInteger(row.support) || !Number.isFinite(Date.parse(row.last_seen)) || !eligiblePolicyRow(row)) continue;
+    if (!key || !row.value || !Number.isSafeInteger(row.support) || !Number.isFinite(Date.parse(row.last_seen)) || row.support < 1 || !(row.agreement > 0 && row.agreement <= 1)) continue;
     const group = index[historyRowKey(keyType, key)] ??= [];
     const prev = group.findIndex(other => other.field === row.field);
     if (prev === -1) group.push(row);
@@ -87,6 +71,12 @@ export function bookingPolicyKeys(fields: Record<string, unknown>, sender?: Poli
     ...sender,
     company: exactHistoryKey(fields.organization_name),
     ta1: exactHistoryKey(fields.agency_name),
-    guest_id: exactHistoryKey(fields.guest_profile_id),
   };
 }
+
+export function findPolicyRows(index: Record<string, PolicyRow[]>, keys: PolicyKeys): PolicyRow[] {
+  return policyKeys(keys).flatMap(([type, key]) => index[historyRowKey(type, key)] ?? []);
+}
+
+export type NativePartyUse = {ids?: Record<string, number>; names?: Record<string, number>};
+export const nativePartyUseName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');

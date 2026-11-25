@@ -5,13 +5,13 @@ import {
   distinctivePartyTokens,
   searchPartyWithFallback,
   resolvePartySelection,
-  type LearnedSenderHit,
+  type PartySearchHistory,
 } from '../../src/party-matching.js';
 import {isoDate, observeStays} from './backdate.js';
 import {
   completeNoMatch, queryDigest, unobservedResult, observedResult, type Scope,
 } from './read-result.js';
-import {anchorCaptures, anchorPdfs, beforeCutoff, quoteKey, rows, type TwinWorld} from './world.js';
+import {quoteKey, rows, type TwinWorld} from './world.js';
 
 // Ignore legal suffixes and punctuation; keep commercial name words.
 function partyKey(value: unknown): string {
@@ -28,62 +28,6 @@ export function twinSenderHost(sender: unknown, body: unknown): string | null {
     return extractSenderHost(forwarded?.[1], '');
   }
   return extractSenderHost(sender, '');
-}
-
-export function twinLearnedSender(world: TwinWorld, host: string, kind: 'agency' | 'organization'): LearnedSenderHit | null {
-  if (!world.threadSenders?.size && !world.senderPairs?.length) return null;
-  const matches = new Map<string, Map<string, {name: string; support: number}>>();
-  const counted = new Set<string>();
-  const directMisses = new Map<string, number>();
-  const cutoffDate = new Date(world.cutoff).toISOString().slice(0, 10);
-  const recordStay = (conf: string, domain: string, agency: string, company: string) => {
-    const seen = `${conf}|${domain}`;
-    if (counted.has(seen)) return;
-    counted.add(seen);
-    const name = kind === 'agency' ? agency : agency ? '' : company;
-    if (!name) {
-      if (kind === 'agency') directMisses.set(domain, (directMisses.get(domain) ?? 0) + 1);
-      return;
-    }
-    const names = matches.get(domain) ?? new Map();
-    matches.set(domain, names);
-    const key = partyKey(name);
-    const best = names.get(key) ?? {name, support: 0};
-    best.support++;
-    names.set(key, best);
-  };
-  for (const anchor of world.anchors) {
-    const domains = new Set<string>();
-    for (const pdf of anchorPdfs(anchor)) {
-      if (!beforeCutoff(pdf.sent_at, world.cutoff)) continue;
-      const mail = world.threadSenders?.get(String(pdf.thread_id ?? ''));
-      if (!mail || !(mail.at < world.cutoff) || mail.at > Date.parse(String(pdf.sent_at))) continue;
-      if (host === mail.host || host.endsWith(`.${mail.host}`)) domains.add(mail.host);
-    }
-    if (!domains.size) continue;
-    const state = anchorCaptures(anchor).filter(row => beforeCutoff(row.captured_at, world.cutoff)).map(row => object(row.hms_fields)).find(fields => {
-      const departure = isoDate(fields.departure_date ?? fields.departuredate);
-      return departure !== null && departure < cutoffDate;
-    });
-    if (!state) continue;
-    const agency = String(state.ta1 ?? '').trim();
-    const company = String(state.company ?? state.company_text ?? '').trim();
-    for (const domain of domains) recordStay(anchor.confirmation, domain, agency, company);
-  }
-  for (const pair of world.senderPairs ?? []) {
-    if (!(pair.mailAtMs < world.cutoff) || !(pair.sentAtMs < world.cutoff)) continue;
-    if (host === pair.host || host.endsWith(`.${pair.host}`)) {
-      recordStay(pair.confirmation, pair.host, pair.ta1, pair.company);
-    }
-  }
-  for (const [domain, names] of [...matches].sort(([a], [b]) => b.length - a.length)) {
-    const [best, next] = [...names.values()].sort((a, b) => b.support - a.support);
-    if (!best || best.support < 2 || next && next.support === best.support) continue;
-    if (kind === 'agency' && (best.support < 3 || best.support / (best.support + (directMisses.get(domain) ?? 0)) < 0.85)) continue;
-    const hit = partyRecords(world, kind).find(row => partyKey(row.meaning ?? row.name ?? row.label) === partyKey(best.name));
-    return {host, kind, ...best, nativeId: hit ? String(hit.nativeId ?? hit.code ?? hit.id ?? '') || null : null};
-  }
-  return null;
 }
 
 const ok = <T>(data: T): TwinEnvelope<T> => ({ok: true, data, error: null});
@@ -221,13 +165,10 @@ function partyRecords(world: TwinWorld, kind: string): Array<Record<string, unkn
  * Prod hms_search_parties returns native HMS candidates only (nativeId/displayName/…).
  * Twin mirrors prod: sequential partySearchQueries, break on first hit (no OR + 25-cap).
  */
-async function searchParties(world: TwinWorld, input: Record<string, unknown>, card: CaseCard): Promise<TwinEnvelope> {
+async function searchParties(world: TwinWorld, input: Record<string, unknown>, history?: PartySearchHistory): Promise<TwinEnvelope> {
   const kind = String(input.kind ?? 'guest');
   const field = String(input.field ?? 'last_name');
   const rawQuery = String(input.query ?? '').trim();
-  const selected = object(card.selected_email);
-  const host = twinSenderHost(selected.from_address ?? selected.from, selected.body ?? selected.body_text)
-    ?? extractSenderHost(input.sender_host, rawQuery);
   if (kind === 'guest' && !world.profiles.length) {
     return fail('TWIN_PRE_CUTOFF_PROFILE_UNAVAILABLE', 'No dated guest profiles cover this property.', false, unobserved);
   }
@@ -270,8 +211,8 @@ async function searchParties(world: TwinWorld, input: Record<string, unknown>, c
     }
     return {outcome: batch.length ? 'matches' : 'no_match', criteria: {query: term},
       candidates: batch.slice(0, 25), coverage: {possiblyTruncated: batch.length > 25, source: 'twin'}};
-  }, async () => host && (kind === 'agency' || kind === 'organization') ? twinLearnedSender(world, host, kind) : null);
-  const resolved = resolvePartySelection(kind, rows(result.candidates), object(result.coverage).possiblyTruncated !== false, learned, rawQuery);
+  }, async () => (kind === 'agency' || kind === 'organization') ? history?.learned(kind) ?? null : null);
+  const resolved = await resolvePartySelection(kind, rows(result.candidates), object(result.coverage).possiblyTruncated !== false, learned, rawQuery, history?.organizationUse);
   return ok({native: result, ...resolved, ...(learned ? {sender_history: learned} : {})});
 }
 
@@ -483,7 +424,7 @@ function searchReservations(stays: Stays, world: TwinWorld, input: Record<string
   }, digest);
 }
 
-export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
+export function createTwinDispatch(world: TwinWorld, card: CaseCard, history?: PartySearchHistory) {
   let stays: Stays | undefined;
   return async function dispatch(name: string, input: unknown): Promise<TwinEnvelope> {
     const body = object(input);
@@ -506,7 +447,7 @@ export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
         return ok({property_code: world.propertyCode, sections});
       }
       case 'hms_search_parties':
-        return searchParties(world, body, card);
+        return searchParties(world, body, history);
       case 'hms_quote':
         return quoteFromWorld(world, body);
       case 'save':

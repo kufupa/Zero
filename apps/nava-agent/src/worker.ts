@@ -16,7 +16,7 @@ import { backgroundPrepareEnabled, createGoEnabled, createPilotRequested, hmsSav
 import { initialSkillContext } from './initial-skill-context.js';
 import { cachedCatalogue, readCatalogue, type ToolContext as CatalogueContext } from '../tools/triage/index.js';
 import { resolveSelectedSenderKeys } from './party-matching.js';
-import { formatClientCard, lookupPartyMemory, lookupSenderPartyMemory } from './party-memory.js';
+import { formatClientCard, lookupPartyMemory } from './party-memory.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
 export type RuntimeMessage = {role:'user'|'assistant';content:RuntimeBlock[];stop_reason?:string|null};
@@ -252,15 +252,8 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
           const sender=resolveSelectedSenderKeys(baseMail);
           const host=sender.booker_domain;
           if(host || sender.booker_email) {
-            const [agency,organization]=await Promise.all([
-              host ? lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'agency'}).catch(()=>null) : null,
-              host ? lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'organization'}).catch(()=>null) : null,
-            ]);
-            const memory=await lookupPartyMemory(sql,{
-              propertyCode:property,agencyId:agency?.nativeId ?? null,organizationId:organization?.nativeId ?? null,
-              keys:{...sender,ta1:agency?.name,company:organization?.name},
-            }).catch(()=>[]);
-            clientCard=formatClientCard({senderHost:host,agency,organization,memory});
+            const memory=await lookupPartyMemory(sql,{propertyCode:property,agencyId:null,organizationId:null,keys:sender}).catch(()=>[]);
+            clientCard=formatClientCard({memory});
           }
         }
       } catch { /* non-fatal client card lookup */ }

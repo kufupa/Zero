@@ -688,7 +688,7 @@ test('Create board stays display-only and preserves native rate and meal note', 
   assert.equal(built.request.note, 'Dinner included');
 });
 
-test('party search invokes sender history only after explicit misses; host denylist uses domain boundaries', async () => {
+test('party search never substitutes history for a named party; host denylist uses domain boundaries', async () => {
   assert.equal(extractSenderHost('Agent <agent@outlook-travel.example>', ''), 'outlook-travel.example');
   assert.equal(extractSenderHost('agent@staff.outlook.com', ''), null);
   const calls: string[] = [];
@@ -704,7 +704,7 @@ test('party search invokes sender history only after explicit misses; host denyl
   await searchPartyWithFallback('Named Agency', 'agency', searchParty, history);
   assert.deepEqual(calls.splice(0), ['Named Agency']);
   await searchPartyWithFallback('Unknown', 'agency', searchParty, history);
-  assert.deepEqual(calls.splice(0), ['Unknown', 'history', 'History Agency']);
+  assert.deepEqual(calls.splice(0), ['Unknown', 'unknown']);
   await searchPartyWithFallback('', 'agency', searchParty, history);
   assert.deepEqual(calls, ['history', 'History Agency']);
 });

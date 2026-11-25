@@ -5,11 +5,10 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { schemas } from './schema.js';
 import { proposalDraft, type ProposalDraft } from '../../src/schema.js';
-import postgres from 'postgres';
-import { extractSenderHost, searchPartyWithFallback, resolvePartySelection, type LearnedSenderHit } from '../../src/party-matching.js';
-import { lookupSenderPartyMemory } from '../../src/party-memory.js';
+import { extractSenderHost, searchPartyWithFallback, resolvePartySelection, type PartySearchHistory } from '../../src/party-matching.js';
+import { lookupPolicyRows, lookupOrganizationUse, policySenderParty } from '../../src/party-memory.js';
 
-export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; asOf?: string; senderEmail?: string; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
+export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; asOf?: string; senderPolicy?: PartySearchHistory['sender']; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
 export type ToolResult = { ok: boolean; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } | null };
 const fail = (code: string, message: string, retryable = false): ToolResult => ({ ok: false, data: null, error: { code, message, retryable, outcome: 'known' } });
 const ok = (data: unknown): ToolResult => ({ ok: true, data, error: null });
@@ -470,52 +469,31 @@ const partyFields: Record<string, Record<string, string>> = {
   organization: { name: 'name' }, agency: { name: 'name' }, ar_account: { name: 'name' },
 };
 
-let partySql: ReturnType<typeof postgres> | null | undefined;
-/** Sender-party memory first; else read-only party_sender_map. Never writes. */
-async function lookupSenderParty(property: string, host: string, kind: 'agency' | 'organization', asOf?: string): Promise<LearnedSenderHit | null> {
-  // This table stores current aggregates without timestamps; it has no as-of view.
-  if (asOf !== undefined) return null;
-  if (process.env.DATABASE_URL) {
-    try {
-      const { sql } = await import('../../src/db.js');
-      const learned = await lookupSenderPartyMemory(sql, { propertyCode: property, host, kind });
-      if (learned) return learned;
-    } catch { /* non-fatal; fall through */ }
-  }
-  if (partySql === undefined) {
-    const url = process.env.PARTY_SENDER_DATABASE_URL ?? process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
-    try { partySql = url ? postgres(url, { max: 2 }) : null; } catch { partySql = null; }
-  }
-  if (!partySql) return null;
-  try {
-    const [row] = await partySql<{ name: string; native_id: string | null; support: number }[]>`
-      SELECT name, native_id, support FROM party_sender_map
-      WHERE property_code = ${property} AND (host = ${host} OR ${host} LIKE '%.' || host)
-        AND kind = ${kind === 'agency' ? 'agency' : 'company'} AND support >= 2
-      ORDER BY length(host) DESC LIMIT 1`;
-    return row?.name ? { host, kind, name: row.name, nativeId: row.native_id ?? null, support: Number(row.support) || 0 } : null;
-  } catch { return null; }
-}
-
 export async function searchParties(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (!obj(input) || !keys(input, ['property_code', 'kind', 'field', 'query', 'sender_host']) || !str(input.property_code) || !str(input.kind) || !str(input.field) || (input.query !== undefined && !str(input.query)) || !Object.hasOwn(partyFields, input.kind) || !Object.hasOwn(partyFields[input.kind], input.field) || (input.sender_host !== undefined && !str(input.sender_host))) return fail('INVALID_INPUT', 'Property, supported party kind, field and query or sender are required.');
   const property = input.property_code, kind = input.kind, field = partyFields[kind][input.field], query = str(input.query) ? input.query.trim() : '';
-  const host = extractSenderHost(input.sender_host, '') ?? extractSenderHost(context.senderEmail, query);
+  const sender = context.senderPolicy ?? {};
+  const host = sender.booker_domain ?? extractSenderHost(input.sender_host, query);
   const senderKind = kind === 'agency' || kind === 'organization' ? kind : null;
-  if (!query && !(host && senderKind)) return fail('INVALID_INPUT', 'A party query or business sender host is required.');
+  if (!query && !((host || sender.booker_email) && senderKind)) return fail('INVALID_INPUT', 'A party query or business sender host is required.');
   return execute(context, async () => {
     const { withCloudLookupReadSession } = await native('hms-lookup-read-session.mjs');
+    // Only selected inbound mail identifies a booker for the policy table.
+    const policySql = context.mode === 'live' && context.asOf === undefined && process.env.DATABASE_URL
+      ? (await import('../../src/db.js')).sql : null;
     const {result, learned}: Awaited<ReturnType<typeof searchPartyWithFallback>> = await withCloudLookupReadSession(
       ({ runTool }: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
         searchPartyWithFallback(query, kind, term => runTool(kind === 'guest' ? { tool: 'searchGuestProfiles', field, query: term } :
           { tool: kind === 'organization' ? 'searchOrganization' : kind === 'agency' ? 'searchPrimaryBookingAgency' : 'searchArAccount', query: term }),
-        async () => host && senderKind ? lookupSenderParty(property, host, senderKind, context.asOf) : null),
+        async () => policySql && senderKind
+          ? policySenderParty(await lookupPolicyRows(policySql, property, sender).catch(() => []), senderKind, sender) : null),
       { propertyCode: property, signal: context.signal, credentialLease: context.credentialLease },
     );
     if (!['matches', 'no_match', 'ambiguous', 'resolved', 'incomplete'].includes(String(result.outcome))) return fail(String(result.issue || 'PARTY_SEARCH_FAILED'), 'Native party search failed.', true);
     const candidates = (Array.isArray(result.candidates) ? result.candidates : []).filter(obj);
     const truncated = !(obj(result.coverage) && result.coverage.possiblyTruncated === false) || !['matches', 'no_match'].includes(String(result.outcome));
-    const resolved = resolvePartySelection(kind, candidates, truncated, learned, query);
+    const resolved = await resolvePartySelection(kind, candidates, truncated, learned, query,
+      policySql ? () => lookupOrganizationUse(policySql, property).catch(() => ({})) : undefined);
     return ok({
       native: result,
       selection: resolved.selection,

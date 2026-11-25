@@ -7,14 +7,14 @@ import { z } from 'zod';
 import { json, sql, uid } from './db.js';
 import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft, type Workflow } from './schema.js';
 import { normalizeProposalFields } from './proposal-fields.js';
-import { applyPartyMemoryToDraft, lookupPartyMemory, lookupSenderPartyMemory, memoryLookupArgs, type MemoryLookupFn, type SenderPartySuggestion } from './party-memory.js';
+import { applyPartyMemoryToDraft, lookupPartyMemory, memoryLookupArgs, type MemoryLookupFn } from './party-memory.js';
 import type { PolicyKeys } from './history-policy.js';
 import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, lookupExactStay, lookupFilingStay, targetLookup, targetSelection } from './stay-target.js';
 import { mailPrompt } from './mail-prompt.js';
-import { normalizePartyName, partyCandidateScore, partyNameMatch, resolveSelectedSenderKeys } from './party-matching.js';
+import { normalizePartyName, partyCandidateScore, explicitPartyQuery, senderPolicyKeys, partyNameMatch, resolveSelectedSenderKeys } from './party-matching.js';
 import { projectStoredRequestTimeContext, type StoredRequestTimeContext } from './request-time-context.js';
 import { isHmsConfirmation } from './reservation-reference.js';
 
@@ -128,6 +128,9 @@ function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],
     const {native,selection}=read.data.response.data;
     const query=read.data.input.query ?? '';
     const selected=selection==='none' ? null : native.candidates.find(candidate=>candidate.nativeId===selection.nativeId) ?? null;
+    if(requested && explicitPartyQuery(query) && (partyNameMatch(requested,query,kind) || (selected && partyNameMatch(requested,selected.name,kind)))) {
+      if(selected) return {name:selected.name,nativeId:selected.nativeId};
+    }
     if(selected && (!requested || partyNameMatch(requested,selected.name,kind) || partyNameMatch(requested,query,kind) || !query)) addName(selected,true);
     for(const candidate of native.candidates) {
       const fitsRequest=requested && (partyNameMatch(requested,candidate.name,kind) || partyCandidateScore(requested,candidate.name,kind)>=82);
@@ -151,7 +154,7 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
       if(!choice) continue;
       fields[nameKey]=choice.name;
       if(choice.nativeId!=null) fields[idKey]=choice.nativeId;
-      else if(!(idKey in fields)) fields[idKey]=null;
+      else fields[idKey]=null;
       for(const [suffix,label] of [['id',kind==='agency'?'Booking agency ID':'Company ID'],['name',kind==='agency'?'Booking agency':'Company']] as const) {
         if(suffix==='id' && !choice.nativeId) continue;
         const path=`${root}/${kind}_${suffix}`;
@@ -257,7 +260,6 @@ export function stagePublishedDraft(
   partyReads: Array<{input: unknown; response: unknown}>,
   quoteProperty?:string,
   memoryLookup?: MemoryLookupFn,
-  senderParties?: SenderPartySuggestion,
   stayReads: Array<{input?: unknown; response: unknown}> = [],
   senderKeys?: PolicyKeys,
 ): {kind: 'valid'; draft: ProposalDraft} | {kind: 'invalid'; path: string} {
@@ -281,8 +283,8 @@ export function stagePublishedDraft(
     staffDraft = withReadParties(staffDraft, partyReads);
   }
   const normalized = normalizeProposalFields(staffDraft,quoteProperty);
-  if (normalized.kind !== 'valid' || (!memoryLookup && !senderParties) || normalized.draft.workflow !== 'create') return normalized;
-  return {kind: 'valid', draft: applyPartyMemoryToDraft(normalized.draft, memoryLookup ?? (() => []), senderParties, senderKeys)};
+  if (normalized.kind !== 'valid' || !memoryLookup || normalized.draft.workflow !== 'create') return normalized;
+  return {kind: 'valid', draft: applyPartyMemoryToDraft(normalized.draft, memoryLookup, senderKeys)};
 }
 export function sameQuoteCriteria(captured:unknown,draft:unknown) {
   const actual=groupedQuoteRequest.safeParse(captured), expected=groupedQuoteRequest.safeParse(draft);
@@ -334,7 +336,7 @@ function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{nati
 async function selectedMail(sessionId:string) {
   const [row]=await sql`SELECT t.id AS thread_id,t.source,t.source_thread_id,t.mailbox_id,m.source_message_id AS selected_message_id,
     t.property_code,t.mode,m.received_at::text AS selected_received_at,m.payload->'from'->>'email' AS sender_email,
-    m.payload->>'subject' AS subject,COALESCE(m.payload->>'body_text', m.payload->>'body') AS body_text,
+    m.payload->>'subject' AS subject,m.payload->>'direction' AS direction,COALESCE(m.payload->>'body_text', m.payload->>'body') AS body_text,
     s.config->>'input_cutoff' AS input_cutoff,s.config->>'replay_id' AS replay_id
     FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id
     LEFT JOIN nava_agent.agent_event e ON e.session_id=s.id AND e.id=s.config->>'worker_delivery_id' AND e.kind='mail_pending'
@@ -353,7 +355,7 @@ async function sessionRequestTimeContext(sessionId:string):Promise<unknown|undef
 export async function sessionMailPrompt(sessionId:string, clientCard?:string|null):Promise<unknown|null> {
   const selected=await selectedMail(sessionId);
   if(!selected?.thread_id || !selected.selected_message_id) return null;
-  const {sender_email:_sender,subject:_subject,body_text:_body,input_cutoff:_cutoff,replay_id:_replay,thread_id,...thread}=selected;
+  const {sender_email:_sender,subject:_subject,direction:_direction,body_text:_body,input_cutoff:_cutoff,replay_id:_replay,thread_id,...thread}=selected;
   const messages=await sql`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${thread_id}
     AND received_at <= ${thread.selected_received_at ?? null}::timestamptz ORDER BY received_at,id`;
   const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${sessionId} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
@@ -553,7 +555,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           // Staff-prepare create/quote/filing: party bind + Filing→Create gate via shared pure fn. Else normalize only
           // (avoid forcing profile_create_new outside staff-prepare).
           const normalized=staffPrepareOnly()
-            ? stagePublishedDraft(staffDraft,partyReads,quoteProperty,undefined,undefined,stayReads)
+            ? stagePublishedDraft(staffDraft,partyReads,quoteProperty,undefined,stayReads)
             : normalizeProposalFields(staffDraft);
           if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
           let current=normalized.draft;
@@ -562,22 +564,14 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
             try {
               const mailPacket=await sessionMailPrompt(session.id).catch(()=>null);
               const senderKeys=resolveSelectedSenderKeys(mailPacket);
-              const host=senderKeys.booker_domain;
-              const senderProp=String(current.bookings[0]?.property_code ?? session.property_code ?? 'HRCEN').trim().toUpperCase();
-              const senderParties:SenderPartySuggestion = host ? {
-                agency: await lookupSenderPartyMemory(sql, {propertyCode:senderProp, host, kind:'agency'}).catch(()=>null),
-                organization: await lookupSenderPartyMemory(sql, {propertyCode:senderProp, host, kind:'organization'}).catch(()=>null),
-              } : {};
-              const withSender=applyPartyMemoryToDraft(current, ()=>[], senderParties);
-              current=withSender;
               const cache=new Map<string, Awaited<ReturnType<typeof lookupPartyMemory>>>();
-              for(const booking of withSender.bookings) {
+              for(const booking of current.bookings) {
                 const propertyCode=String(booking.property_code ?? '').trim().toUpperCase();
                 const args=memoryLookupArgs(propertyCode, booking.fields, senderKeys);
                 const key=JSON.stringify(args);
                 if(!cache.has(key)) cache.set(key, await lookupPartyMemory(sql, args));
               }
-              current=applyPartyMemoryToDraft(withSender, args => cache.get(JSON.stringify(args)) ?? [], undefined, senderKeys);
+              current=applyPartyMemoryToDraft(current, args => cache.get(JSON.stringify(args)) ?? [], senderKeys);
             } catch { /* party memory is non-fatal */ }
           }
           proposals.push({current,selection:job.selection});
@@ -830,7 +824,8 @@ export class ToolRegistry {
           lease.signal.throwIfAborted();
           const selected=name==='hms_search_parties'?await selectedMail(context.sessionId):null;
           return pack.run(toolInput,{...context,credentialLease:lease,signal:lease.signal,
-            senderEmail:selected?.sender_email ?? undefined,
+            senderPolicy:selected?.direction==='inbound' && typeof selected.sender_email==='string'
+              ? senderPolicyKeys(selected.sender_email, selected.body_text, selected.subject) : undefined,
             asOf:selected?.input_cutoff ?? (selected?.replay_id ? selected.selected_received_at : undefined)});
         },name==='hms_quote'?'quote':undefined,(phase,ms)=>(timings[phase]??=[]).push(Math.round(ms)),
         ['hms_quote','hms_search_reservations','hms_search_parties'].includes(name)?'short':undefined,'prefill'));
