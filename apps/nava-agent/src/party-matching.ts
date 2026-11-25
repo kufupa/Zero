@@ -1,7 +1,7 @@
 import {nativePartyUseName, type NativePartyUse} from './organization-use.js';
 
 const aliases = [
-  ['MISA', 'Municipal Infrastructure Support Agent'],
+  ['MISA', 'Municipal Infrastructure Support Agent', 'Infrastructure System Agent'],
   ['IEC', 'Independent Electoral Commission'],
   ['IMERYS', 'Imerys Refractory Minerals SA (Pty) Ltd'],
   ['NWU', 'North West University', 'North West University Potchefstroom'],
@@ -10,6 +10,8 @@ const aliases = [
   ['SKA', 'Square Kilometre Array', 'Square Kilometre Array SKA'],
   ['MTPA', 'Mpumalanga Tourism and Parks Agency'],
   ['SAFCOL', 'South African Forestry Company', 'SAFCOL - Gov - Forestry'],
+  ['Western Province Caterers', 'Contract Catering Holdings', 'Contract Catering Holdings SA'],
+  ['Cogta', 'Department of Cogta', 'Dept of Cogta'],
 ] as const;
 
 export const PARTY_STOPWORDS = new Set([
@@ -100,6 +102,13 @@ const explicitName = (name: string, kind: string) => {
   const normalized = normalizePartyName(name);
   return kind === 'organization' ? normalized.replace(/\bdept\b/g, 'department') : normalized;
 };
+
+function nativeProfileGroup(name: string, kind: string): string {
+  const key = explicitName(name, kind).replace(/\s/g, '');
+  // HMS has both a bare and a department-prefixed record for this same
+  // unqualified department. KZN Cogta is a separate profile family.
+  return kind === 'organization' && key === 'departmentofcogta' ? 'cogta' : key;
+}
 
 /** Exact/legal/alias/acronym party identity. Deliberately stricter than candidate scoring. */
 export function partyNameMatch(left:string,right:string,kind:string):boolean {
@@ -355,7 +364,7 @@ async function resolveNamedParty(kind: string, candidates: Array<Record<string, 
   const groups = new Map<string, {candidates: Array<Record<string, unknown>>; score: number}>();
   for (const candidate of candidates) {
     const name = partyCandidateName(candidate);
-    const key = explicitName(name, kind).replace(/\s/g, '');
+    const key = nativeProfileGroup(name, kind);
     const score = partyCandidateScore(requested, name, kind)
       + (explicitName(requested, kind) === explicitName(name, kind) ? 6 : 0);
     const group = groups.get(key) ?? {candidates: [], score: 0};
