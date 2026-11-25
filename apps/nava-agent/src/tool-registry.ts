@@ -259,7 +259,9 @@ export function stagePublishedDraft(
   senderParties?: SenderPartySuggestion,
   stayReads: Array<{input?: unknown; response: unknown}> = [],
 ): {kind: 'valid'; draft: ProposalDraft} | {kind: 'invalid'; path: string} {
-  let staffDraft = filingWithoutTargetToCreate(draft, stayReads);
+  // Unbound Filing stays Filing (staff pick the stay); Create on an existing stay is a worse error than a blank target.
+  void stayReads;
+  let staffDraft = draft;
   if (['create', 'quote'].includes(staffDraft.workflow)) {
     if (staffDraft.workflow === 'create') {
       staffDraft = {
