@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
-import {readFileSync} from 'node:fs';
+import {readdirSync, readFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {canonicalPolicyValue, eligiblePolicyRow, exactHistoryKey, HISTORY_FIELDS, historyFieldAllowed, historyRowKey, indexHistoryPolicy,
   policyKeys, policyValue, type PolicyKeys, type PolicyRow} from '../../src/history-policy.js';
 import {anchorCaptures, createdFieldValue, parseCreatedOn, type TwinWorld} from '../twin/world.js';
@@ -14,8 +15,29 @@ export function loadReplayHistoryInputs() {
   const read = (path: string | undefined) => path ? readFileSync(path) : null;
   const history = read(process.env.NAVA_BENCH_HISTORY_FILE);
   const policy = read(process.env.NAVA_BENCH_POLICY_FILE);
+  const snapshotDir = process.env.NAVA_BENCH_POLICY_SNAPSHOT_DIR;
+  if (snapshotDir && (!history || policy)) {
+    throw new Error('Monthly replay policy requires history and cannot use a full policy file');
+  }
+  const monthly = new Map<string, ReturnType<typeof indexHistoryPolicy>>();
+  const monthDigests: Record<string, string> = {};
+  if (snapshotDir) {
+    for (const file of readdirSync(snapshotDir).sort()) {
+      if (!/^\d{4}-(0[1-9]|1[0-2])\.json$/.test(file)) continue;
+      const month = file.slice(0, 7);
+      const start = Date.parse(`${month}-01T00:00:00Z`);
+      const bytes = readFileSync(join(snapshotDir, file));
+      const rows = indexHistoryPolicy(JSON.parse(bytes.toString()));
+      if (Object.values(rows).some(group => group.some(row => !(Date.parse(row.last_seen) < start)))) {
+        throw new Error(`Replay policy snapshot contains a value from ${month} or later`);
+      }
+      monthly.set(month, rows);
+      monthDigests[month] = sha(bytes);
+    }
+  }
   const mail = read(process.env.NAVA_BENCH_HISTORY_MAIL);
-  const digest = {history: history && sha(history), policy: policy && sha(policy), history_mail: mail && sha(mail)};
+  const digest = {history: history && sha(history), policy: policy && sha(policy), history_mail: mail && sha(mail),
+    ...(snapshotDir ? {monthly_policy: monthDigests} : {})};
   const snapshot = policy && indexHistoryPolicy(JSON.parse(policy.toString()));
   const historyRows = history && jsonl(history);
   const mailByStay = new Map((mail ? jsonl(mail) : []).filter(row => row.has_pre_create_request !== false).map(row => [
@@ -26,6 +48,9 @@ export function loadReplayHistoryInputs() {
   const byProperty = new Map<string, ReturnType<typeof indexObservations>>();
   return {digest, forWorld(world: TwinWorld) {
     const property = world.propertyCode;
+    const month = new Date(world.cutoff).toISOString().slice(0, 7);
+    const gated = monthly.get(month);
+    if (snapshotDir && !gated) throw new Error(`Missing replay policy snapshot for ${month}`);
     let timelines = byProperty.get(property);
     if (!timelines) {
       timelines = indexObservations(property === 'HRCEN' ? historyRows ?? fromAnchors(world) : [], mailByStay);
@@ -34,9 +59,12 @@ export function loadReplayHistoryInputs() {
     const indexed = timelines;
     return (keys: PolicyKeys): PolicyRow[] => policyKeys(keys).flatMap(([type, key]) => {
       const token = historyRowKey(type, key);
+      const monthlyRows = property === 'HRCEN' ? gated?.[token] ?? [] : [];
       const fields = indexed.get(token);
-      if (!fields) return [];
-      return [...fields].flatMap(([field, observations]) => {
+      if (!fields) return monthlyRows;
+      // Preserve W's cutoff-based fallback for fields not supplied by the export.
+      const fallback = [...fields].flatMap(([field, observations]) => {
+        if (monthlyRows.some(row => row.field === field)) return [];
         const last = observations.at(-1)!;
         // The full snapshot is admissible only if ALL contributing stays were already created.
         // An early last_seen alone cannot rule out later observations of other values.
@@ -62,6 +90,7 @@ export function loadReplayHistoryInputs() {
         const row = {key_type: type, key, field, value, support: total, agreement: top.n / total, last_seen: new Date(top.last).toISOString()};
         return eligiblePolicyRow(row) ? [row] : [];
       });
+      return [...monthlyRows, ...fallback];
     });
   }};
 }
