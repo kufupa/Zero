@@ -134,25 +134,51 @@ async function searchSurnameFirst(property: string, name: string, first: string,
   return ok({outcome: result.data.outcome, candidates});
 }
 
+/** Agency/PNR/"0"/"unknown" placeholders are never search keys. */
+function isIgnoredReservationPlaceholder(value: string): boolean {
+  return /^(?:0+|unknown|n\/?a|none|null|tbd|-+)$/i.test(value.trim());
+}
+
+/** Alphabetic guest token mistakenly put in reservation_id (not agency refs with digits). */
+function looksLikeMisfiledGuestName(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || isIgnoredReservationPlaceholder(trimmed) || /\d/.test(trimmed)) return false;
+  return /^[A-Za-z][A-Za-z .'-]{1,80}$/.test(trimmed);
+}
+
+function withIgnoredReservationId(result: ToolResult, ignored: string | undefined): ToolResult {
+  if (!ignored || !result.ok || !obj(result.data)) return result;
+  return ok({ ...result.data, ignored_reservation_id: ignored });
+}
+
 /**
  * Deterministic stay-search ladder (ignores overstuffed AND criteria):
  * (a) HMS-shaped confirmation alone → (b) surname + arrival ±3d → (c) surname + first name.
+ * Non-HMS reservation_id (agency/PNR/"0"/"unknown"/names) is stripped before search; fall through to surname ladder.
  * Returns the first non-empty rung with `matched_rung`.
  */
 export async function searchReservations(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (!obj(input) || !keys(input, ['property_code', 'criteria']) || !str(input.property_code) || !obj(input.criteria) ||
       !keys(input.criteria, ['reservation_id', 'guest_name', 'guest_first_name', 'guest_name_is_surname', 'arrival_date', 'departure_date', 'near_arrival'])) return fail('INVALID_INPUT', 'Property and valid search criteria are required.');
-  const { reservation_id: reference, guest_name: name, guest_first_name: first, guest_name_is_surname: confirmedSurname, arrival_date: arrival, departure_date: departure, near_arrival: near } = input.criteria;
-  if ((reference !== undefined && !str(reference)) || (name !== undefined && !str(name)) ||
+  const { reservation_id: reference, guest_name: rawName, guest_first_name: first, guest_name_is_surname: confirmedSurname, arrival_date: arrival, departure_date: departure, near_arrival: near } = input.criteria;
+  if ((reference !== undefined && !str(reference)) || (rawName !== undefined && !str(rawName)) ||
       (first !== undefined && !str(first)) ||
       (near !== undefined && typeof near !== 'boolean') ||
-      (confirmedSurname !== undefined && (typeof confirmedSurname !== 'boolean' || !name)) ||
+      (confirmedSurname !== undefined && (typeof confirmedSurname !== 'boolean' || !rawName)) ||
       (arrival !== undefined && !date(arrival)) || (departure !== undefined && !date(departure))) return fail('INVALID_INPUT', 'Invalid search criterion.');
   const property = input.property_code;
+  // Strip non-HMS-shaped reservation_id (6–10 digits, optional -n) before any search rung.
+  const rawReference = str(reference) ? reference.trim() : undefined;
+  const hmsId = rawReference && isHmsConfirmation(rawReference) ? normalizeReservationReference(rawReference) : undefined;
+  const ignoredReservationId = rawReference && !hmsId ? rawReference : undefined;
+  let name = str(rawName) ? rawName : undefined;
+  // Agent sometimes puts the surname into reservation_id; promote only letter-only misfiles.
+  if (!name && ignoredReservationId && looksLikeMisfiledGuestName(ignoredReservationId)) {
+    name = ignoredReservationId;
+  }
   const names = name ? guestSearchNames(name, confirmedSurname === true, first) : [];
   if (name && !names.length) return fail('INPUT_GAP', 'Provide a guest name.');
   const surname = names[0] ?? (str(name) ? name : undefined);
-  const hmsId = str(reference) && isHmsConfirmation(reference) ? normalizeReservationReference(reference) : undefined;
 
   type Rung = { id: 'confirmation' | 'surname_near_arrival' | 'surname_first_name'; run: () => Promise<ToolResult> };
   const rungs: Rung[] = [];
@@ -161,8 +187,10 @@ export async function searchReservations(input: unknown, context: ToolContext): 
   if (surname && str(first)) rungs.push({ id: 'surname_first_name', run: () => searchSurnameFirst(property, surname, first, context) });
 
   if (!rungs.length) {
-    if (surname) return searchGuestNames(property, names, arrival, departure, context);
-    return fail('INPUT_GAP', 'Provide a reservation identifier or surname.');
+    if (surname) return withIgnoredReservationId(await searchGuestNames(property, names, arrival, departure, context), ignoredReservationId);
+    return fail('INPUT_GAP', ignoredReservationId
+      ? `Ignored non-HMS reservation_id "${ignoredReservationId}"; provide a surname or HMS confirmation (6–10 digits, optional -n).`
+      : 'Provide a reservation identifier or surname.');
   }
 
   let last: ToolResult | null = null;
@@ -170,12 +198,12 @@ export async function searchReservations(input: unknown, context: ToolContext): 
     const result = await rung.run();
     last = result;
     if (result.ok && candidateCount(result.data) > 0) {
-      return ok({ ...(obj(result.data) ? result.data : {}), matched_rung: rung.id });
+      return withIgnoredReservationId(ok({ ...(obj(result.data) ? result.data : {}), matched_rung: rung.id }), ignoredReservationId);
     }
     // Soft empty/not-found continues; retryable infra failures stop.
     if (!result.ok && result.error?.retryable) return result;
   }
-  return last ?? fail('INPUT_GAP', 'Provide a reservation identifier or surname.');
+  return withIgnoredReservationId(last ?? fail('INPUT_GAP', 'Provide a reservation identifier or surname.'), ignoredReservationId);
 }
 
 function guestSearchNames(name: string, confirmedSurname: boolean, first?: string): string[] {
