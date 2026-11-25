@@ -5,8 +5,8 @@ cd "$root"
 node_major=$(node -p "Number(process.versions.node.split('.')[0])")
 if (( node_major < 22 )); then echo "Node 22 or later required" >&2; exit 1; fi
 case "${1:-}" in
-  migrate|start|worker|import-train) task=$1; shift ;;
-  *) echo 'usage: bash apps/nava-agent/run.sh migrate|start|worker|import-train [args...]' >&2; exit 2 ;;
+  migrate|start|worker|import-train|import-history-policy) task=$1; shift ;;
+  *) echo 'usage: bash apps/nava-agent/run.sh migrate|start|worker|import-train|import-history-policy [args...]' >&2; exit 2 ;;
 esac
 if [[ -n ${NAVA_ENV_FILE:-} ]]; then
   [[ -f $NAVA_ENV_FILE && ! -L $NAVA_ENV_FILE && -O $NAVA_ENV_FILE ]] || { echo 'env file must be a regular file owned by this user' >&2; exit 1; }

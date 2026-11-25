@@ -2,23 +2,26 @@
 import {randomUUID} from 'node:crypto';
 import type postgres from 'postgres';
 import type { ProposalDraft } from './schema.js';
-import { createTrackDefault, normalizeMemoryBoard } from './proposal-fields.js';
+import { createRoomTypeCode, createTrackDefault, normalizeMemoryBoard } from './proposal-fields.js';
 import { normalizePartyName, type LearnedSenderHit } from './party-matching.js';
 import { normalizeGuaranteeCode } from './guarantee-normalize.mjs';
+import { bookingPolicyKeys, HISTORY_FIELDS, historyRowKey, policyKeys, type HistoryKey, type PolicyKeys, type PolicyRow } from './history-policy.js';
 
 export { normalizeMemoryBoard };
 
-/** Empirically gated: board ≥85%; rate_plan ≥80% (composites ≥85%); guarantee_type ≥85% per-party. */
-export const MEMORY_ELIGIBLE_FIELDS = ['board', 'rate_plan', 'guarantee_type'] as const;
+export const MEMORY_ELIGIBLE_FIELDS = ['board', 'rate_plan', 'room_type', 'guarantee_type',
+  'ar_account_name', 'billing_reference', 'agency_name', 'organization_name'] as const;
 export type MemoryField = (typeof MEMORY_ELIGIBLE_FIELDS)[number];
 export type MemorySuggestion = {
   field: MemoryField; value: string; hits: number; total: number;
-  partyKind: 'agency' | 'organization'; reason: string;
+  partyKind?: 'agency' | 'organization'; reason: string;
 };
-export type MemoryLookupFn = (args: {
+export type MemoryLookupArgs = {
   propertyCode: string; agencyId: string | null | undefined; organizationId: string | null | undefined;
-  board?: string | null;
-}) => MemorySuggestion[];
+  board?: string | null; keys?: PolicyKeys;
+};
+export type MemoryLookupFn = (args: MemoryLookupArgs) => MemorySuggestion[];
+export type HistoryPolicyLookup = (keys: PolicyKeys) => PolicyRow[];
 export type HistoryStay = {
   propertyCode: string; createdAtMs: number; agencyId?: string | null; organizationId?: string | null;
   board?: string | null;
@@ -29,6 +32,35 @@ type HitRow = {party_kind: string; field_name: string; field_value: string; hits
 
 const blank = (v: unknown) => v == null || (typeof v === 'string' && !v.trim());
 const asId = (v: unknown) => typeof v === 'string' && v.trim() ? v.trim() : null;
+
+const keyLabels: Record<HistoryKey, string> = {
+  booker_email: 'this booker', booker_domain: 'this sender domain', company: 'this company',
+  ta1: 'this agency', guest_id: 'this guest profile',
+};
+
+function mergePolicyMemory(policy: PolicyRow[], fallback: MemorySuggestion[], property: string): MemorySuggestion[] {
+  const byField = new Map<MemoryField, MemorySuggestion>();
+  for (const row of policy) {
+    const field = HISTORY_FIELDS[row.field];
+    if (!field || byField.has(field)) continue;
+    const value = field === 'board' ? normalizeMemoryBoard(row.value)
+      : property === 'HRCEN' && field === 'guarantee_type' ? normalizeGuaranteeCode(row.value)
+        : property === 'HRCEN' && field === 'room_type' ? createRoomTypeCode(row.value) : row.value;
+    if (!value) continue;
+    const hits = Math.round(row.agreement * row.support);
+    byField.set(field, {field, value, hits, total: row.support,
+      reason: `HMS history for ${keyLabels[row.key_type]} (${hits}/${row.support} stays; last seen ${row.last_seen.slice(0, 10)})`});
+  }
+  for (const suggestion of fallback) if (!byField.has(suggestion.field)) byField.set(suggestion.field, suggestion);
+  return MEMORY_ELIGIBLE_FIELDS.flatMap(field => byField.has(field) ? [byField.get(field)!] : []);
+}
+
+export function memoryLookupArgs(propertyCode: string, fields: Record<string, unknown>, sender?: PolicyKeys): MemoryLookupArgs {
+  return {
+    propertyCode, agencyId: asId(fields.agency_id), organizationId: asId(fields.organization_id),
+    board: normalizeMemoryBoard(fields.board) ?? asId(fields.board), keys: bookingPolicyKeys(fields, sender),
+  };
+}
 
 /** Verified direct employer/org only — never intermediary invoice addressee as organization. */
 export function verifiedDirectOrgMatch(
@@ -188,7 +220,7 @@ function readbackMismatchBlocks(readback: unknown, memoryField: MemoryField): bo
     ? (readback as {mismatches: unknown[]}).mismatches : null;
   if (!mismatches) return true; // cannot confirm without mismatches array
   if (!mismatches.length) return false;
-  const aliases: Record<MemoryField, string[]> = {
+  const aliases: Partial<Record<MemoryField, string[]>> = {
     board: ['mealPlan', 'mealplan', 'board'],
     rate_plan: ['ratePlan', 'rateplan'],
     guarantee_type: ['guaranteeType', 'guaranteetype', 'guaranteeTypeCode'],
@@ -196,7 +228,7 @@ function readbackMismatchBlocks(readback: unknown, memoryField: MemoryField): bo
   return mismatches.some(item => {
     if (!item || typeof item !== 'object') return true;
     const field = String((item as {field?: unknown}).field ?? '');
-    return aliases[memoryField].some(alias => field.toLowerCase() === alias.toLowerCase());
+    return aliases[memoryField]?.some(alias => field.toLowerCase() === alias.toLowerCase()) ?? false;
   });
 }
 
@@ -355,7 +387,7 @@ export function extractObservedStayChoice(args: {
 }
 
 /** Pure time-gated memory (`createdAtMs < cutoffMs`) — shared by Postgres lookup shape + replay bench. */
-export function buildMemoryFromHistory(stays: HistoryStay[], cutoffMs: number): MemoryLookupFn {
+export function buildMemoryFromHistory(stays: HistoryStay[], cutoffMs: number, policy?: HistoryPolicyLookup): MemoryLookupFn {
   const hits = new Map<string, Map<string, number>>();
   for (const stay of stays) {
     if (!(stay.createdAtMs < cutoffMs)) continue;
@@ -375,25 +407,33 @@ export function buildMemoryFromHistory(stays: HistoryStay[], cutoffMs: number): 
     const [property_code, party_kind, party_id, field_name] = key.split('\0');
     for (const [field_value, n] of ctr) rows.push({property_code, party_kind, party_id, field_name, field_value, hits: n});
   }
-  return ({propertyCode, agencyId, organizationId, board}) => pickTop(
+  return ({propertyCode, agencyId, organizationId, board, keys}) => mergePolicyMemory(
+    propertyCode === 'HRCEN' && keys ? policy?.(keys) ?? [] : [], pickTop(
     rows.filter(row => row.property_code === propertyCode
       && ((agencyId && row.party_kind === 'agency' && row.party_id === agencyId)
         || (organizationId && row.party_kind === 'organization' && row.party_id === organizationId))),
     asId(agencyId), asId(organizationId), board, propertyCode,
-  );
+    ), propertyCode);
 }
 
 export async function lookupPartyMemory(
-  sql: Sql, args: {propertyCode: string; agencyId?: string | null; organizationId?: string | null; board?: string | null},
+  sql: Sql, args: Omit<MemoryLookupArgs, 'agencyId' | 'organizationId'> & {agencyId?: string | null; organizationId?: string | null},
 ): Promise<MemorySuggestion[]> {
   const agencyId = asId(args.agencyId), organizationId = asId(args.organizationId);
-  if (!agencyId && !organizationId) return [];
-  const rows = await sql`
+  const keys = args.propertyCode === 'HRCEN' && args.keys ? policyKeys(args.keys).map(([type, key]) => historyRowKey(type, key)) : [];
+  const [rows, observed] = await Promise.all([
+    agencyId || organizationId ? sql`
     SELECT party_kind, field_name, field_value, hits FROM nava_agent.party_booking_memory
     WHERE property_code = ${args.propertyCode} AND (
       (${agencyId}::text IS NOT NULL AND party_kind = 'agency' AND party_id = ${agencyId})
-      OR (${organizationId}::text IS NOT NULL AND party_kind = 'organization' AND party_id = ${organizationId}))`;
-  return pickTop(rows as HitRow[], agencyId, organizationId, args.board, args.propertyCode);
+      OR (${organizationId}::text IS NOT NULL AND party_kind = 'organization' AND party_id = ${organizationId}))` : [],
+    keys.length ? sql`
+      SELECT entries -> key AS choices FROM nava_agent.history_policy
+      CROSS JOIN unnest(${keys}::text[]) WITH ORDINALITY AS wanted(key, priority)
+      WHERE property_code = ${args.propertyCode} ORDER BY priority` : [],
+  ]);
+  return mergePolicyMemory(observed.flatMap(row => (row.choices ?? []) as PolicyRow[]),
+    pickTop(rows as HitRow[], agencyId, organizationId, args.board, args.propertyCode), args.propertyCode);
 }
 
 export async function recordSavedStayMemory(
@@ -671,7 +711,7 @@ export function formatClientCard(args: {
     lines.push(`${sug.field}: ${sug.value} (${sug.hits}/${sug.total})`);
   }
   if (!lines.length) return null;
-  return ['[Client Memory Card]', ...lines.slice(0, 4)].join('\n');
+  return ['[Client Memory Card]', ...lines].join('\n');
 }
 
 export type SenderPartySuggestion = {
@@ -681,11 +721,11 @@ export type SenderPartySuggestion = {
 
 function canInstallPartyDefault(
   current: unknown,
-  spec: {provenance: string; evidence: unknown[]; error: string | null} | null,
+  spec: {provenance: string; evidence: Array<{message_id: string | null}>; error: string | null} | null,
 ): boolean {
   if (spec?.provenance === 'staff' || spec?.error) return false;
-  if (!blank(current) && (spec?.evidence?.length || spec?.provenance === 'ai' || spec?.provenance === 'hms')) return false;
-  return blank(current) || spec?.provenance === 'default' || spec?.provenance === 'unknown' || !spec;
+  if (spec?.evidence.some(item => !['default_room', 'party_memory', 'sender_party_memory'].includes(item.message_id ?? ''))) return false;
+  return blank(current) || spec?.provenance === 'default';
 }
 
 /** Prefill silent Create blanks or model defaults (`provenance: 'default'`); never override explicit email evidence. */
@@ -693,9 +733,11 @@ export function applyPartyMemoryToDraft(
   draft: ProposalDraft,
   lookupFn: MemoryLookupFn,
   senderParties?: SenderPartySuggestion,
+  senderKeys?: PolicyKeys,
 ): ProposalDraft {
   if (draft.workflow !== 'create') return draft;
   const fieldSpecs = [...draft.field_specs];
+  const filled = new Set<string>();
   const bookings = draft.bookings.map((booking, index) => {
     const fields = {...booking.fields};
     const propertyCode = String(booking.property_code ?? '').trim().toUpperCase();
@@ -706,6 +748,7 @@ export function applyPartyMemoryToDraft(
       const agSpec = agIdx >= 0 ? fieldSpecs[agIdx] : null;
       if (canInstallPartyDefault(fields.agency_name, agSpec)) {
         fields.agency_name = senderParties.agency.name;
+        filled.add(agPath);
         if (senderParties.agency.nativeId) fields.agency_id = senderParties.agency.nativeId;
         const quote = `Usual agency for ${senderParties.agency.host} (${senderParties.agency.support} stays)`;
         const evidence = [{message_id: 'sender_party_memory', attachment_id: null, quote}];
@@ -726,6 +769,7 @@ export function applyPartyMemoryToDraft(
       const orgSpec = orgIdx >= 0 ? fieldSpecs[orgIdx] : null;
       if (canInstallPartyDefault(fields.organization_name, orgSpec)) {
         fields.organization_name = orgHit.name;
+        filled.add(orgPath);
         if (orgHit.nativeId) fields.organization_id = orgHit.nativeId;
         const quote = `Usual company for ${orgHit.host} (${orgHit.support} stays)`;
         const evidence = [{message_id: 'sender_party_memory', attachment_id: null, quote}];
@@ -736,20 +780,19 @@ export function applyPartyMemoryToDraft(
         });
       }
     }
-    const board = normalizeMemoryBoard(fields.board) ?? (typeof fields.board === 'string' ? fields.board : null);
-    for (const sug of lookupFn({
-      propertyCode, agencyId: asId(fields.agency_id), organizationId: asId(fields.organization_id), board,
-    })) {
+    for (const sug of lookupFn(memoryLookupArgs(propertyCode, fields, senderKeys))) {
       const path = `/bookings/${index}/fields/${sug.field}`;
       const spec = fieldSpecs.findIndex(field => field.path === path || field.path === path.slice(1));
       const existing = spec >= 0 ? fieldSpecs[spec] : null;
-      const isDefault = existing?.provenance === 'default' && !existing.error;
-      // Rate/guarantee: verified party(+board) default only when silent or unsubstantiated default.
-      if (!blank(fields[sug.field]) && !isDefault) continue;
-      if (!isDefault && existing && (existing.provenance === 'staff' || existing.evidence.length || existing.error)) continue;
+      if (sug.field === 'agency_name' && (!blank(fields.agency_id) || !blank(fields.agency_name))) continue;
+      if (sug.field === 'organization_name' && (!blank(fields.organization_id) || !blank(fields.organization_name)
+        || (typeof fields.agency_name === 'string' && normalizePartyName(fields.agency_name) === normalizePartyName(sug.value)))) continue;
+      if (!canInstallPartyDefault(fields[sug.field], existing)) continue;
       fields[sug.field] = sug.value;
+      filled.add(path);
       const evidence = [{message_id: 'party_memory', attachment_id: null, quote: sug.reason}];
-      const label = sug.field === 'guarantee_type' ? 'Guarantee type' : sug.field === 'board' ? 'Meal plan' : 'Rate plan';
+      const label = {board: 'Meal plan', rate_plan: 'Rate plan', room_type: 'Room type', guarantee_type: 'Guarantee type',
+        ar_account_name: 'A/R account', billing_reference: 'Billing reference', agency_name: 'Booking agency', organization_name: 'Company'}[sug.field];
       if (spec >= 0) fieldSpecs[spec] = {...fieldSpecs[spec], path, provenance: 'default', error: null, evidence};
       else fieldSpecs.push({
         path, label, provenance: 'default', editable: true, required: false,
@@ -771,5 +814,6 @@ export function applyPartyMemoryToDraft(
     }
     return {...booking, fields};
   });
-  return {...draft, bookings, field_specs: fieldSpecs};
+  const missing = draft.missing.filter(path => !filled.has(path.startsWith('/') ? path : '/' + path));
+  return {...draft, bookings, field_specs: fieldSpecs, missing};
 }

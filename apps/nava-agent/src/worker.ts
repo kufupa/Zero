@@ -15,7 +15,7 @@ import { writeEvent } from './session-store.js';
 import { backgroundPrepareEnabled, createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { initialSkillContext } from './initial-skill-context.js';
 import { cachedCatalogue, readCatalogue, type ToolContext as CatalogueContext } from '../tools/triage/index.js';
-import { resolveSelectedSenderHost } from './party-matching.js';
+import { resolveSelectedSenderKeys } from './party-matching.js';
 import { formatClientCard, lookupPartyMemory, lookupSenderPartyMemory } from './party-memory.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
@@ -249,15 +249,17 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
       let clientCard:string|null=null;
       try {
         if(mode==='live' && !session.config?.replay_id) {
-          const host=resolveSelectedSenderHost(baseMail);
-          if(host) {
+          const sender=resolveSelectedSenderKeys(baseMail);
+          const host=sender.booker_domain;
+          if(host || sender.booker_email) {
             const [agency,organization]=await Promise.all([
-              lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'agency'}).catch(()=>null),
-              lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'organization'}).catch(()=>null),
+              host ? lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'agency'}).catch(()=>null) : null,
+              host ? lookupSenderPartyMemory(sql,{propertyCode:property,host,kind:'organization'}).catch(()=>null) : null,
             ]);
-            const memory=agency||organization ? await lookupPartyMemory(sql,{
+            const memory=await lookupPartyMemory(sql,{
               propertyCode:property,agencyId:agency?.nativeId ?? null,organizationId:organization?.nativeId ?? null,
-            }).catch(()=>[]) : [];
+              keys:{...sender,ta1:agency?.name,company:organization?.name},
+            }).catch(()=>[]);
             clientCard=formatClientCard({senderHost:host,agency,organization,memory});
           }
         }

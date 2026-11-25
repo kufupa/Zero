@@ -15,7 +15,8 @@ import {tools as quoteTools} from '../../tools/quote/index.js';
 import {pinSkills, type SkillConfig} from '../../tools/skills/index.js';
 import {proposalDraft} from '../../src/schema.js';
 import {compactCatalogueSummary, stagePublishedDraft} from '../../src/tool-registry.js';
-import {buildMemoryFromHistory, type HistoryStay} from '../../src/party-memory.js';
+import {buildMemoryFromHistory, formatClientCard, type HistoryStay} from '../../src/party-memory.js';
+import {loadReplayHistoryInputs} from './history-policy.js';
 import {createTwin} from '../twin/index.js';
 import type {CaseCard} from '../types.js';
 import {rulerStamp, scoreCase, type CaseScore, type Scoreboard} from './score.js';
@@ -26,9 +27,9 @@ import {
   attemptedStateOf, evidenceDigestFromMail, flagsDigest, predictionCacheKey,
   publicPredictionRecord, sealPublicCaseCard, worldContentDigest,
 } from './replay-input.js';
-import {normalizePartyName, resolveSelectedSenderHost} from '../../src/party-matching.js';
+import {normalizePartyName, resolveSelectedSenderKeys} from '../../src/party-matching.js';
 import {twinLearnedSender, twinSenderHost} from '../twin/tools.js';
-import {anchorCaptures, beforeCutoff, createdFieldValue, defaultWorldDir, parseCreatedOn, selectedCutoff, type ThreadSenders, type TwinWorld} from '../twin/world.js';
+import {anchorCaptures, createdFieldValue, defaultWorldDir, parseCreatedOn, selectedCutoff, type ThreadSenders, type TwinWorld} from '../twin/world.js';
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
 function partyNameIds(catalog: Record<string, unknown>, key: 'agencies' | 'organizations'): Map<string, string> {
@@ -52,14 +53,14 @@ function historyStaysForMemory(world: TwinWorld): HistoryStay[] {
   const organizations = partyNameIds(world.catalog, 'organizations');
   const stays: HistoryStay[] = [];
   for (const anchor of world.anchors) {
-    const capture = anchorCaptures(anchor).find(row => beforeCutoff(row.captured_at, world.cutoff));
-    if (!capture) continue;
-    const fields = record(capture.hms_fields);
-    const pdfTimes = (anchor.pdfs ?? []).filter(pdf => beforeCutoff(pdf.sent_at, world.cutoff)).map(pdf => Date.parse(String(pdf.sent_at ?? ''))).filter(Number.isFinite);
-    const createdAtMs = parseCreatedOn(createdFieldValue(fields))
-      ?? world.createdOn.get(anchor.confirmation)
-      ?? (pdfTimes.length ? Math.min(...pdfTimes) : null);
+    const fields = record(anchorCaptures(anchor)[0]?.hms_fields ?? anchor.hms_fields);
+    const raw = createdFieldValue(fields);
+    const parsed = parseCreatedOn(raw);
+    const createdAtMs = parsed == null ? world.createdOn.get(anchor.confirmation)
+      : parsed - (typeof raw === 'string' && /^\d{1,2}-[a-z]{3}-\d{4}/i.test(raw) ? 7200000 : 0);
     if (createdAtMs == null || !Number.isFinite(createdAtMs)) continue;
+    if (/\b(?:labtest|proof)\b/i.test(String(fields.guest_name ?? `${fields.firstname ?? ''} ${fields.lastname ?? ''}`))
+      || /\bNAVAAI\b/i.test(String(fields.created_by ?? fields.createdby ?? ''))) continue;
     const company = String(fields.company ?? '').trim();
     const ta1 = String(fields.ta1 ?? '').trim();
     const guarantee = fields.guaranteetype ?? fields.guarantee_type ?? fields.guarantee;
@@ -473,6 +474,7 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   directEvidence: boolean;
   worldDir: string;
   threadSenders: ThreadSenders;
+  history: ReturnType<typeof loadReplayHistoryInputs>;
   model: string;
   callModel: ModelCall;
 }): Promise<CaseScore> {
@@ -480,8 +482,9 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   const promptMail = mailPrompt(mail);
   const twin = createTwin(card, {worldDir: options.worldDir, property: mail.property_code, threadSenders: options.threadSenders});
   // Same selected-mail host resolver as live Turn-1 / publish; history stays only (no live DB).
-  const memoryLookup = buildMemoryFromHistory(historyStaysForMemory(twin.world), twin.world.cutoff);
-  const senderHostForMemory = resolveSelectedSenderHost(mail);
+  const memoryLookup = buildMemoryFromHistory(historyStaysForMemory(twin.world), twin.world.cutoff, options.history.forWorld(twin.world));
+  const senderKeys = resolveSelectedSenderKeys(mail);
+  const senderHostForMemory = senderKeys.booker_domain;
   const senderPartiesForMemory = senderHostForMemory ? {
     agency: twinLearnedSender(twin.world, senderHostForMemory, 'agency'),
     organization: twinLearnedSender(twin.world, senderHostForMemory, 'organization'),
@@ -550,7 +553,7 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
           .filter(call => call.name === 'hms_search_parties')
           .map(call => ({input: call.input, response: call.result})), undefined, memoryLookup, senderPartiesForMemory,
           toolCalls.filter(call => call.name === 'hms_search_reservations')
-            .map(call => ({input: call.input, response: call.result}))) : null;
+            .map(call => ({input: call.input, response: call.result})), senderKeys) : null;
         if (staged?.kind === 'valid') {
           proposal = staged.draft;
           profile.review_ready_ms = Math.round(performance.now() - started);
@@ -599,16 +602,11 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
   const opaqueId = createHash('sha1').update(card.case_id).digest('hex').slice(0, 10);
   const prefix = `nava-mail-event:${opaqueId} Read the selected thread and handle its request.`;
   let nudge = prefix;
-  const host = resolveSelectedSenderHost(mail);
-  const party = host && (twinLearnedSender(twin.world, host, 'agency') ?? twinLearnedSender(twin.world, host, 'organization'));
-  if (party) {
-    const defaults = memoryLookup({
-      propertyCode: twin.world.propertyCode,
-      agencyId: party.kind === 'agency' ? party.nativeId : null,
-      organizationId: party.kind === 'organization' ? party.nativeId : null,
-    });
-    nudge += `\n\n[Client Memory Card]\nHistorical defaults only; prefer explicit evidence from the selected email.\n${JSON.stringify({party, defaults})}`;
-  }
+  const {agency, organization} = senderPartiesForMemory ?? {};
+  const defaults = memoryLookup({propertyCode: twin.world.propertyCode, agencyId: agency?.nativeId, organizationId: organization?.nativeId,
+    keys: {...senderKeys, ta1: agency?.name, company: organization?.name}});
+  const clientCard = formatClientCard({senderHost: senderHostForMemory, agency, organization, memory: defaults});
+  if (clientCard) nudge += `\n\n${clientCard}`;
   if (directEvidence) {
     const evidence = JSON.stringify(redactToolData(promptMail)).replaceAll('<', '\\u003c');
     nudge += `\n<untrusted_mail_evidence>\n${evidence}\n</untrusted_mail_evidence>${catalogueBlock}`;
@@ -686,11 +684,13 @@ export async function runBench(options: SpeedReplayOptions) {
   const skillConfig = await pinReplaySkills(options.skillsDir);
   const skillContext = await initialSkillContext(skillConfig, 'bench-initial-skill-context', 'historical');
   const worldDigest = await worldContentDigest(worldDir);
+  const history = loadReplayHistoryInputs();
   // Prediction-cache flags exclude mode so predict/grade share keys; gold never enters the key.
   const flags = flagsDigest({
     direct_evidence: directEvidence,
     strict_world: process.env.NAVA_BENCH_STRICT_WORLD === '1',
     allow_gold_pairs: process.env.NAVA_BENCH_ALLOW_GOLD_PAIRS === '1',
+    history_policy: history.digest,
   });
   const ruler = rulerStamp(gold.file, gold.sha256, {
     model, reasoning_effort: reasoning, world_dir: worldDir, skills_digest: skillConfig.pin.version,
@@ -707,7 +707,7 @@ export async function runBench(options: SpeedReplayOptions) {
   // Honest isolation claims: grade refuses inference; predict/run may call the approved model gateway.
   const networkDisabled = mode === 'grade';
   await writeFile(join(outDir, 'manifest.json'), JSON.stringify({
-    ...ruler, cases_dir: casesDir, case_ids: cards.map(card => card.case_id), concurrency, max_concurrency: maxConcurrency,
+    ...ruler, history_policy: history.digest, cases_dir: casesDir, case_ids: cards.map(card => card.case_id), concurrency, max_concurrency: maxConcurrency,
     cache_dir: cacheDir ?? null,
     skills_dir: skillConfig.root, direct_evidence: directEvidence, pinned_property: options.property ?? null,
     provider: mode === 'grade' ? 'none' : 'azure', provenance: ruler, thread_mail: threadMail ?? null,
@@ -830,7 +830,7 @@ export async function runBench(options: SpeedReplayOptions) {
       score.run_error = 'GRADE_REQUIRES_CACHED_PREDICTION';
     } else try {
       const mail = mailForDigest;
-      score = await runCase(card, scoreCard, {mail, skillContext, tokens, profile, started, directEvidence, worldDir, threadSenders, callModel, model});
+      score = await runCase(card, scoreCard, {mail, skillContext, tokens, profile, started, directEvidence, worldDir, threadSenders, history, callModel, model});
       if (classifyRunError(score.run_error) === '429') notify.rateLimited();
       else notify.ok();
     } catch (error) {

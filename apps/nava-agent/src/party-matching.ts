@@ -212,7 +212,7 @@ function messageFromAddress(message: Record<string, unknown>): string | null {
  * Unique `messages[].id === selected_message_id`; never last/head/source_input nested mail.
  * Missing/conflicting id, non-inbound, missing address ⇒ null. Caller fences live/replay.
  */
-export function resolveSelectedSenderHost(mail: unknown): string | null {
+function selectedInboundSender(mail: unknown) {
   if (!mail || typeof mail !== 'object' || Array.isArray(mail)) return null;
   const root = mail as Record<string, unknown>;
   const selectedId = root.selected_message_id;
@@ -228,7 +228,23 @@ export function resolveSelectedSenderHost(mail: unknown): string | null {
   const subject = typeof selected.subject === 'string' ? selected.subject : null;
   const body = typeof selected.body_text === 'string' ? selected.body_text
     : typeof selected.body === 'string' ? selected.body : null;
-  return effectiveSenderHost(fromEmail, body, subject);
+  return {fromEmail, body, subject};
+}
+
+export function resolveSelectedSenderHost(mail: unknown): string | null {
+  const sender = selectedInboundSender(mail);
+  return sender ? effectiveSenderHost(sender.fromEmail, sender.body, sender.subject) : null;
+}
+
+export function resolveSelectedSenderKeys(mail: unknown) {
+  const sender = selectedInboundSender(mail);
+  if (!sender) return {};
+  const {fromEmail, body, subject} = sender;
+  return {
+    booker_email: isLegacyHotelsHost(senderDomain(fromEmail))
+      ? extractForwardedSender(body, subject).innerEmail : fromEmailRe.exec(fromEmail)?.[1] ?? null,
+    booker_domain: effectiveSenderHost(fromEmail, body, subject),
+  };
 }
 
 export async function searchPartyWithFallback(query: string, kind: string,

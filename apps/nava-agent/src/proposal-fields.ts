@@ -533,7 +533,8 @@ export function normalizeProposalFields(draft: ProposalDraft, quoteProperty?:str
         const existing=roomSpec>=0 ? fieldSpecs[roomSpec] : null;
         if(!existing || (existing.provenance!=='staff' && !existing.error)) {
           fields.room_type='STQN';
-          const evidence=[{message_id:'default_room',attachment_id:null,quote:CREATE_STQN_DEFAULT_QUOTE}];
+          const evidence=existing?.evidence.length ? existing.evidence
+            : [{message_id:'default_room',attachment_id:null,quote:CREATE_STQN_DEFAULT_QUOTE}];
           if(roomSpec>=0) fieldSpecs[roomSpec]={...fieldSpecs[roomSpec],path:roomPath,provenance:'default',error:null,evidence};
           else fieldSpecs.push({path:roomPath,label:'Room type',provenance:'default',editable:true,required:true,error:null,control:'combobox',options:[],evidence});
         }
