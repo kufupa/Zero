@@ -12,13 +12,23 @@ const KEY_ORDER = ['booker_email', 'company', 'ta1', 'guest_id', 'booker_domain'
 const aliases: Record<string, NativeField> = Object.fromEntries(Object.entries(HISTORY_FIELDS).map(([key, field]) => [field, key as NativeField]));
 export const exactHistoryKey = (value: unknown) => typeof value === 'string' || typeof value === 'number' ? String(value).trim().toLowerCase() : '';
 
+/** Same canonical equality as the exporter; no substring or fuzzy match. */
+export function exactPartyPolicyKey(value: unknown) {
+  return exactHistoryKey(value).replaceAll('&', ' and ').replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\b(?:pty|ptyltd|proprietary|ltd|limited|inc|cc|npc|soc|plc|llc|co)\b/g, ' ').replace(/\s+/g, '');
+}
+
+function normalizeKey(type: HistoryKey, key: unknown) {
+  return type === 'company' || type === 'ta1' ? exactPartyPolicyKey(key) : exactHistoryKey(key);
+}
+
 export function historyRowKey(type: HistoryKey, key: string) {
-  return `${type}:${exactHistoryKey(key)}`;
+  return `${type}:${normalizeKey(type, key)}`;
 }
 
 export function policyKeys(keys: PolicyKeys): Array<[HistoryKey, string]> {
   return KEY_ORDER.flatMap(type => {
-    const key = exactHistoryKey(keys[type]);
+    const key = normalizeKey(type, keys[type]);
     return key ? [[type, key] as [HistoryKey, string]] : [];
   });
 }
@@ -34,9 +44,14 @@ export function policyValue(field: NativeField, value: unknown): string {
   return text;
 }
 
+export function canonicalPolicyValue(field: NativeField, value: string) {
+  if (field === 'company' || field === 'ta1' || field === 'araccountname') return exactPartyPolicyKey(value);
+  return field === 'billingreference' ? value : value.replace(/\s+/g, ' ').toUpperCase();
+}
+
 export function historyFieldAllowed(type: HistoryKey, field: NativeField) {
   if (field === 'company' || field === 'ta1') return type === 'booker_email' || type === 'booker_domain';
-  if (field === 'billingreference') return type === 'booker_email' || type === 'guest_id';
+  if (field === 'billingreference') return type !== 'booker_domain';
   return field !== 'araccountname' || type !== 'booker_domain';
 }
 
@@ -50,8 +65,8 @@ export function indexHistoryPolicy(input: unknown): Record<string, PolicyRow[]> 
   const index: Record<string, PolicyRow[]> = {};
   for (const raw of input) {
     if (!raw || typeof raw !== 'object') throw new Error('Invalid history policy row');
-    const keyType = raw.key_type as HistoryKey;
-    const key = exactHistoryKey(raw.key);
+    const keyType = (raw.key_type === 'domain' ? 'booker_domain' : raw.key_type) as HistoryKey;
+    const key = normalizeKey(keyType, raw.key);
     const field = policyField(String(raw.field));
     if (!KEY_ORDER.includes(keyType) || !field) continue;
     const row: PolicyRow = {

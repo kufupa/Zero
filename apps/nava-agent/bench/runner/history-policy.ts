@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {eligiblePolicyRow, exactHistoryKey, HISTORY_FIELDS, historyFieldAllowed, historyRowKey, indexHistoryPolicy,
+import {canonicalPolicyValue, eligiblePolicyRow, exactHistoryKey, HISTORY_FIELDS, historyFieldAllowed, historyRowKey, indexHistoryPolicy,
   policyKeys, policyValue, type PolicyKeys, type PolicyRow} from '../../src/history-policy.js';
 import {anchorCaptures, createdFieldValue, parseCreatedOn, type TwinWorld} from '../twin/world.js';
 
@@ -41,17 +41,24 @@ export function loadReplayHistoryInputs() {
         // The full snapshot is admissible only if ALL contributing stays were already created.
         // An early last_seen alone cannot rule out later observations of other values.
         const exported = snapshot?.[token]?.find(row => row.field === field);
-        if (exported && last.at < world.cutoff && Date.parse(exported.last_seen) < world.cutoff) return [exported];
-        const counts = new Map<string, {n: number; last: number}>();
+        const counts = new Map<string, {n: number; last: number; raw: Map<string, number>}>();
         let total = 0;
         for (const {at, value} of observations) {
           if (at >= world.cutoff) break;
-          const prev = counts.get(value);
-          counts.set(value, {n: (prev?.n ?? 0) + 1, last: at});
           total++;
+          const canonical = canonicalPolicyValue(field, value);
+          if (!canonical) continue;
+          const entry = counts.get(canonical) ?? {n: 0, last: at, raw: new Map()};
+          entry.n++;
+          entry.last = at;
+          entry.raw.set(value, (entry.raw.get(value) ?? 0) + 1);
+          counts.set(canonical, entry);
         }
-        if (total < 2) return [];
-        const [value, top] = [...counts].sort(([av, a], [bv, b]) => b.n - a.n || b.last - a.last || av.localeCompare(bv))[0];
+        if (total < 2 || !counts.size) return [];
+        if (exported && last.at < world.cutoff && exported.support === total && Date.parse(exported.last_seen) < world.cutoff
+          && counts.get(canonicalPolicyValue(field, exported.value))?.n === Math.round(exported.support * exported.agreement)) return [exported];
+        const top = [...counts.values()].sort((a, b) => b.n - a.n)[0];
+        const [value] = [...top.raw].sort((a, b) => b[1] - a[1])[0];
         const row = {key_type: type, key, field, value, support: total, agreement: top.n / total, last_seen: new Date(top.last).toISOString()};
         return eligiblePolicyRow(row) ? [row] : [];
       });
@@ -79,7 +86,7 @@ function indexObservations(history: Row[], mailByStay: Map<string, {booker_email
     const at = Date.parse(String(row.created_at ?? ''));
     const conf = String(row.conf ?? '').trim();
     if (!conf || seen.has(conf) || !Number.isFinite(at)
-      || /\b(?:labtest|proof)\b/i.test(String(row.guest_name ?? `${row.firstname ?? ''} ${row.lastname ?? ''}`))
+      || /labtest|proof/i.test(String(row.guest_name ?? `${row.firstname ?? ''} ${row.lastname ?? ''}`))
       || /\bNAVAAI\b/i.test(String(row.created_by ?? row.createdby ?? ''))) continue;
     seen.add(conf);
     const mail = mailByStay.get(conf);
@@ -93,7 +100,6 @@ function indexObservations(history: Row[], mailByStay: Map<string, {booker_email
       for (const field of Object.keys(HISTORY_FIELDS) as NativeField[]) {
         if (!historyFieldAllowed(type, field)) continue;
         const value = policyValue(field, row[field]);
-        if (!value) continue;
         const observations = byField.get(field) ?? [];
         observations.push({at, value});
         byField.set(field, observations);

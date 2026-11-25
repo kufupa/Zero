@@ -569,6 +569,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
                 organization: await lookupSenderPartyMemory(sql, {propertyCode:senderProp, host, kind:'organization'}).catch(()=>null),
               } : {};
               const withSender=applyPartyMemoryToDraft(current, ()=>[], senderParties);
+              current=withSender;
               const cache=new Map<string, Awaited<ReturnType<typeof lookupPartyMemory>>>();
               for(const booking of withSender.bookings) {
                 const propertyCode=String(booking.property_code ?? '').trim().toUpperCase();

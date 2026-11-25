@@ -14,7 +14,7 @@ export const MEMORY_ELIGIBLE_FIELDS = ['board', 'rate_plan', 'room_type', 'guara
 export type MemoryField = (typeof MEMORY_ELIGIBLE_FIELDS)[number];
 export type MemorySuggestion = {
   field: MemoryField; value: string; hits: number; total: number;
-  partyKind?: 'agency' | 'organization'; reason: string;
+  partyKind?: 'agency' | 'organization'; reason: string; historyPolicy?: true;
 };
 export type MemoryLookupArgs = {
   propertyCode: string; agencyId: string | null | undefined; organizationId: string | null | undefined;
@@ -48,7 +48,7 @@ function mergePolicyMemory(policy: PolicyRow[], fallback: MemorySuggestion[], pr
         : property === 'HRCEN' && field === 'room_type' ? createRoomTypeCode(row.value) : row.value;
     if (!value) continue;
     const hits = Math.round(row.agreement * row.support);
-    byField.set(field, {field, value, hits, total: row.support,
+    byField.set(field, {field, value, hits, total: row.support, historyPolicy: true,
       reason: `HMS history for ${keyLabels[row.key_type]} (${hits}/${row.support} stays; last seen ${row.last_seen.slice(0, 10)})`});
   }
   for (const suggestion of fallback) if (!byField.has(suggestion.field)) byField.set(suggestion.field, suggestion);
@@ -429,7 +429,7 @@ export async function lookupPartyMemory(
       OR (${organizationId}::text IS NOT NULL AND party_kind = 'organization' AND party_id = ${organizationId}))` : [],
     keys.length ? sql`
       SELECT entries -> key AS choices FROM nava_agent.history_policy
-      CROSS JOIN unnest(${keys}::text[]) WITH ORDINALITY AS wanted(key, priority)
+      CROSS JOIN jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb) WITH ORDINALITY AS wanted(key, priority)
       WHERE property_code = ${args.propertyCode} ORDER BY priority` : [],
   ]);
   return mergePolicyMemory(observed.flatMap(row => (row.choices ?? []) as PolicyRow[]),
@@ -791,9 +791,11 @@ export function applyPartyMemoryToDraft(
       fields[sug.field] = sug.value;
       filled.add(path);
       const evidence = [{message_id: 'party_memory', attachment_id: null, quote: sug.reason}];
-      const label = {board: 'Meal plan', rate_plan: 'Rate plan', room_type: 'Room type', guarantee_type: 'Guarantee type',
+      const baseLabel = {board: 'Meal plan', rate_plan: 'Rate plan', room_type: 'Room type', guarantee_type: 'Guarantee type',
         ar_account_name: 'A/R account', billing_reference: 'Billing reference', agency_name: 'Booking agency', organization_name: 'Company'}[sug.field];
-      if (spec >= 0) fieldSpecs[spec] = {...fieldSpecs[spec], path, provenance: 'default', error: null, evidence};
+      // The deployed pane already renders field labels and editable default markers.
+      const label = sug.historyPolicy ? `${baseLabel} · HMS history` : existing?.label ?? baseLabel;
+      if (spec >= 0) fieldSpecs[spec] = {...fieldSpecs[spec], path, label, provenance: 'default', editable: true, error: null, evidence};
       else fieldSpecs.push({
         path, label, provenance: 'default', editable: true, required: false,
         error: null, control: 'text', options: [], evidence,
