@@ -61,16 +61,6 @@ export function memoryLookupArgs(propertyCode: string, fields: Record<string, un
   };
 }
 
-/** Verified direct employer/org only — never intermediary invoice addressee as organization. */
-export function verifiedDirectOrgMatch(
-  hit: LearnedSenderHit | null | undefined,
-  agencyName?: string | null,
-): LearnedSenderHit | null {
-  if (!hit || hit.kind !== 'organization' || (!hit.name && !hit.nativeId)) return null;
-  if (agencyName && normalizePartyName(hit.name) === normalizePartyName(agencyName)) return null;
-  return hit;
-}
-
 function memoryFieldWrites(
   fields: Record<string, unknown>,
   board?: string | null,
@@ -537,19 +527,9 @@ export async function recordSavedSenderParty(
 
 /** Compact Turn-1 prompt card; null when nothing useful. */
 export function formatClientCard(args: {
-  senderHost?: string | null;
-  agency?: LearnedSenderHit | null;
-  organization?: LearnedSenderHit | null;
   memory?: MemorySuggestion[];
 }): string | null {
   const lines: string[] = [];
-  if (args.senderHost) lines.push(`Host: ${args.senderHost}`);
-  if (args.agency) {
-    lines.push(`Agency: ${args.agency.name}${args.agency.nativeId ? ` [${args.agency.nativeId}]` : ''} (${args.agency.support})`);
-  }
-  if (args.organization) {
-    lines.push(`Company: ${args.organization.name}${args.organization.nativeId ? ` [${args.organization.nativeId}]` : ''} (${args.organization.support})`);
-  }
   for (const sug of args.memory ?? []) {
     lines.push(`${sug.field}: ${sug.value} (${sug.hits}/${sug.total})`);
   }

@@ -95,9 +95,15 @@ function acronymPartyName(left:string,right:string):boolean {
   return !!a && !!b && (acronym(a,b) || acronym(b,a));
 }
 
+// The directory abbreviates Department in otherwise exact organization names.
+const explicitName = (name: string, kind: string) => {
+  const normalized = normalizePartyName(name);
+  return kind === 'organization' ? normalized.replace(/\bdept\b/g, 'department') : normalized;
+};
+
 /** Exact/legal/alias/acronym party identity. Deliberately stricter than candidate scoring. */
 export function partyNameMatch(left:string,right:string,kind:string):boolean {
-  const a=normalizePartyName(left), b=normalizePartyName(right);
+  const a=explicitName(left,kind), b=explicitName(right,kind);
   return !!a && (a===b || a.replace(/\s/g,'')===b.replace(/\s/g,'') || aliasPartyName(left,right,kind) || acronymPartyName(left,right));
 }
 
@@ -278,9 +284,9 @@ export async function resolvePartySelection(kind: string, candidates: Array<Reco
   const groups = new Map<string, {candidates: Array<Record<string, unknown>>; score: number}>();
   for (const candidate of candidates) {
     const name = partyCandidateName(candidate);
-    const key = normalizePartyName(name).replace(/\s/g, '');
+    const key = explicitName(name, kind).replace(/\s/g, '');
     const score = partyCandidateScore(requested, name, kind)
-      + (normalizePartyName(requested) === normalizePartyName(name) ? 6 : 0);
+      + (explicitName(requested, kind) === explicitName(name, kind) ? 6 : 0);
     const group = groups.get(key) ?? {candidates: [], score: 0};
     group.candidates.push(candidate);
     group.score = Math.max(group.score, score);
