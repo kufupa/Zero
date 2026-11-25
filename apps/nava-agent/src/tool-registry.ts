@@ -14,7 +14,7 @@ import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource,
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, lookupExactStay, lookupFilingStay, targetLookup, targetSelection } from './stay-target.js';
 import { mailPrompt } from './mail-prompt.js';
-import { normalizePartyName, partyCandidateScore, explicitPartyQuery, partyNameMatch, resolveSelectedSenderKeys } from './party-matching.js';
+import { nativePartyKey, explicitPartyQuery, resolveSelectedSenderKeys } from './party-matching.js';
 import { projectStoredRequestTimeContext, type StoredRequestTimeContext } from './request-time-context.js';
 import { isHmsConfirmation } from './reservation-reference.js';
 
@@ -110,36 +110,35 @@ const partyCandidate=z.object({nativeId:z.string().min(1),name:z.string().min(1)
 const partyRead=z.object({
   input:z.object({kind:z.enum(['agency','organization']),field:z.literal('name'),property_code:z.string(),query:z.string().optional()}),
   response:z.object({ok:z.literal(true),data:z.object({
-    native:z.object({candidates:z.array(partyCandidate)}),
+    native:z.object({candidates:z.array(z.unknown())}),
     selection:z.union([partyCandidate,z.literal('none')]),
   })}),
 });
 function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],kind:'agency'|'organization') {
-  const requested=typeof name==='string' && name.trim() ? name.trim() : '';
-  const ids=new Set<string>();
-  const names=new Map<string,string>();
-  const addName=(candidate:{nativeId:string;name:string},selected:boolean)=>{
-    names.set(normalizePartyName(candidate.name).replace(/\s/g,''),candidate.name);
-    if(selected) ids.add(candidate.nativeId);
-  };
-  for(const value of values) {
+  const requested=typeof name==='string' ? nativePartyKey(name) : '';
+  const reads=values.flatMap(value=>{
     const read=partyRead.safeParse(value);
-    if(!read.success || read.data.input.kind!==kind || read.data.input.property_code!==propertyCode) continue;
+    if(!read.success || read.data.input.kind!==kind || read.data.input.property_code!==propertyCode) return [];
     const {native,selection}=read.data.response.data;
-    const query=read.data.input.query ?? '';
-    const selected=selection==='none' ? null : native.candidates.find(candidate=>candidate.nativeId===selection.nativeId) ?? null;
-    if(requested && explicitPartyQuery(query) && (partyNameMatch(requested,query,kind) || (selected && partyNameMatch(requested,selected.name,kind)))) {
-      if(selected) return {name:selected.name,nativeId:selected.nativeId};
-    }
-    // A sender-only result may fill a blank, but it cannot replace a named party.
-    if(selected && (!requested || partyNameMatch(requested,selected.name,kind))) addName(selected,true);
-    for(const candidate of native.candidates) {
-      const fitsRequest=requested && (partyNameMatch(requested,candidate.name,kind) || partyCandidateScore(requested,candidate.name,kind)>=82);
-      if(fitsRequest) addName(candidate,false);
-    }
-  }
-  if(names.size!==1) return null;
-  return {name:[...names.values()][0]!,nativeId:ids.size===1 ? [...ids][0] : null};
+    const candidates=native.candidates.flatMap(row=>{
+      const candidate=partyCandidate.safeParse(row);
+      return candidate.success ? [candidate.data] : [];
+    });
+    const selected=selection==='none' ? null : candidates.find(candidate=>
+      candidate.nativeId===selection.nativeId && candidate.name===selection.name) ?? null;
+    const query=explicitPartyQuery(read.data.input.query ?? '');
+    return [{candidates,selected,query}];
+  });
+  const named=reads.filter(({query,candidates})=>query && requested &&
+    (nativePartyKey(query)===requested || candidates.some(candidate=>nativePartyKey(candidate.name)===requested)));
+  const matching=named.length ? named : reads.filter(({query,candidates})=>!query && requested &&
+    candidates.some(candidate=>nativePartyKey(candidate.name)===requested));
+  const selections=matching.map(({selected})=>selected && nativePartyKey(selected.name)===requested ? selected : null);
+  const first=selections[0];
+  const selected=first && selections.every(candidate=>candidate?.nativeId===first.nativeId) ? first : null;
+  const candidates=[...new Map((matching.length ? matching : reads).flatMap(read=>read.candidates)
+    .map(candidate=>[candidate.nativeId,candidate])).values()];
+  return {selected,options:candidates.map(({nativeId,name})=>({value:nativeId,label:name,meaning:nativeId}))};
 }
 function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
   const fieldSpecs=[...draft.field_specs];
@@ -150,18 +149,21 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
     const fields={...original};
     for(const kind of ['agency','organization'] as const) {
       const nameKey=`${kind}_name`, idKey=`${kind}_id`;
-      const choice=readPartyChoice(propertyCode,fields[nameKey] ?? (draft.workflow==='quote'?fields.party_name:null),values,kind);
-      // Only overwrite when a party read resolves; preserve pre-bound agency_id/organization_id for party memory.
-      if(!choice) continue;
-      fields[nameKey]=choice.name;
-      if(choice.nativeId!=null) fields[idKey]=choice.nativeId;
-      else fields[idKey]=null;
-      for(const [suffix,label] of [['id',kind==='agency'?'Booking agency ID':'Company ID'],['name',kind==='agency'?'Booking agency':'Company']] as const) {
-        if(suffix==='id' && !choice.nativeId) continue;
-        const path=`${root}/${kind}_${suffix}`;
-        const spec=fieldSpecs.findIndex(field=>field.path===path || field.path===path.slice(1));
-        if(spec>=0) fieldSpecs[spec]={...fieldSpecs[spec],path,provenance:'hms',editable:true,error:null};
-        else fieldSpecs.push({path,label,provenance:'hms',editable:true,required:false,error:null,control:'text',options:[],evidence:[]});
+      const requested=fields[nameKey] ?? (draft.workflow==='quote'?fields.party_name:null);
+      const {selected,options}=readPartyChoice(propertyCode,requested,values,kind);
+      if(draft.workflow==='quote' && !selected && !options.length && !Object.hasOwn(fields,nameKey) && !Object.hasOwn(fields,idKey)) continue;
+      fields[nameKey]=selected?.name ?? null;
+      fields[idKey]=selected?.nativeId ?? null;
+      for(const [key,label] of [[idKey,kind==='agency'?'Booking agency ID':'Company ID'],[nameKey,kind==='agency'?'Booking agency':'Company']] as const) {
+        const path=`${root}/${key}`;
+        const index=fieldSpecs.findIndex(field=>field.path===path || field.path===path.slice(1));
+        const spec=index>=0 ? fieldSpecs[index] : undefined;
+        const choices=key===idKey ? options : [];
+        const field={...spec,path,label,provenance:selected ? 'hms' as const : 'unknown' as const,
+          editable:true,required:false,error:null,control:choices.length ? 'combobox' as const : 'text' as const,
+          options:choices,evidence:spec?.evidence ?? []};
+        if(index>=0) fieldSpecs[index]=field;
+        else fieldSpecs.push(field);
       }
     }
     return fields;
@@ -286,7 +288,7 @@ export function stagePublishedDraft(
   }
   const normalized = normalizeProposalFields(staffDraft,quoteProperty);
   if (normalized.kind !== 'valid' || (!memoryLookup && !senderParties) || normalized.draft.workflow !== 'create') return normalized;
-  return {kind: 'valid', draft: applyPartyMemoryToDraft(normalized.draft, memoryLookup ?? (() => []), senderParties, senderKeys)};
+  return {kind: 'valid', draft: applyPartyMemoryToDraft(normalized.draft, memoryLookup ?? (() => []), senderParties, senderKeys, false)};
 }
 export function sameQuoteCriteria(captured:unknown,draft:unknown) {
   const actual=groupedQuoteRequest.safeParse(captured), expected=groupedQuoteRequest.safeParse(draft);
@@ -530,7 +532,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         const incomplete=draft.workflow==='quote' && merged.incomplete;
         let partyReads: Array<{input: unknown; response: unknown}> = [];
         let stayReads: Array<{input: unknown; response: unknown}> = [];
-        if(staffPrepareOnly() && ['create','quote','filing'].includes(draft.workflow)) {
+        if(draft.workflow==='create' || staffPrepareOnly() && ['quote','filing'].includes(draft.workflow)) {
           if(['create','quote'].includes(draft.workflow)) {
             partyReads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
               FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
@@ -558,7 +560,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           // (avoid forcing profile_create_new outside staff-prepare).
           const normalized=staffPrepareOnly()
             ? stagePublishedDraft(staffDraft,partyReads,quoteProperty,undefined,undefined,stayReads)
-            : normalizeProposalFields(staffDraft);
+            : normalizeProposalFields(staffDraft.workflow==='create' ? withReadParties(staffDraft,partyReads) : staffDraft);
           if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
           let current=normalized.draft;
           // Live only: DB party memory. Historical/replay (incl. live+replay_id) uses twin history, never live counts.
@@ -572,7 +574,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
                 agency: await lookupSenderPartyMemory(sql, {propertyCode:senderProp, host, kind:'agency'}).catch(()=>null),
                 organization: await lookupSenderPartyMemory(sql, {propertyCode:senderProp, host, kind:'organization'}).catch(()=>null),
               } : {};
-              const withSender=applyPartyMemoryToDraft(current, ()=>[], senderParties);
+              const withSender=applyPartyMemoryToDraft(current, ()=>[], senderParties, undefined, false);
               current=withSender;
               const cache=new Map<string, Awaited<ReturnType<typeof lookupPartyMemory>>>();
               for(const booking of withSender.bookings) {
@@ -581,7 +583,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
                 const key=JSON.stringify(args);
                 if(!cache.has(key)) cache.set(key, await lookupPartyMemory(sql, args));
               }
-              current=applyPartyMemoryToDraft(withSender, args => cache.get(JSON.stringify(args)) ?? [], undefined, senderKeys);
+              current=applyPartyMemoryToDraft(withSender, args => cache.get(JSON.stringify(args)) ?? [], undefined, senderKeys, false);
             } catch { /* party memory is non-fatal */ }
           }
           proposals.push({current,selection:job.selection});
@@ -835,6 +837,7 @@ export class ToolRegistry {
           const selected=name==='hms_search_parties'?await selectedMail(context.sessionId):null;
           return pack.run(toolInput,{...context,credentialLease:lease,signal:lease.signal,
             senderEmail:selected?.sender_email ?? undefined,
+            partyCutoff:selected?.input_cutoff ?? selected?.selected_received_at ?? undefined,
             asOf:selected?.input_cutoff ?? (selected?.replay_id ? selected.selected_received_at : undefined)});
         },name==='hms_quote'?'quote':undefined,(phase,ms)=>(timings[phase]??=[]).push(Math.round(ms)),
         ['hms_quote','hms_search_reservations','hms_search_parties'].includes(name)?'short':undefined,'prefill'));

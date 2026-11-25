@@ -12,10 +12,10 @@ export {
 } from './read-result.js';
 
 export function createTwin(caseCard: CaseCard, options: {worldDir?: string; property?: string; threadSenders?: ThreadSenders;
-  organizationUse?: (cutoff: number) => NativePartyUse} = {}) {
+  partyUse?: (cutoff: number) => NativePartyUse} = {}) {
   const world = loadTwinWorld(caseCard, options.worldDir, options.property, options.threadSenders);
-  const dispatch = createTwinDispatch(world, caseCard, world.propertyCode === 'HRCEN' && options.organizationUse
-    ? () => options.organizationUse!(world.cutoff) : undefined);
+  const dispatch = createTwinDispatch(world, caseCard, world.propertyCode === 'HRCEN' && options.partyUse
+    ? () => options.partyUse!(world.cutoff) : undefined);
   return {
     world,
     mode: 'twin' as const,

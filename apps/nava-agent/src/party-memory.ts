@@ -740,6 +740,7 @@ export function applyPartyMemoryToDraft(
   lookupFn: MemoryLookupFn,
   senderParties?: SenderPartySuggestion,
   senderKeys?: PolicyKeys,
+  allowPartyDefaults = true,
 ): ProposalDraft {
   if (draft.workflow !== 'create') return draft;
   const fieldSpecs = [...draft.field_specs];
@@ -748,7 +749,7 @@ export function applyPartyMemoryToDraft(
     const fields = {...booking.fields};
     const propertyCode = String(booking.property_code ?? '').trim().toUpperCase();
     if (!propertyCode) return booking;
-    if (senderParties?.agency && blank(fields.agency_id)) {
+    if (allowPartyDefaults && senderParties?.agency && blank(fields.agency_id)) {
       const agPath = `/bookings/${index}/fields/agency_name`;
       const agIdx = fieldSpecs.findIndex(field => field.path === agPath || field.path === agPath.slice(1));
       const agSpec = agIdx >= 0 ? fieldSpecs[agIdx] : null;
@@ -769,7 +770,7 @@ export function applyPartyMemoryToDraft(
       senderParties?.organization,
       typeof fields.agency_name === 'string' ? fields.agency_name : senderParties?.agency?.name,
     );
-    if (orgHit && blank(fields.organization_id)) {
+    if (allowPartyDefaults && orgHit && blank(fields.organization_id)) {
       const orgPath = `/bookings/${index}/fields/organization_name`;
       const orgIdx = fieldSpecs.findIndex(field => field.path === orgPath || field.path === orgPath.slice(1));
       const orgSpec = orgIdx >= 0 ? fieldSpecs[orgIdx] : null;
@@ -790,6 +791,7 @@ export function applyPartyMemoryToDraft(
       const path = `/bookings/${index}/fields/${sug.field}`;
       const spec = fieldSpecs.findIndex(field => field.path === path || field.path === path.slice(1));
       const existing = spec >= 0 ? fieldSpecs[spec] : null;
+      if (!allowPartyDefaults && (sug.field === 'agency_name' || sug.field === 'organization_name')) continue;
       if (sug.field === 'agency_name' && (!blank(fields.agency_id) || !blank(fields.agency_name))) continue;
       if (sug.field === 'organization_name' && (!blank(fields.organization_id) || !blank(fields.organization_name)
         || (typeof fields.agency_name === 'string' && normalizePartyName(fields.agency_name) === normalizePartyName(sug.value)))) continue;

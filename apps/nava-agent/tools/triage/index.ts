@@ -8,9 +8,9 @@ import { proposalDraft, type ProposalDraft } from '../../src/schema.js';
 import postgres from 'postgres';
 import { extractSenderHost, searchPartyWithFallback, resolvePartySelection, type LearnedSenderHit } from '../../src/party-matching.js';
 import { lookupSenderPartyMemory } from '../../src/party-memory.js';
-import type { NativePartyUse } from '../../src/organization-use.js';
+import { partyUseBefore, type PartyUseHistory } from '../../src/organization-use.js';
 
-export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; asOf?: string; senderEmail?: string; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
+export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; asOf?: string; partyCutoff?: string; senderEmail?: string; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
 export type ToolResult = { ok: boolean; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } | null };
 const fail = (code: string, message: string, retryable = false): ToolResult => ({ ok: false, data: null, error: { code, message, retryable, outcome: 'known' } });
 const ok = (data: unknown): ToolResult => ({ ok: true, data, error: null });
@@ -517,12 +517,12 @@ export async function searchParties(input: unknown, context: ToolContext): Promi
     const candidates = (Array.isArray(result.candidates) ? result.candidates : []).filter(obj);
     const truncated = !(obj(result.coverage) && result.coverage.possiblyTruncated === false) || !['matches', 'no_match'].includes(String(result.outcome));
     const resolved = await resolvePartySelection(kind, candidates, truncated, learned, query,
-      context.mode === 'live' && context.asOf === undefined && process.env.DATABASE_URL ? async () => {
+      context.mode === 'live' && context.asOf === undefined && context.partyCutoff && process.env.DATABASE_URL ? async () => {
         try {
           const { sql } = await import('../../src/db.js');
-          const [row] = await sql`SELECT entries -> '_organization_use' AS use
+          const [row] = await sql`SELECT entries -> '_party_use' AS use
             FROM nava_agent.history_policy WHERE property_code = ${property}`;
-          return (row?.use ?? {}) as NativePartyUse;
+          return row?.use ? partyUseBefore(row.use as PartyUseHistory, Date.parse(context.partyCutoff!)) : {};
         } catch { return {}; }
       } : undefined);
     return ok({

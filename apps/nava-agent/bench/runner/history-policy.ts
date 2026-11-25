@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {canonicalPolicyValue, eligiblePolicyRow, exactHistoryKey, HISTORY_FIELDS, historyFieldAllowed, historyRowKey, indexHistoryPolicy,
   policyKeys, policyValue, type PolicyKeys, type PolicyRow} from '../../src/history-policy.js';
 import {anchorCaptures, createdFieldValue, parseCreatedOn, type TwinWorld} from '../twin/world.js';
-import {indexOrganizationUse} from '../../src/organization-use.js';
+import {indexPartyUse, partyUseBefore} from '../../src/organization-use.js';
 
 type NativeField = PolicyRow['field'];
 type Row = Record<string, unknown>;
@@ -37,7 +37,9 @@ export function loadReplayHistoryInputs() {
     }
   }
   const mail = read(process.env.NAVA_BENCH_HISTORY_MAIL);
-  const digest = {history: history && sha(history), policy: policy && sha(policy), history_mail: mail && sha(mail),
+  const partyFile = read(process.env.NAVA_BENCH_PARTY_HISTORY_FILE);
+  const partyUse = partyFile && indexPartyUse(jsonl(partyFile));
+  const digest = {...(partyFile ? {partyHistory: sha(partyFile)} : {}), history: history && sha(history), policy: policy && sha(policy), history_mail: mail && sha(mail),
     ...(snapshotDir ? {monthly_policy: monthDigests} : {})};
   const snapshot = policy && indexHistoryPolicy(JSON.parse(policy.toString()));
   const historyRows = history && jsonl(history);
@@ -47,7 +49,7 @@ export function loadReplayHistoryInputs() {
     },
   ]));
   const byProperty = new Map<string, ReturnType<typeof indexObservations>>();
-  return {digest, organizationUse: historyRows ? indexOrganizationUse(historyRows) : undefined, forWorld(world: TwinWorld) {
+  return {digest, partyUse: partyUse ? (cutoff: number) => partyUseBefore(partyUse, cutoff) : undefined, forWorld(world: TwinWorld) {
     const property = world.propertyCode;
     const month = new Date(world.cutoff).toISOString().slice(0, 7);
     const gated = monthly.get(month);

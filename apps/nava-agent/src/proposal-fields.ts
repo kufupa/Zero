@@ -131,7 +131,8 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
       const guaranteeOpts = key==='guarantee_type' ? [...CREATE_GUARANTEE_OPTIONS] : [];
       if(existing>=0) {
         const prev=fieldSpecs[existing];
-        fieldSpecs[existing]={...prev,path,editable:true,required,control,
+        fieldSpecs[existing]={...prev,path,editable:true,required,
+          control:(key==='agency_id' || key==='organization_id') && prev.options.length ? 'combobox' : control,
           ...(key==='guarantee_type' && !(prev.options?.length) ? {options:guaranteeOpts} : {})};
       } else fieldSpecs.push({path,label,editable:true,required,control,provenance:'unknown',error:null,
         options:guaranteeOpts,evidence:[]});

@@ -1,39 +1,45 @@
-import {exactHistoryKey} from './history-policy.js';
+export type PartyKind = 'organization' | 'agency';
+export type NativePartyUse = Partial<Record<PartyKind, Record<string, number>>>;
+export type PartyUseHistory = Record<PartyKind, Record<string, number[]>>;
 
-export type NativePartyUse = {ids?: Record<string, number>; names?: Record<string, number>};
-export const nativePartyUseName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
-
-/** Order duplicate native organizations by prior stays, never by sender affinity. */
-export function indexOrganizationUse(history: Iterable<Record<string, unknown>>) {
-  const ids = new Map<string, number[]>();
-  const names = new Map<string, number[]>();
+/** Only HMS reservation observations with a native party ID can break a tie. */
+export function indexPartyUse(history: Iterable<Record<string, unknown>>): PartyUseHistory {
+  const timelines = {organization: new Map<string, number[]>(), agency: new Map<string, number[]>()};
   const seen = new Set<string>();
-  const add = (map: Map<string, number[]>, key: string, at: number) => {
-    if (!key) return;
-    const dates = map.get(key) ?? [];
-    dates.push(at);
-    map.set(key, dates);
-  };
   for (const row of history) {
-    const at = Date.parse(String(row.created_at ?? ''));
+    const created = Date.parse(String(row.created_at ?? ''));
+    const updated = Date.parse(String(row.updated_at ?? ''));
+    const at = Number.isFinite(updated) ? Math.max(created, updated) : created;
     const conf = String(row.conf ?? '').trim();
     if (!conf || seen.has(conf) || !Number.isFinite(at) || /labtest|proof/i.test(String(row.guest_name ?? ''))
-      || exactHistoryKey(row.created_by) === 'navaai') continue;
+      || /\bnavaai\b/i.test(String(row.created_by ?? ''))) continue;
     seen.add(conf);
-    add(ids, String(row.companyid ?? row.organization_id ?? '').trim(), at);
-    add(names, nativePartyUseName(String(row.company ?? '')), at);
+    for (const [kind, field] of [['organization', 'organization_id'], ['agency', 'agency_id']] as const) {
+      const id = String(row[field] ?? '').trim();
+      if (!id) continue;
+      const dates = timelines[kind].get(id) ?? [];
+      dates.push(at);
+      timelines[kind].set(id, dates);
+    }
   }
-  for (const dates of [...ids.values(), ...names.values()]) dates.sort((a, b) => a - b);
-  const counts = (map: Map<string, number[]>, cutoff: number): Record<string, number> => Object.fromEntries(
-    Array.from(map).flatMap(([key, dates]) => {
-      let lo = 0, hi = dates.length;
-      while (lo < hi) {
-        const i = (lo + hi) >>> 1;
-        if (dates[i]! < cutoff) lo = i + 1;
-        else hi = i;
-      }
-      return lo ? [[key, lo]] : [];
-    }),
-  );
-  return (cutoff: number): NativePartyUse => ({ids: counts(ids, cutoff), names: counts(names, cutoff)});
+  return {
+    organization: Object.fromEntries([...timelines.organization].map(([id, dates]) => [id, dates.sort((a, b) => a - b)])),
+    agency: Object.fromEntries([...timelines.agency].map(([id, dates]) => [id, dates.sort((a, b) => a - b)])),
+  };
+}
+
+export function partyUseBefore(history: PartyUseHistory, cutoff: number): NativePartyUse {
+  const count = (dates: number[]) => {
+    let lo = 0, hi = dates.length;
+    while (lo < hi) {
+      const i = (lo + hi) >>> 1;
+      if (dates[i]! < cutoff) lo = i + 1;
+      else hi = i;
+    }
+    return lo;
+  };
+  return {
+    organization: Object.fromEntries(Object.entries(history.organization ?? {}).map(([key, dates]) => [key, count(dates)])),
+    agency: Object.fromEntries(Object.entries(history.agency ?? {}).map(([key, dates]) => [key, count(dates)])),
+  };
 }

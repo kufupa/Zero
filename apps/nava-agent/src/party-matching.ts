@@ -1,18 +1,4 @@
-import {nativePartyUseName, type NativePartyUse} from './organization-use.js';
-
-const aliases = [
-  ['MISA', 'Municipal Infrastructure Support Agent', 'Infrastructure System Agent'],
-  ['IEC', 'Independent Electoral Commission'],
-  ['IMERYS', 'Imerys Refractory Minerals SA (Pty) Ltd'],
-  ['NWU', 'North West University', 'North West University Potchefstroom'],
-  ['SITA', 'State Information Technology Agency', 'State Information Technology Agency - SITA'],
-  ['TFG', 'Foschini Retail Group', 'Foschini Retail Group (Pty) Ltd'],
-  ['SKA', 'Square Kilometre Array', 'Square Kilometre Array SKA'],
-  ['MTPA', 'Mpumalanga Tourism and Parks Agency'],
-  ['SAFCOL', 'South African Forestry Company', 'SAFCOL - Gov - Forestry'],
-  ['Western Province Caterers', 'Contract Catering Holdings', 'Contract Catering Holdings SA'],
-  ['Cogta', 'Department of Cogta', 'Dept of Cogta'],
-] as const;
+import type {NativePartyUse} from './organization-use.js';
 
 export const PARTY_STOPWORDS = new Set([
   'travel', 'travels', 'tours', 'tour', 'agency', 'agent', 'agents', 'company',
@@ -43,18 +29,11 @@ export function distinctivePartyTokens(value:string):string[] {
 
 export function partySearchQueries(name:string, kind:string):string[] {
   const normalized=normalizePartyName(name);
-  const group=kind==='organization' ? aliases.find(names=>names.some(item=>normalizePartyName(item)===normalized)) : undefined;
-  const out=[name, normalized, ...partyNameParts(name), ...(group ?? [])];
+  const out=[normalized, name, ...partyNameParts(name)];
   const acr=partyAcronym(name);
   if(kind==='organization' && acr.length>=3 && acr.length<=6 && name.trim().includes(' ')) out.push(acr.toUpperCase());
   const tokens = [...new Set(distinctivePartyTokens(name))].sort((a,b) => b.length-a.length);
   return [...new Set([...out, ...tokens.slice(0, 2)].filter(Boolean))];
-}
-
-function aliasPartyName(left:string,right:string,kind:string):boolean {
-  const a = normalizePartyName(left), b = normalizePartyName(right);
-  return kind === 'organization' && aliases.some(names =>
-    names.some(name => normalizePartyName(name) === a) && names.some(name => normalizePartyName(name) === b));
 }
 
 function allPartyTokens(value:string):string[] {
@@ -97,23 +76,11 @@ function acronymPartyName(left:string,right:string):boolean {
   return !!a && !!b && (acronym(a,b) || acronym(b,a));
 }
 
-// The directory abbreviates Department in otherwise exact organization names.
-const explicitName = (name: string, kind: string) => {
-  const normalized = normalizePartyName(name);
-  return kind === 'organization' ? normalized.replace(/\bdept\b/g, 'department') : normalized;
-};
+export const nativePartyKey = (name: string) => normalizePartyName(name).replace(/\s/g, '');
 
-function nativeProfileGroup(name: string, kind: string): string {
-  const key = explicitName(name, kind).replace(/\s/g, '');
-  // HMS has both a bare and a department-prefixed record for this same
-  // unqualified department. KZN Cogta is a separate profile family.
-  return kind === 'organization' && key === 'departmentofcogta' ? 'cogta' : key;
-}
-
-/** Exact/legal/alias/acronym party identity. Deliberately stricter than candidate scoring. */
-export function partyNameMatch(left:string,right:string,kind:string):boolean {
-  const a=explicitName(left,kind), b=explicitName(right,kind);
-  return !!a && (a===b || a.replace(/\s/g,'')===b.replace(/\s/g,'') || aliasPartyName(left,right,kind) || acronymPartyName(left,right));
+export function partyNameMatch(left:string,right:string,_kind:string):boolean {
+  const a=nativePartyKey(left), b=nativePartyKey(right);
+  return !!a && (a===b || acronymPartyName(left,right));
 }
 
 /** Deterministic fit for native candidates: exact/distinctive-token cover, with typo-tolerant token matching. */
@@ -135,10 +102,6 @@ export function partyCandidateScore(query:string,candidate:string,kind:string):n
   return Math.round(45*qCover+45*cPrecision+10*allCover);
 }
 
-function samePartyName(left:string,right:string,kind:string):boolean {
-  return partyNameMatch(left,right,kind);
-}
-
 export type LearnedSenderHit = { host: string; kind: 'agency' | 'organization'; name: string; nativeId: string | null; support: number };
 
 function senderDomain(value: unknown): string | undefined {
@@ -149,18 +112,6 @@ function senderDomain(value: unknown): string | undefined {
 
 function isLegacyHotelsHost(host: string | null | undefined): boolean {
   return !!host && /(?:^|\.)legacyhotels?\.(?:com|co\.za)$/.test(host);
-}
-
-function candidateMatchesLearned(candidate: Record<string, unknown>, learned: LearnedSenderHit): boolean {
-  if (learned.nativeId && String(candidate.nativeId ?? candidate.native_id ?? '') === learned.nativeId) return true;
-  const name = String(candidate.displayName ?? candidate.name ?? '');
-  if (normalizePartyName(name) === normalizePartyName(learned.name)) return true;
-  const learnedTokens = new Set(distinctivePartyTokens(learned.name));
-  return distinctivePartyTokens(name).some(token => learnedTokens.has(token));
-}
-
-function learnedCandidateHits(candidates: Array<Record<string, unknown>>, learned: LearnedSenderHit) {
-  return candidates.filter(candidate => candidateMatchesLearned(candidate, learned));
 }
 
 /** Prefer sender_host; else email/domain query. Skip freemail + owned-hotel hosts. */
@@ -272,123 +223,46 @@ export function explicitPartyQuery(query: string) {
 export async function searchPartyWithFallback(query: string, kind: string,
   search: (term: string) => Promise<Record<string, unknown>>,
   history: () => Promise<LearnedSenderHit | null>) {
-  const company = kind === 'organization' || kind === 'agency';
-  if (company && explicitPartyQuery(query)) return searchNamedParty(query, kind, search);
-  const learned = company ? await history() : null;
-  const preferred = learned && (!query || samePartyName(query, learned.name, kind)) ? learned : null;
-  const queries = query ? company ? partySearchQueries(query, kind) : [query] : [];
-  const terms = [...new Set([
-    ...(preferred ? [preferred.name] : []), ...queries,
-    ...(learned && !preferred ? [learned.name] : []),
-  ])];
-  const coverage = {possiblyTruncated: false};
-  let result: Record<string, unknown> = {outcome: 'no_match', candidates: [], coverage};
+  if (kind !== 'organization' && kind !== 'agency') return {result: await search(query), learned: null};
+  const requested = explicitPartyQuery(query);
+  const learned = requested ? null : await history();
+  const name = requested || learned?.name || '';
+  const terms = name ? partySearchQueries(name, kind) : query ? [query] : [];
+  let result: Record<string, unknown> = {outcome: 'no_match', candidates: [], coverage: {possiblyTruncated: false}};
   for (const term of terms) {
-    result = await search(term);
-    const candidates=Array.isArray(result.candidates)?result.candidates.filter(row=>row && typeof row==='object' && !Array.isArray(row)) as Array<Record<string,unknown>>:[];
-    const bestFit=candidates.reduce((best,candidate)=>Math.max(best,partyCandidateScore(query || term,String(candidate.displayName ?? candidate.name ?? ''),kind)),0);
-    const weakCompanyHit=company && candidates.length>0 && query && bestFit<82;
-    if (!weakCompanyHit && (result.outcome !== 'no_match' || candidates.length ||
-        !(typeof result.coverage === 'object' && result.coverage !== null &&
-          'possiblyTruncated' in result.coverage && result.coverage.possiblyTruncated === false))) {
-      return {result, learned: preferred ?? (learned?.name === term ? learned : null)};
-    }
+    const read = await search(term);
+    const candidates = Array.isArray(read.candidates) ? read.candidates.filter(
+      (row): row is Record<string, unknown> => !!row && typeof row === 'object' && !Array.isArray(row),
+    ) : [];
+    if (read.outcome !== 'matches' && read.outcome !== 'no_match') return {result: read, learned};
+    if (candidates.some(candidate => name && fitsNativeName(name, candidate))) return {result: read, learned};
+    if (candidates.length > 0 || !Array.isArray(result.candidates) || result.candidates.length === 0) result = read;
   }
   return {result, learned};
 }
 
-const partyCandidateName = (candidate: Record<string, unknown>) => String(candidate.displayName ?? candidate.name ?? '');
-const partyCandidateId = (candidate: Record<string, unknown>) => String(candidate.nativeId ?? candidate.native_id ?? '');
-
-type OrganizationUse = () => NativePartyUse | Promise<NativePartyUse>;
-
-async function searchNamedParty(query: string, kind: string, search: (term: string) => Promise<Record<string, unknown>>) {
-  const terms = partySearchQueries(query, kind);
-  let result: Record<string, unknown> = {outcome: 'no_match', candidates: [], coverage: {possiblyTruncated: false}};
-  let bestFit = 0;
-  for (const term of terms) {
-    const read = await search(term);
-    const candidates = Array.isArray(read.candidates) ? read.candidates.filter(row => row && typeof row === 'object' && !Array.isArray(row)) : [];
-    const fit = candidates.reduce((best, candidate) => Math.max(best, partyCandidateScore(query, partyCandidateName(candidate), kind)), 0);
-    if (fit >= 82 || (read.outcome !== 'no_match' && !candidates.length)) return {result: read, learned: null};
-    if (fit >= bestFit) { result = read; bestFit = fit; }
-  }
-  return {result, learned: null};
+const partyCandidateName = (candidate: Record<string, unknown>) => String(candidate.name ?? candidate.displayName ?? '');
+const partyCandidateId = (candidate: Record<string, unknown>) => String(candidate.nativeId ?? '').trim();
+function fitsNativeName(name: string, candidate: Record<string, unknown>): boolean {
+  const key = nativePartyKey(name);
+  return !!key && nativePartyKey(partyCandidateName(candidate)) === key;
 }
+
+type PartyUse = () => NativePartyUse | Promise<NativePartyUse>;
 
 export async function resolvePartySelection(kind: string, candidates: Array<Record<string, unknown>>, truncated: boolean,
-  learned: LearnedSenderHit | null, query: string, organizationUse?: OrganizationUse) {
-  const ok = ['organization', 'agency'].includes(kind) && !truncated;
-  if (!ok) return { selection: 'none' as const, ambiguity: 'Multiple or incomplete candidates require staff selection.' };
-  const requested = explicitPartyQuery(query);
-  if (requested) return resolveNamedParty(kind, candidates, requested, organizationUse);
-  if (candidates.length > 1 && learned) {
-    const hit = learnedCandidateHits(candidates, learned);
-    if (hit.length === 1) return { selection: hit[0]!, ambiguity: null as string | null };
-  }
-  if (learned && query && !samePartyName(query, learned.name, kind) && !learnedCandidateHits(candidates, learned).length) {
-    return { selection: 'none' as const, ambiguity: 'Sender history suggests a different party; staff selection is required.' };
-  }
+  learned: LearnedSenderHit | null, query: string, partyUse?: PartyUse) {
+  const none = (ambiguity: string) => ({selection: 'none' as const, ambiguity});
+  if ((kind !== 'organization' && kind !== 'agency') || truncated) return none('Incomplete lookup; staff selection required.');
+  const name = explicitPartyQuery(query) || learned?.name || '';
+  const exact = [...new Map(candidates.filter(candidate => partyCandidateId(candidate) && fitsNativeName(name, candidate))
+    .map(candidate => [partyCandidateId(candidate), candidate])).values()];
+  if (!exact.length) return none('No native party matches the requested name.');
+  if (exact.length === 1) return {selection: exact[0]!, ambiguity: null};
 
-  const nameOf=(candidate:Record<string, unknown>)=>String(candidate.displayName ?? candidate.name ?? '');
-  if (candidates.length === 1) {
-    const only=candidates[0]!;
-    const score=partyCandidateScore(query,nameOf(only),kind);
-    if (!query || score>=82 || learned && candidateMatchesLearned(only, learned)) return { selection: only, ambiguity: null as string | null };
-    return { selection: 'none' as const, ambiguity: 'Single candidate does not fit the sourced party; staff selection is required.' };
-  }
-
-  const groups=new Map<string,{key:string;candidates:Array<Record<string, unknown>>;score:number}>();
-  for (const candidate of candidates) {
-    const name=nameOf(candidate);
-    const key=normalizePartyName(name).replace(/\s/g,'');
-    const score=partyCandidateScore(query,name,kind);
-    const cur=groups.get(key) ?? {key,candidates:[],score:0};
-    cur.candidates.push(candidate); cur.score=Math.max(cur.score,score); groups.set(key,cur);
-  }
-  const ranked=[...groups.values()].sort((a,b)=>b.score-a.score);
-  const [best,next]=ranked;
-  if (best && best.score>=82 && best.score-(next?.score ?? 0)>=6) {
-    if (best.candidates.length===1) return { selection: best.candidates[0]!, ambiguity: null as string | null };
-    if (learned) {
-      const hit=learnedCandidateHits(best.candidates, learned);
-      if (hit.length===1) return { selection: hit[0]!, ambiguity: null as string | null };
-    }
-    return { selection: 'none' as const, ambiguity: 'Duplicate native records share the best party name; name may be used without an ID.' };
-  }
-  return { selection: 'none' as const, ambiguity: 'Multiple or incomplete candidates require staff selection.' };
-}
-
-async function resolveNamedParty(kind: string, candidates: Array<Record<string, unknown>>, requested: string,
-  organizationUse?: OrganizationUse) {
-  const groups = new Map<string, {candidates: Array<Record<string, unknown>>; score: number}>();
-  for (const candidate of candidates) {
-    const name = partyCandidateName(candidate);
-    const key = nativeProfileGroup(name, kind);
-    const score = partyCandidateScore(requested, name, kind)
-      + (explicitName(requested, kind) === explicitName(name, kind) ? 6 : 0);
-    const group = groups.get(key) ?? {candidates: [], score: 0};
-    group.candidates.push(candidate);
-    group.score = Math.max(group.score, score);
-    groups.set(key, group);
-  }
-  const [best, next] = [...groups.values()].sort((a, b) => b.score - a.score);
-  if (best && best.score >= 82 && best.score - (next?.score ?? 0) >= 6) {
-    if (best.candidates.length === 1) return {selection: best.candidates[0]!, ambiguity: null};
-    if (kind === 'organization' && organizationUse) {
-      const use = await organizationUse();
-      // Prefer per-ID evidence. If the harvest only has names, use counts only
-      // when each exact display spelling identifies one candidate.
-      const candidates = best.candidates;
-      const names = candidates.map(candidate => nativePartyUseName(partyCandidateName(candidate)));
-      const hasIds = candidates.some(candidate => Object.hasOwn(use.ids ?? {}, partyCandidateId(candidate)));
-      const ranked = candidates.map((selection, i) => ({selection, stays: hasIds
-        ? use.ids?.[partyCandidateId(selection)] ?? 0
-        : names.indexOf(names[i]!) === names.lastIndexOf(names[i]!) ? use.names?.[names[i]!] ?? 0 : 0
-      })).sort((a, b) => b.stays - a.stays);
-      if (ranked[0]!.stays > ranked[1]!.stays) return {selection: ranked[0]!.selection, ambiguity: null};
-    }
-    return {selection: 'none' as const, ambiguity: 'Duplicate native records share the best party name; name may be used without an ID.'};
-  }
-  return {selection: 'none' as const, ambiguity: 'No single native candidate fits the requested party.'};
+  const use = partyUse ? (await partyUse())[kind] : undefined;
+  const ranked = exact.map(selection => ({selection, stays: use?.[partyCandidateId(selection)] ?? 0}))
+    .sort((a, b) => b.stays - a.stays);
+  if (ranked[0]!.stays > ranked[1]!.stays) return {selection: ranked[0]!.selection, ambiguity: null};
+  return none('Duplicate native parties have no prior-stay winner; staff selection required.');
 }
