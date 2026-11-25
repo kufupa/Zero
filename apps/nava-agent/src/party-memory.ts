@@ -38,11 +38,17 @@ const keyLabels: Record<HistoryKey, string> = {
   ta1: 'this agency', guest_id: 'this guest profile',
 };
 
-function mergePolicyMemory(policy: PolicyRow[], fallback: MemorySuggestion[], property: string): MemorySuggestion[] {
+function mergePolicyMemory(policy: PolicyRow[], fallback: MemorySuggestion[], property: string, board?: string | null): MemorySuggestion[] {
   const byField = new Map<MemoryField, MemorySuggestion>();
+  const requestedBoard = normalizeMemoryBoard(board);
   for (const row of policy) {
     const field = HISTORY_FIELDS[row.field];
     if (!field || byField.has(field)) continue;
+    if (field === 'rate_plan' && requestedBoard) {
+      const partyBoard = policy.find(other => other.field === 'mealplan' && other.key_type === row.key_type && other.key === row.key);
+      const usualBoard = normalizeMemoryBoard(partyBoard?.value);
+      if (usualBoard && usualBoard !== requestedBoard) continue;
+    }
     const value = field === 'board' ? normalizeMemoryBoard(row.value)
       : property === 'HRCEN' && field === 'guarantee_type' ? normalizeGuaranteeCode(row.value)
         : property === 'HRCEN' && field === 'room_type' ? createRoomTypeCode(row.value) : row.value;
@@ -413,7 +419,7 @@ export function buildMemoryFromHistory(stays: HistoryStay[], cutoffMs: number, p
       && ((agencyId && row.party_kind === 'agency' && row.party_id === agencyId)
         || (organizationId && row.party_kind === 'organization' && row.party_id === organizationId))),
     asId(agencyId), asId(organizationId), board, propertyCode,
-    ), propertyCode);
+    ), propertyCode, board);
 }
 
 export async function lookupPartyMemory(
@@ -433,7 +439,7 @@ export async function lookupPartyMemory(
       WHERE property_code = ${args.propertyCode} ORDER BY priority` : [],
   ]);
   return mergePolicyMemory(observed.flatMap(row => (row.choices ?? []) as PolicyRow[]),
-    pickTop(rows as HitRow[], agencyId, organizationId, args.board, args.propertyCode), args.propertyCode);
+    pickTop(rows as HitRow[], agencyId, organizationId, args.board, args.propertyCode), args.propertyCode, args.board);
 }
 
 export async function recordSavedStayMemory(
