@@ -1140,10 +1140,18 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           beforeEvidence: { eventId: evidence.eventId, sha256: evidence.sha256 } });
       }
       if (callbackMode) assertApprovedAmendPrice(baseline, selected, input.approvedBeforeCallbackPrice, { requireAverage: false });
+      // Contact-only Saves never run Check Availability, but native re-render still
+      // POSTs hdr_getTaxRelatedValues after dispatch. Bind the verified stay's tax
+      // parameters here so onBlocked can classify that aborted read (availability
+      // may overwrite these after a reprice when dates/currency change).
+      const taxCurrency = baseline.values?.currency || baseline.data?.currency ||
+        baseline.values?.grandtotalcurr || baseline.data?.grandtotalcurr;
+      const taxMetadataReadValues = await nativeAmendTaxReadValues(state.frame, baseline, taxCurrency, bounded);
       preparedState = { frame: state.frame, state, baseline, save, childStageGate, roomStageGate, rateStageGate, guaranteeStageGate, partyStageGate,
         nativePartyBaseline: prepareOnly ? cloudAmendNativePartyBaseline(state, baseline) : null,
         savedRateDigest: savedRates?.digest ?? null, recoveryBaseline,
-        enableComposedStage: true, allowRealGuest: nativeReal };
+        enableComposedStage: true, allowRealGuest: nativeReal,
+        ...(taxMetadataReadValues ? { taxMetadataReadValues } : {}) };
       return preparedState;
     },
     stage: async (bounded, prepared, context) => {
