@@ -31,13 +31,13 @@ const constraintsSchema = { type:'object', additionalProperties:false, propertie
   bedTypes:{type:'array',minItems:1,items:string}, mealPlanBases:{type:'array',minItems:1,items:string},
   features:{type:'array',minItems:1,items:{type:'object',additionalProperties:false,properties:{name:string,value:string},required:['name','value']}},
 } };
-const roomSchema = {type:'object',additionalProperties:false,properties:{id:string,quantity:{type:'integer',minimum:1},adults:{type:'integer',minimum:1},children:{type:'integer',minimum:0},child_ages:{type:'array',items:{type:'integer',minimum:0,maximum:99}},required:constraintsSchema,preferred:constraintsSchema},required:['id','quantity','adults','children','child_ages']};
+const roomSchema = {type:'object',additionalProperties:false,properties:{id:string,quantity:{type:'integer',minimum:1},adults:{type:'integer',minimum:1},children:{type:'integer',minimum:0},child_ages:{type:'array',items:{type:'integer',minimum:0,maximum:99}},required:{...constraintsSchema,description:'Optional hard room/rate/bed/feature constraints; omit unless the request states them.'},preferred:{...constraintsSchema,description:'Optional soft preferences; omit unless stated.'}},required:['id','quantity','adults','children','child_ages']};
 const groupSchema = {type:'object',additionalProperties:false,properties:{group_id:string,arrival_date:{type:'string',format:'date'},departure_date:{type:'string',format:'date'},rooms:{type:'array',minItems:1,items:roomSchema}},required:['group_id','arrival_date','departure_date','rooms']};
 const partySchema={type:'object',additionalProperties:false,properties:{nativeId:string,name:string},required:['nativeId','name']};
 export const quoteSchema = {
   type:'object',additionalProperties:false,properties:{quote_id:string,party_name:string,property_code:string,groups:{type:'array',minItems:1,items:groupSchema},
-    rate_context:{type:'object',additionalProperties:false,properties:{organization:partySchema,bookingAgency:partySchema}},
-    search:{type:'object',additionalProperties:false,properties:{sales_strategy:string,include_restricted:{type:'boolean'},include_alternatives:{type:'boolean'}}},
+    rate_context:{type:'object',description:'Optional negotiated-rate parties; omit when no org/agency matched and quote BAR/public.',additionalProperties:false,properties:{organization:partySchema,bookingAgency:partySchema}},
+    search:{type:'object',description:'Optional; dates plus occupancy are enough to call.',additionalProperties:false,properties:{sales_strategy:string,include_restricted:{type:'boolean'},include_alternatives:{type:'boolean'}}},
     details:{type:'string',enum:['summary','full']},max_options_per_group:{type:'integer',minimum:1,maximum:200}},
   required:['quote_id','property_code','groups'],
 } satisfies {type:'object';properties:Record<string,unknown>;required:string[];additionalProperties:boolean};

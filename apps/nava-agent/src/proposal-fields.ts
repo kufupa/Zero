@@ -403,7 +403,7 @@ export function createRoomTypeCode(value: unknown): string | null {
   if (lux) return bed === null || bed === 'KNG' ? 'LUXKNG' : null;
   if (exec) return bed === null || bed === 'KNG' ? 'EXKNG' : null;
   if (deluxe && bed) return `DLX${bed}`;
-  if (std && bed) return ({TWN: 'STWN', KNG: 'SKNG', QN: 'STQN'} as const)[bed];
+  if ((std || /\bdouble\b/.test(text)) && bed) return ({TWN: 'STWN', KNG: 'SKNG', QN: 'STQN'} as const)[bed];
   return null;
 }
 
