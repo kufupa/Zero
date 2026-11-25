@@ -131,7 +131,8 @@ function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],
     if(requested && explicitPartyQuery(query) && (partyNameMatch(requested,query,kind) || (selected && partyNameMatch(requested,selected.name,kind)))) {
       if(selected) return {name:selected.name,nativeId:selected.nativeId};
     }
-    if(selected && (!requested || partyNameMatch(requested,selected.name,kind) || partyNameMatch(requested,query,kind) || !query)) addName(selected,true);
+    // A sender-only result may fill a blank, but it cannot replace a named party.
+    if(selected && (!requested || partyNameMatch(requested,selected.name,kind))) addName(selected,true);
     for(const candidate of native.candidates) {
       const fitsRequest=requested && (partyNameMatch(requested,candidate.name,kind) || partyCandidateScore(requested,candidate.name,kind)>=82);
       if(fitsRequest) addName(candidate,false);
