@@ -21,7 +21,7 @@ import {createTwin} from '../twin/index.js';
 import type {CaseCard} from '../types.js';
 import {rulerStamp, scoreCase, type CaseScore, type Scoreboard} from './score.js';
 import {applyGoldOverlay, loadReplayGold} from './gold-overlay.js';
-import {loadCaseCards, readOptionalJson, skillsPath, writeBoards, writeDecisionReceipt, type ReplayOptions} from './artifacts.js';
+import {excludeSelectedLabtest, loadCaseCards, readOptionalJson, skillsPath, writeBoards, writeDecisionReceipt, type ReplayOptions} from './artifacts.js';
 import {buildDecisionReceipt} from './decision-receipt.js';
 import {
   attemptedStateOf, evidenceDigestFromMail, flagsDigest, predictionCacheKey,
@@ -642,8 +642,9 @@ export async function runBench(options: SpeedReplayOptions) {
   const maxConcurrency = options.maxConcurrency ?? 120;
   const cacheDir = options.cacheDir ?? process.env.NAVA_BENCH_CACHE_DIR;
   if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 1)) throw new Error('Positive replay case limit required');
-  const corpus = await loadCaseCards(casesDir);
-  const cards = (options.caseIds ? await loadCaseCards(casesDir, options.caseIds) : corpus).slice(0, options.limit);
+  const filter = options.excludeLabtest ? excludeSelectedLabtest : (cards: CaseCard[]) => cards;
+  const corpus = filter(await loadCaseCards(casesDir));
+  const cards = (options.caseIds ? filter(await loadCaseCards(casesDir, options.caseIds)) : corpus).slice(0, options.limit);
   const threadSenders = new Map<string, {host: string; at: number}>();
   const threadMail = process.env.NAVA_BENCH_THREAD_MAIL;
   const pairsFile = join(worldDir, 'pairs.jsonl');

@@ -17,7 +17,8 @@ env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS -u TEST_DATABASE_URL \
 
 Both modes accept `--cases-dir`, `--gold-file`, `--world-dir`, `--skills-dir`,
 `--out`, `--model`, `--reasoning`, `--concurrency`, `--case-ids id,id`, and
-`--property`. Custom sets need a gold file. Named sets use the v5 overlay by
+`--property`. Use `--exclude-labtest` for production-mail scoring; it filters only
+the selected message. Custom sets need a gold file. Named sets use the v5 overlay by
 default. Rescore preserves recorded inference provenance and cannot repair
 what the model saw in a historical run.
 

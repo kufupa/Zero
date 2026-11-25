@@ -2,7 +2,7 @@ import {mkdir, writeFile} from 'node:fs/promises';
 import {basename, join, resolve} from 'node:path';
 import {pinSkills} from '../../tools/skills/index.js';
 import {applyGoldOverlay, loadReplayGold} from './gold-overlay.js';
-import {loadCaseCards, mapPool, readOptionalJson, skillsPath, writeBoards, type ReplayOptions} from './artifacts.js';
+import {excludeSelectedLabtest, loadCaseCards, mapPool, readOptionalJson, skillsPath, writeBoards, type ReplayOptions} from './artifacts.js';
 import {
   attemptedStateOf,
   preservePredictionSha,
@@ -79,7 +79,8 @@ export async function rescoreRun(options: ReplayOptions & {runDir: string}) {
     world_dir: recorded('world directory', prior.world_dir, worldDir),
     skills_digest: recorded('skills digest', prior.skills_digest ?? prior.skill_sha256, digest),
   });
-  const cards = await loadCaseCards(casesDir, options.caseIds ?? prior.case_ids);
+  const roster = await loadCaseCards(casesDir, options.caseIds ?? prior.case_ids);
+  const cards = options.excludeLabtest ? excludeSelectedLabtest(roster) : roster;
   const sourceBoard = await readOptionalJson(join(runDir, 'scoreboard.json'));
   await mkdir(outDir, {recursive: true});
   const priorShas = prior.root_prediction_shas ?? {};
@@ -140,12 +141,7 @@ export async function rescoreRun(options: ReplayOptions & {runDir: string}) {
     if (score.attempted_state === 'runtime_error') score.email_outcome = 'runtime_error';
     else if (score.attempted_state === 'missing_prediction') score.email_outcome = 'missing_prediction';
     else if (score.attempted_state === 'not_evaluable') score.email_outcome = 'not_evaluable';
-    else if (score.twin_uncovered.length > 0 && modelFields.length === 0) score.email_outcome = 'unobservable';
-    else {
-      const anyHarm = score.harm_flags ? Object.values(score.harm_flags).some(Boolean) : false;
-      const modelOk = modelFields.every(field => field.result === 'hit' || field.route_independent_hit === true);
-      score.email_outcome = score.route_ok && score.disposition_ok && !anyHarm && modelOk ? 'success' : 'failure';
-    }
+    else if (!score.safety_flags.wrong_target && score.twin_uncovered.length > 0 && modelFields.length === 0) score.email_outcome = 'unobservable';
     return score;
   });
   // Keep every requested roster slot — never drop missing/runtime from primary n.

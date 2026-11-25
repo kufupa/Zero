@@ -1541,8 +1541,9 @@ export function scoreCase(input: {
   const email_outcome: CaseScore['email_outcome'] = card.not_evaluable ? 'not_evaluable'
     : input.run_error ? 'runtime_error'
       : proposal == null ? 'missing_prediction'
-        : twin_uncovered.length > 0 && modelFields.length === 0 ? 'unobservable'
-          : routeOk && dispositionOk && unitsOk && !anyHarm && !unboundWriteTarget && modelOk ? 'success' : 'failure';
+        : safety_flags.wrong_target ? 'failure'
+          : twin_uncovered.length > 0 && modelFields.length === 0 ? 'unobservable'
+            : routeOk && dispositionOk && unitsOk && !anyHarm && !unboundWriteTarget && modelOk ? 'success' : 'failure';
   const field_counts = {right: 0, blank: 0, wrong: 0};
   for (const field of modelFields) {
     if (field.result === 'hit' || field.route_independent_hit === true && field.result === 'blocked_by_route') field_counts.right += 1;

@@ -14,6 +14,7 @@ const {values, positionals} = parseArgs({
     'world-dir': {type: 'string'},
     'skills-dir': {type: 'string'},
     'case-ids': {type: 'string'},
+    'exclude-labtest': {type: 'boolean'},
     out: {type: 'string'},
     model: {type: 'string'},
     reasoning: {type: 'string'},
@@ -30,7 +31,7 @@ const {values, positionals} = parseArgs({
   },
 });
 if (values.help) {
-  console.log('Usage: bench/cli.ts run | rescore <run-dir> [--mode predict|grade|run] [--cases-dir dir] [--gold-file path] [--world-dir dir] [--skills-dir dir] [--out dir] [--model slug] [--reasoning effort] [--concurrency n] [--max-concurrency n] [--cache-dir dir] [--baseline-dir dir] [--case-ids id,id] [--property HRCEN]');
+  console.log('Usage: bench/cli.ts run | rescore <run-dir> [--mode predict|grade|run] [--cases-dir dir] [--gold-file path] [--world-dir dir] [--skills-dir dir] [--out dir] [--model slug] [--reasoning effort] [--concurrency n] [--max-concurrency n] [--cache-dir dir] [--baseline-dir dir] [--case-ids id,id] [--exclude-labtest] [--property HRCEN]');
 } else {
   const gold = values.gold;
   if (gold !== undefined && gold !== 'v4' && gold !== 'v5') throw new Error('--gold must be v4 or v5');
@@ -51,6 +52,7 @@ if (values.help) {
     baselineDir: values['baseline-dir'],
     limit: values.limit !== undefined ? Number(values.limit) : resolved?.limit,
     caseIds: values['case-ids']?.split(',').map(id => id.trim()).filter(Boolean),
+    excludeLabtest: values['exclude-labtest'],
     mode: mode as SpeedReplayOptions['mode'],
   };
   const runDir = positionals[0] === 'rescore' ? positionals[1] : positionals[0];

@@ -18,6 +18,7 @@ export type ReplayOptions = {
   limit?: number;
   outDir?: string;
   caseIds?: string[];
+  excludeLabtest?: boolean;
 };
 
 export function skillsPath(path?: string) {
@@ -48,6 +49,11 @@ export async function loadCaseCards(casesDir: string, caseIds?: string[]) {
   }
   if (requested?.size) throw new Error(`Case fixture missing: ${[...requested].join(', ')}`);
   return cards;
+}
+
+/** Only selected mail identifies a Labtest fixture; unrelated thread context does not. */
+export function excludeSelectedLabtest(cards: CaseCard[]): CaseCard[] {
+  return cards.filter(card => !/labtest/i.test(JSON.stringify(card.selected_email ?? null)));
 }
 
 export async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T) => Promise<R>): Promise<R[]> {
