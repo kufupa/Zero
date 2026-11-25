@@ -106,7 +106,7 @@ const quoteSchema=object({property_code:S,arrival_date:S,departure_date:S,rooms:
 export const tools=[
   {type:'custom' as const,name:'skill_read',description:'Read a pinned skill or its relative Markdown reference.',input_schema:object({skill_name:{type:'string',enum:['triage','quote','create','amend','cancel','filing']},path:S},['skill_name'])},
   {type:'custom' as const,name:'mail_read_thread',description:'Read this thread and its supplied messages.',input_schema:object({},[])},
-  {type:'custom' as const,name:'hms_quote',description:'Read native HMS availability and prices; never book.',input_schema:quoteSchema},
+  {type:'custom' as const,name:'hms_quote',description:'Read native HMS availability and prices; never book. Dates plus occupancy suffice: search, rate_context and room required/preferred lists are all optional; an unmatched org/agency still gets BAR/public rates.',input_schema:quoteSchema},
   {type:'custom' as const,name:'proposal_publish',description:'Persist proposal for staff review.',input_schema:proposalSchema},
   {type:'custom' as const,name:'reply_draft',description:'Save draft text; never send.',input_schema:object({proposal_id:S,text:S},['proposal_id','text'])},
 ];

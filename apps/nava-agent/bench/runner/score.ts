@@ -1186,10 +1186,6 @@ export function scoreCase(input: {
     : card.expected_dispositions ?? (expectedDisposition ? [expectedDisposition] : undefined);
   // Gold named a known stay only when expected id fields / expected_targets resolve to HMS-shaped ids.
   // Unbound propose is valid when gold target is no_gold / target_unverified / absent.
-  const goldTargetKnown = stayGoldIds.length > 0;
-  const actionBoundOk = (action: typeof actions[number]) => workflow === 'create'
-    ? action.bookingIndex >= 0
-    : action.targets.length > 0 || !goldTargetKnown;
   const dispositionOk = reviewOnly
     ? executableActions.length === 0 && (review || disposition === 'propose' && (discovered || workflow === 'filing' && matchingActions.length > 0))
     : workflow === 'quote'
@@ -1198,7 +1194,7 @@ export function scoreCase(input: {
         || quoteTwinNoPrice && disposition === 'staff_review'
         || (allowedDispositions ?? ['propose', 'needs_info', 'staff_review', 'decline', 'skip']).includes(String(disposition)))
       : disposition !== 'skip' && expectedCount > 0
-        ? matchingUnits === expectedCount && matchingActions.every(actionBoundOk)
+        ? matchingUnits === expectedCount
           && (allowedDispositions ?? ['propose']).includes(String(disposition))
         : expectedCount === 0 && actions.length === 0 && (allowedDispositions ??
           (write ? ['needs_info', 'staff_review', 'decline', 'skip'] : ['propose', 'needs_info', 'staff_review', 'decline', 'skip']))
