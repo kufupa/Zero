@@ -480,7 +480,8 @@ async function runCase(card: CaseCard, scoreCard: CaseCard, options: {
 }): Promise<CaseScore> {
   const {mail, skillContext, tokens, profile, started, directEvidence} = options;
   const promptMail = mailPrompt(mail);
-  const twin = createTwin(card, {worldDir: options.worldDir, property: mail.property_code, threadSenders: options.threadSenders});
+  const twin = createTwin(card, {worldDir: options.worldDir, property: mail.property_code, threadSenders: options.threadSenders,
+    organizationUse: options.history.organizationUse});
   // Same selected-mail host resolver as live Turn-1 / publish; history stays only (no live DB).
   const memoryLookup = buildMemoryFromHistory(historyStaysForMemory(twin.world), twin.world.cutoff, options.history.forWorld(twin.world));
   const senderKeys = resolveSelectedSenderKeys(mail);

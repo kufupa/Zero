@@ -8,6 +8,7 @@ import {
   type LearnedSenderHit,
 } from '../../src/party-matching.js';
 import {isoDate, observeStays} from './backdate.js';
+import type {NativePartyUse} from '../../src/organization-use.js';
 import {
   completeNoMatch, queryDigest, unobservedResult, observedResult, type Scope,
 } from './read-result.js';
@@ -221,7 +222,8 @@ function partyRecords(world: TwinWorld, kind: string): Array<Record<string, unkn
  * Prod hms_search_parties returns native HMS candidates only (nativeId/displayName/…).
  * Twin mirrors prod: sequential partySearchQueries, break on first hit (no OR + 25-cap).
  */
-async function searchParties(world: TwinWorld, input: Record<string, unknown>, card: CaseCard): Promise<TwinEnvelope> {
+async function searchParties(world: TwinWorld, input: Record<string, unknown>, card: CaseCard,
+  organizationUse?: () => NativePartyUse): Promise<TwinEnvelope> {
   const kind = String(input.kind ?? 'guest');
   const field = String(input.field ?? 'last_name');
   const rawQuery = String(input.query ?? '').trim();
@@ -271,7 +273,7 @@ async function searchParties(world: TwinWorld, input: Record<string, unknown>, c
     return {outcome: batch.length ? 'matches' : 'no_match', criteria: {query: term},
       candidates: batch.slice(0, 25), coverage: {possiblyTruncated: batch.length > 25, source: 'twin'}};
   }, async () => host && (kind === 'agency' || kind === 'organization') ? twinLearnedSender(world, host, kind) : null);
-  const resolved = resolvePartySelection(kind, rows(result.candidates), object(result.coverage).possiblyTruncated !== false, learned, rawQuery);
+  const resolved = await resolvePartySelection(kind, rows(result.candidates), object(result.coverage).possiblyTruncated !== false, learned, rawQuery, organizationUse);
   return ok({native: result, ...resolved, ...(learned ? {sender_history: learned} : {})});
 }
 
@@ -483,7 +485,7 @@ function searchReservations(stays: Stays, world: TwinWorld, input: Record<string
   }, digest);
 }
 
-export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
+export function createTwinDispatch(world: TwinWorld, card: CaseCard, organizationUse?: () => NativePartyUse) {
   let stays: Stays | undefined;
   return async function dispatch(name: string, input: unknown): Promise<TwinEnvelope> {
     const body = object(input);
@@ -506,7 +508,7 @@ export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
         return ok({property_code: world.propertyCode, sections});
       }
       case 'hms_search_parties':
-        return searchParties(world, body, card);
+        return searchParties(world, body, card, organizationUse);
       case 'hms_quote':
         return quoteFromWorld(world, body);
       case 'save':

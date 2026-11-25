@@ -4,6 +4,7 @@ import {join} from 'node:path';
 import {canonicalPolicyValue, eligiblePolicyRow, exactHistoryKey, HISTORY_FIELDS, historyFieldAllowed, historyRowKey, indexHistoryPolicy,
   policyKeys, policyValue, type PolicyKeys, type PolicyRow} from '../../src/history-policy.js';
 import {anchorCaptures, createdFieldValue, parseCreatedOn, type TwinWorld} from '../twin/world.js';
+import {indexOrganizationUse} from '../../src/organization-use.js';
 
 type NativeField = PolicyRow['field'];
 type Row = Record<string, unknown>;
@@ -46,7 +47,7 @@ export function loadReplayHistoryInputs() {
     },
   ]));
   const byProperty = new Map<string, ReturnType<typeof indexObservations>>();
-  return {digest, forWorld(world: TwinWorld) {
+  return {digest, organizationUse: historyRows ? indexOrganizationUse(historyRows) : undefined, forWorld(world: TwinWorld) {
     const property = world.propertyCode;
     const month = new Date(world.cutoff).toISOString().slice(0, 7);
     const gated = monthly.get(month);

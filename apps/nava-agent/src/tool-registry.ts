@@ -14,7 +14,7 @@ import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource,
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, lookupExactStay, lookupFilingStay, targetLookup, targetSelection } from './stay-target.js';
 import { mailPrompt } from './mail-prompt.js';
-import { normalizePartyName, partyCandidateScore, partyNameMatch, resolveSelectedSenderKeys } from './party-matching.js';
+import { normalizePartyName, partyCandidateScore, explicitPartyQuery, partyNameMatch, resolveSelectedSenderKeys } from './party-matching.js';
 import { projectStoredRequestTimeContext, type StoredRequestTimeContext } from './request-time-context.js';
 import { isHmsConfirmation } from './reservation-reference.js';
 
@@ -128,7 +128,11 @@ function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],
     const {native,selection}=read.data.response.data;
     const query=read.data.input.query ?? '';
     const selected=selection==='none' ? null : native.candidates.find(candidate=>candidate.nativeId===selection.nativeId) ?? null;
-    if(selected && (!requested || partyNameMatch(requested,selected.name,kind) || partyNameMatch(requested,query,kind) || !query)) addName(selected,true);
+    if(requested && explicitPartyQuery(query) && (partyNameMatch(requested,query,kind) || (selected && partyNameMatch(requested,selected.name,kind)))) {
+      if(selected) return {name:selected.name,nativeId:selected.nativeId};
+    }
+    // A sender-only result may fill a blank, but it cannot replace a named party.
+    if(selected && (!requested || partyNameMatch(requested,selected.name,kind))) addName(selected,true);
     for(const candidate of native.candidates) {
       const fitsRequest=requested && (partyNameMatch(requested,candidate.name,kind) || partyCandidateScore(requested,candidate.name,kind)>=82);
       if(fitsRequest) addName(candidate,false);
@@ -151,7 +155,7 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
       if(!choice) continue;
       fields[nameKey]=choice.name;
       if(choice.nativeId!=null) fields[idKey]=choice.nativeId;
-      else if(!(idKey in fields)) fields[idKey]=null;
+      else fields[idKey]=null;
       for(const [suffix,label] of [['id',kind==='agency'?'Booking agency ID':'Company ID'],['name',kind==='agency'?'Booking agency':'Company']] as const) {
         if(suffix==='id' && !choice.nativeId) continue;
         const path=`${root}/${kind}_${suffix}`;
