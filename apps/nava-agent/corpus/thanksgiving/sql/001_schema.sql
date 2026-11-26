@@ -106,6 +106,16 @@ CREATE TABLE IF NOT EXISTS thanksgiving.hms_reservation (
   guest_name text,
   company text,
   travel_agency_1 text,
+  email_address text,
+  caller text,
+  billing_reference text,
+  reservation_note text,
+  rate_plan text,
+  room_type text,
+  meal_plan text,
+  adults integer,
+  children integer,
+  is_labtest boolean,
   evidence_kind text,
   capture_completeness text,
   observed_at timestamptz,
@@ -116,6 +126,17 @@ CREATE TABLE IF NOT EXISTS thanksgiving.hms_reservation (
   loaded_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (property_code, confirmation_key)
 );
+
+ALTER TABLE thanksgiving.hms_reservation ADD COLUMN IF NOT EXISTS email_address text;
+ALTER TABLE thanksgiving.hms_reservation ADD COLUMN IF NOT EXISTS caller text;
+ALTER TABLE thanksgiving.hms_reservation ADD COLUMN IF NOT EXISTS billing_reference text;
+ALTER TABLE thanksgiving.hms_reservation ADD COLUMN IF NOT EXISTS reservation_note text;
+ALTER TABLE thanksgiving.hms_reservation ADD COLUMN IF NOT EXISTS rate_plan text;
+ALTER TABLE thanksgiving.hms_reservation ADD COLUMN IF NOT EXISTS room_type text;
+ALTER TABLE thanksgiving.hms_reservation ADD COLUMN IF NOT EXISTS meal_plan text;
+ALTER TABLE thanksgiving.hms_reservation ADD COLUMN IF NOT EXISTS adults integer;
+ALTER TABLE thanksgiving.hms_reservation ADD COLUMN IF NOT EXISTS children integer;
+ALTER TABLE thanksgiving.hms_reservation ADD COLUMN IF NOT EXISTS is_labtest boolean;
 
 CREATE INDEX IF NOT EXISTS thanksgiving_hms_reservation_key_idx
   ON thanksgiving.hms_reservation (confirmation_key) WHERE is_active;

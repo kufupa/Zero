@@ -31,6 +31,114 @@ WHERE tm.message_id = domain_matches.message_id;
 
 UPDATE thanksgiving.message tm
 SET is_cut = true,
+    cut_reason = 'system_notice:mailer_daemon',
+    cut_updated_at = now()
+FROM public.message pm
+WHERE pm.id = tm.message_id
+  AND NOT tm.is_cut
+  AND tm.direction = 'inbound'
+  AND lower(btrim(COALESCE(pm.from_address, ''))) LIKE 'mailer-daemon@%';
+
+UPDATE thanksgiving.message tm
+SET is_cut = true,
+    cut_reason = 'system_notice:fortimail',
+    cut_updated_at = now()
+FROM public.message pm
+WHERE pm.id = tm.message_id
+  AND NOT tm.is_cut
+  AND tm.direction = 'inbound'
+  AND COALESCE(tm.sender_domain, '') ~* '^fortimail-[a-z0-9-]+\.[a-z0-9.-]+$'
+  AND COALESCE(pm.subject, '') ~* '^quarantine[[:space:]]+summary([^0-9A-Za-z_]|$)';
+
+UPDATE thanksgiving.message tm
+SET is_cut = true,
+    cut_reason = 'system_notice:google_calendar',
+    cut_updated_at = now()
+FROM public.message pm
+WHERE pm.id = tm.message_id
+  AND NOT tm.is_cut
+  AND tm.direction = 'inbound'
+  AND lower(btrim(COALESCE(pm.from_address, ''))) = 'calendar-notification@google.com'
+  AND COALESCE(pm.subject, '') ~* '^(Invitation:|Declined:|Canceled event:)';
+
+UPDATE thanksgiving.message tm
+SET is_cut = true,
+    cut_reason = 'system_notice:nedbank_epay',
+    cut_updated_at = now()
+FROM public.message pm
+WHERE pm.id = tm.message_id
+  AND NOT tm.is_cut
+  AND tm.direction = 'inbound'
+  AND lower(btrim(COALESCE(pm.from_address, ''))) = 'epay-noreply@nedbank.co.za'
+  AND COALESCE(pm.subject, '') ~* '^order[[:space:]]+confirmation[[:space:]]+from[[:space:]]+nedbank([^0-9A-Za-z_]|$)'
+  AND tm.attachment_count = 0;
+
+WITH line_rows AS (
+  SELECT
+    tm.message_id,
+    btrim(lines.line) AS line,
+    row_number() OVER (PARTITION BY tm.message_id ORDER BY lines.ordinality) AS line_no
+  FROM thanksgiving.message tm
+  JOIN public.message pm
+    ON pm.id = tm.message_id
+  CROSS JOIN LATERAL regexp_split_to_table(
+    replace(COALESCE(pm.text_body, ''), E'\r\n', E'\n'),
+    E'\n'
+  ) WITH ORDINALITY AS lines(line, ordinality)
+  WHERE NOT tm.is_cut
+    AND tm.direction = 'inbound'
+    AND (tm.sender_domain = 'legacyhotels.co.za' OR tm.sender_domain LIKE '%.legacyhotels.co.za')
+    AND COALESCE(pm.subject, '') ~* '^pre[ -]stay[[:space:]]*:[[:space:]]*property([^0-9A-Za-z_]|$)'
+    AND tm.attachment_count = 0
+    AND btrim(lines.line) <> ''
+), validated_prestay AS (
+  SELECT message_id
+  FROM line_rows
+  GROUP BY message_id
+  HAVING count(*) >= 6
+     AND bool_and(
+       CASE
+         WHEN line_no = 1 THEN true
+         WHEN line_no = 2 THEN line ~* '^Arrival[[:space:]]*:[[:space:]]*[0-9]'
+         WHEN line_no = 3 THEN line ~* '^Departure[[:space:]]*:[[:space:]]*[0-9]'
+         WHEN line_no = 4 THEN line ~* '^Room Type[[:space:]]*:[[:space:]]*[A-Za-z0-9_]'
+         WHEN line_no = 5 THEN line ~* '^Confirmation No[[:space:]]*:[[:space:]]*[A-Za-z0-9_]'
+         ELSE line ~ '^[^>]*[[:space:]]*-->[[:space:]]*.*$'
+           AND (
+             lower(btrim(substring(line from '^([^>]*)[[:space:]]*-->'))) IN (
+               'address', 'postal code', 'city', 'country', 'nationality', 'passport',
+               'date of birth', 'mobile', 'email', 'arrival time', 'transfer',
+               'lifestyle member', 'email marketing opt-in'
+             )
+             OR btrim(substring(line from '-->[[:space:]]*(.*)$')) = ''
+           )
+       END
+     )
+)
+UPDATE thanksgiving.message tm
+SET is_cut = true,
+    cut_reason = 'owner_prestay_form_only',
+    cut_updated_at = now()
+FROM validated_prestay vp
+WHERE tm.message_id = vp.message_id
+  AND NOT tm.is_cut;
+
+UPDATE thanksgiving.message tm
+SET is_cut = true,
+    cut_reason = 'corpus_guest_feedback_digest',
+    cut_updated_at = now()
+FROM public.message pm
+WHERE pm.id = tm.message_id
+  AND NOT tm.is_cut
+  AND tm.direction = 'inbound'
+  AND (tm.sender_domain = 'grfeedback-b.com' OR tm.sender_domain LIKE '%.grfeedback-b.com')
+  AND (
+    COALESCE(pm.subject, '') ~* '(^|[^0-9A-Za-z_])(daily|weekly|monthly)[[:space:]]+summary[[:space:]]+for'
+    OR COALESCE(pm.subject, '') ~* '^the centurion hotel([^0-9A-Za-z_]|$)'
+  );
+
+UPDATE thanksgiving.message tm
+SET is_cut = true,
     cut_reason = 'hotel_self_prestay_confirmation',
     cut_updated_at = now()
 FROM public.message pm
@@ -82,7 +190,7 @@ WITH ranked_attachment_duplicates AS (
   SELECT
     attachment_id,
     row_number() OVER (
-      PARTITION BY sha256
+      PARTITION BY message_id, sha256
       ORDER BY COALESCE(attachment_created_at, timestamp 'epoch'), attachment_id
     ) AS duplicate_rank
   FROM thanksgiving.attachment

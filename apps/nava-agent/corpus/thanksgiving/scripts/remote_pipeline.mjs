@@ -13,10 +13,11 @@ const execFileAsync = promisify(execFile);
 
 const INPUT_PATH = '/tmp/thanksgiving-p0p3-input.b64';
 const OUTPUT_PATH = '/tmp/thanksgiving-p0p3-output.b64';
-const BODY_KEY_RE = /(?<![0-9])(\d{8,10}-\d)(?![0-9])/g;
-const SELF_MAIL_KEY_RE = /confirmation\s+no\s*:?\s*(\d{8,10}-\d)/gi;
+const BODY_KEY_RE = /(?<![0-9])(\d{6,12}-\d{1,2})(?![0-9])/g;
+const CONFIRMATION_KEY_SHAPE_RE = /^\d{6,12}-\d{1,2}$/;
+const SELF_MAIL_KEY_RE = /confirmation\s+no\s*:?\s*(\d{6,12}-\d{1,2})/gi;
 const SELF_MAIL_SUBJECT_RE = /^pre[ -]stay([^0-9A-Za-z]|$)/i;
-const CONFIRMATION_FILE_RE = /^hrcen_confirmation_letter_(\d{8,10}-\d)\.pdf$/i;
+const CONFIRMATION_FILE_RE = /^hrcen_confirmation_letter_(\d{6,12}-\d{1,2})\.pdf$/i;
 
 
 
@@ -123,7 +124,7 @@ function domainMatches(host, domain) {
 }
 
 function bodyTextParts(row) {
-  return [row.text_body, row.html_body].filter((part) => typeof part === 'string' && part.length > 0);
+  return [row.subject, row.text_body, row.html_body].filter((part) => typeof part === 'string' && part.length > 0);
 }
 
 function exactBodyHash(row) {
@@ -262,7 +263,7 @@ async function main() {
       pdf_key_candidates: 0,
     };
     const addKey = (row, confirmationKey, source, confidence) => {
-      if (!/^\d{8,10}-\d$/.test(confirmationKey)) return;
+      if (!CONFIRMATION_KEY_SHAPE_RE.test(confirmationKey)) return;
       const id = `${row.id}\0${confirmationKey}\0${source}`;
       if (!keyMap.has(id)) {
         keyMap.set(id, {
@@ -293,7 +294,7 @@ async function main() {
       const hashUpdates = [];
       for (const row of rows) {
         scan.messages_scanned += 1;
-        scan.body_bytes_scanned += (row.text_body?.length || 0) + (row.html_body?.length || 0);
+        scan.body_bytes_scanned += (row.subject?.length || 0) + (row.text_body?.length || 0) + (row.html_body?.length || 0);
         const bodyHash = exactBodyHash(row);
         if (bodyHash) scan.messages_hashed += 1;
         hashUpdates.push({ message_id: row.id, body_sha256: bodyHash });
@@ -319,7 +320,7 @@ async function main() {
       FROM thanksgiving.attachment a
       JOIN thanksgiving.message m ON m.message_id = a.message_id
       WHERE m.direction = 'outbound'
-        AND a.filename ~* '^hrcen_confirmation_letter_[0-9]{8,10}-[0-9]\.pdf$'
+        AND a.filename ~* '^hrcen_confirmation_letter_[0-9]{6,12}-[0-9]{1,2}\.pdf$'
     `;
     for (const row of filenameRows) {
       const match = CONFIRMATION_FILE_RE.exec(row.filename || '');
@@ -353,21 +354,21 @@ async function main() {
             a.sha256,
             a.size_bytes,
             row_number() OVER (
-              PARTITION BY NULLIF(COALESCE(a.sha256, ''), '')
+              PARTITION BY a.message_id, COALESCE(NULLIF(a.sha256, ''), a.attachment_id)
               ORDER BY a.attachment_id
             ) AS sha_rank
           FROM thanksgiving.attachment a
           JOIN thanksgiving.message m ON m.message_id = a.message_id
           WHERE m.direction = 'outbound'
             AND a.filename ILIKE '%confirmation%'
-            AND a.filename !~* '^hrcen_confirmation_letter_[0-9]{8,10}-[0-9]\.pdf$'
+            AND a.filename !~* '^hrcen_confirmation_letter_[0-9]{6,12}-[0-9]{1,2}\.pdf$'
             AND (a.mime_type ILIKE '%pdf%' OR a.filename ILIKE '%.pdf')
             AND COALESCE(a.size_bytes, 0) <= 5242880
             AND NOT a.is_cut
         )
         SELECT attachment_id, id, thread_id, filename, s3_key, sha256, size_bytes
         FROM ranked
-        WHERE NULLIF(COALESCE(sha256, ''), '') IS NULL OR sha_rank = 1
+        WHERE sha_rank = 1
         ORDER BY attachment_id
       `;
       pdfStats.candidates = pdfCandidates.length;
@@ -379,7 +380,6 @@ async function main() {
         let nextIndex = 0;
         const workerCount = 4;
         const maxBytes = 5 * 1024 * 1024;
-        const pdfKeysBySha = new Map();
         const processPdf = async (row) => {
           const tmpPath = `/tmp/thanksgiving-p0p3-${row.attachment_id.replace(/[^A-Za-z0-9_.-]/g, '_')}.pdf`;
           try {
@@ -403,7 +403,6 @@ async function main() {
               pdfStats.no_key += 1;
             } else {
               pdfStats.rows_with_keys += 1;
-              if (row.sha256) pdfKeysBySha.set(row.sha256, keys);
               for (const key of keys) {
                 const before = keyMap.size;
                 addKey(row, key, 'pdf_text', 0.85);
@@ -430,31 +429,29 @@ async function main() {
             await processPdf(pdfCandidates[index]);
           }
         }));
-        if (pdfKeysBySha.size) {
-          const duplicateRows = await sql`
-            SELECT a.attachment_id, a.message_id AS id, m.thread_id, a.sha256
-            FROM thanksgiving.attachment a
-            JOIN thanksgiving.message m ON m.message_id = a.message_id
-            WHERE m.direction = 'outbound'
-              AND a.filename ILIKE '%confirmation%'
-              AND a.filename !~* '^hrcen_confirmation_letter_[0-9]{8,10}-[0-9]\.pdf$'
-              AND (a.mime_type ILIKE '%pdf%' OR a.filename ILIKE '%.pdf')
-          `;
-          pdfStats.propagated_key_rows = 0;
-          for (const row of duplicateRows) {
-            const keys = pdfKeysBySha.get(row.sha256);
-            if (!keys) continue;
-            for (const key of keys) {
-              const before = keyMap.size;
-              addKey(row, key, 'pdf_text', 0.85);
-              if (keyMap.size > before) pdfStats.propagated_key_rows += 1;
-            }
-          }
-        }
       }
     }
 
-    const confirmationRows = [...keyMap.values()];
+    const allConfirmationRows = [...keyMap.values()];
+    const donorRows = await sql`
+      SELECT message_id, is_cut, cut_reason
+      FROM thanksgiving.message
+    `;
+    const donorByMessage = new Map(donorRows.map((row) => [row.message_id, row]));
+    const selfPrestayCutReasons = new Set(['hotel_self_prestay_confirmation', 'owner_prestay_form_only']);
+    const donatesP3 = (row) => {
+      const donor = donorByMessage.get(row.message_id);
+      return Boolean(donor && (!donor.is_cut || selfPrestayCutReasons.has(donor.cut_reason)));
+    };
+    const donorRowsFiltered = allConfirmationRows.filter(donatesP3);
+    let validHmsKeys;
+    if (input.hmsRows?.length) {
+      validHmsKeys = new Set(input.hmsRows.map((values) => values[0]));
+    } else {
+      const hmsKeyRows = await sql`SELECT confirmation_key FROM thanksgiving.hms_reservation WHERE is_active`;
+      validHmsKeys = new Set(hmsKeyRows.map((row) => row.confirmation_key));
+    }
+    const confirmationRows = donorRowsFiltered.filter((row) => validHmsKeys.has(row.confirmation_key));
     await sql`UPDATE thanksgiving.confirmation_key SET is_active = false WHERE is_active`;
     const confirmationInserted = await bulkInsert({
       table: 'thanksgiving.confirmation_key',
@@ -469,6 +466,9 @@ async function main() {
       batchSize: 500,
     });
     result.extraction = {
+      rows_candidate_before_filters: allConfirmationRows.length,
+      rows_rejected_cut_donor: allConfirmationRows.length - donorRowsFiltered.length,
+      rows_rejected_not_in_hms: donorRowsFiltered.length - confirmationRows.length,
       rows_active_this_run: confirmationRows.length,
       rows_upserted: confirmationInserted,
       distinct_keys: new Set(confirmationRows.map((row) => row.confirmation_key)).size,
@@ -492,6 +492,16 @@ async function main() {
         guest_name: row.guest_name,
         company: row.company,
         travel_agency_1: row.travel_agency_1,
+        email_address: row.email_address,
+        caller: row.caller,
+        billing_reference: row.billing_reference,
+        reservation_note: row.reservation_note,
+        rate_plan: row.rate_plan,
+        room_type: row.room_type,
+        meal_plan: row.meal_plan,
+        adults: row.adults,
+        children: row.children,
+        is_labtest: row.is_labtest === true,
         evidence_kind: row.evidence_kind,
         capture_completeness: row.capture_completeness,
         observed_at: row.observed_at,
@@ -507,6 +517,8 @@ async function main() {
         columns: [
           'confirmation_key', 'property_code', 'status', 'created_at', 'created_by', 'updated_at',
           'source_of_business', 'arrival_date', 'departure_date', 'guest_name', 'company', 'travel_agency_1',
+          'email_address', 'caller', 'billing_reference', 'reservation_note', 'rate_plan', 'room_type', 'meal_plan',
+          'adults', 'children', 'is_labtest',
           'evidence_kind', 'capture_completeness', 'observed_at', 'observation_id', 'stable_payload_sha256',
           'is_active', 'run_id', 'loaded_at'
         ],
@@ -522,6 +534,16 @@ async function main() {
           guest_name = EXCLUDED.guest_name,
           company = EXCLUDED.company,
           travel_agency_1 = EXCLUDED.travel_agency_1,
+          email_address = EXCLUDED.email_address,
+          caller = EXCLUDED.caller,
+          billing_reference = EXCLUDED.billing_reference,
+          reservation_note = EXCLUDED.reservation_note,
+          rate_plan = EXCLUDED.rate_plan,
+          room_type = EXCLUDED.room_type,
+          meal_plan = EXCLUDED.meal_plan,
+          adults = EXCLUDED.adults,
+          children = EXCLUDED.children,
+          is_labtest = EXCLUDED.is_labtest,
           evidence_kind = EXCLUDED.evidence_kind,
           capture_completeness = EXCLUDED.capture_completeness,
           observed_at = EXCLUDED.observed_at,

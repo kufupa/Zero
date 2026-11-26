@@ -4,12 +4,17 @@ WITH post_threads AS (
   WHERE regime = 'post_2026-09-09'
     AND direction = 'inbound'
     AND NOT is_cut
-),
-thread_stats AS (
+), eligible_hms AS (
+  SELECT confirmation_key, property_code
+  FROM thanksgiving.hms_reservation
+  WHERE is_active
+    AND NOT COALESCE(is_labtest, false)
+    AND (observed_at IS NULL OR created_at <= observed_at)
+), thread_stats AS (
   SELECT
     pt.thread_id,
     count(DISTINCT ck.confirmation_key) AS key_count,
-    count(DISTINCT thm.confirmation_key) AS resolved_key_count
+    count(DISTINCT eh.confirmation_key) AS resolved_key_count
   FROM post_threads pt
   LEFT JOIN thanksgiving.confirmation_key ck
     ON ck.thread_id = pt.thread_id
@@ -18,9 +23,11 @@ thread_stats AS (
     ON thm.thread_id = pt.thread_id
    AND thm.confirmation_key = ck.confirmation_key
    AND thm.is_active
+  LEFT JOIN eligible_hms eh
+    ON eh.confirmation_key = thm.confirmation_key
+   AND eh.property_code = thm.property_code
   GROUP BY pt.thread_id
-),
-summary AS (
+), summary AS (
   SELECT
     count(*)::bigint AS denominator,
     count(*) FILTER (WHERE key_count > 0)::bigint AS keyed_threads,
@@ -38,7 +45,7 @@ SELECT
   CASE WHEN denominator > 0 THEN numerator::numeric / denominator::numeric END,
   jsonb_build_object(
     'keyed_threads', keyed_threads,
-    'definition', 'post-2026-09-09 threads with at least one non-cut inbound message; numerator has at least one active confirmation key anywhere in the thread resolving to active HMS evidence',
+    'definition', 'post-2026-09-09 threads with at least one non-cut inbound message; numerator has at least one active confirmation key donated by an uncut message (or hotel self-prestay exception) resolving to non-labtest HMS evidence whose created_at is not after observed_at',
     'message_cutoff', '2026-09-09',
     'hms_cutoff', '2026-09-09T00:00:00Z'
   ),
@@ -51,52 +58,80 @@ ON CONFLICT (run_id, metric_name) DO UPDATE SET
   details = EXCLUDED.details,
   created_at = now();
 
-WITH hms_cohort AS (
-  SELECT confirmation_key, property_code
+WITH eligible_hms AS (
+  SELECT *
   FROM thanksgiving.hms_reservation
   WHERE is_active
-    AND source_of_business = 'E-Mail'
+    AND NOT COALESCE(is_labtest, false)
+    AND (observed_at IS NULL OR created_at <= observed_at)
+), cohorts AS (
+  SELECT
+    'email'::text AS cohort_name,
+    confirmation_key,
+    property_code
+  FROM eligible_hms
+  WHERE source_of_business = 'E-Mail'
     AND created_at >= timestamptz '2026-09-09 00:00:00+00'
-),
-post_threads AS (
+  UNION ALL
+  SELECT
+    'all_sob_non_ota'::text AS cohort_name,
+    confirmation_key,
+    property_code
+  FROM eligible_hms
+  WHERE source_of_business IS NOT NULL
+    AND lower(source_of_business) NOT IN ('bcom', 'exp', 'dotw-xml', 'tbo', 'hbeds', 'hypg', 'trip', 'channel manager')
+    AND created_at >= timestamptz '2026-09-09 00:00:00+00'
+), post_threads AS (
   SELECT DISTINCT thread_id
   FROM thanksgiving.message
   WHERE regime = 'post_2026-09-09'
-),
-presence AS (
+), presence AS (
   SELECT
+    h.cohort_name,
     h.confirmation_key,
     bool_or(ck.confirmation_key IS NOT NULL) AS seen_anywhere,
     bool_or(pt.thread_id IS NOT NULL) AS seen_in_post_thread
-  FROM hms_cohort h
+  FROM cohorts h
   LEFT JOIN thanksgiving.confirmation_key ck
     ON ck.confirmation_key = h.confirmation_key
    AND ck.is_active
   LEFT JOIN post_threads pt
     ON pt.thread_id = ck.thread_id
-  GROUP BY h.confirmation_key
-),
-summary AS (
+  GROUP BY h.cohort_name, h.confirmation_key
+), summary AS (
   SELECT
+    cohort_name,
     count(*)::bigint AS denominator,
     count(*) FILTER (WHERE seen_in_post_thread)::bigint AS numerator,
     count(*) FILTER (WHERE seen_anywhere)::bigint AS any_window_matches
   FROM presence
+  GROUP BY cohort_name
 )
 INSERT INTO thanksgiving.metric_snapshot (
   run_id, metric_name, numerator, denominator, rate, details, created_at
 )
 SELECT
   '__RUN_ID__',
-  'hms_to_thread_coverage',
+  CASE cohort_name
+    WHEN 'email' THEN 'hms_to_thread_coverage'
+    ELSE 'hms_to_thread_coverage_all_sob_non_ota'
+  END,
   numerator,
   denominator,
   CASE WHEN denominator > 0 THEN numerator::numeric / denominator::numeric END,
   jsonb_build_object(
     'any_window_matches', any_window_matches,
-    'definition', 'active HMS reservations with source_of_business E-Mail and created_at on or after 2026-09-09 UTC; numerator has the confirmation key in any registered thread containing at least one post-2026-09-09 message',
+    'cohort', cohort_name,
+    'definition', CASE cohort_name
+      WHEN 'email' THEN 'active non-labtest HMS reservations with source_of_business E-Mail, created_at on or after 2026-09-09 UTC, and created_at not after observed_at; numerator has the confirmation key in any registered thread containing at least one post-2026-09-09 message'
+      ELSE 'active non-labtest HMS reservations with non-null source_of_business outside the explicit OTA/channel set (BCOM, EXP, DOTW-XML, TBO, HBEDS, HYPG, TRIP, Channel Manager), created_at on or after 2026-09-09 UTC, and created_at not after observed_at; numerator has the confirmation key in any registered thread containing at least one post-2026-09-09 message'
+    END,
     'message_cutoff', '2026-09-09',
-    'hms_cutoff', '2026-09-09T00:00:00Z'
+    'hms_cutoff', '2026-09-09T00:00:00Z',
+    'ota_source_codes_excluded', CASE cohort_name
+      WHEN 'email' THEN 'not applicable: E-Mail-only cohort'
+      ELSE 'BCOM, EXP, DOTW-XML, TBO, HBEDS, HYPG, TRIP, Channel Manager'
+    END
   ),
   now()
 FROM summary
@@ -111,32 +146,37 @@ WITH message_counts AS (
   SELECT
     count(*)::bigint AS total_messages,
     count(*) FILTER (WHERE cut_reason LIKE 'ota_channel:%' OR cut_reason LIKE 'system_notice:%')::bigint AS domain_cut_messages,
+    count(*) FILTER (WHERE cut_reason = 'owner_prestay_form_only')::bigint AS owner_prestay_cut_messages,
     count(*) FILTER (WHERE cut_reason = 'hotel_self_prestay_confirmation')::bigint AS self_mail_cut_messages,
+    count(*) FILTER (WHERE cut_reason = 'corpus_guest_feedback_digest')::bigint AS guest_feedback_cut_messages,
     count(*) FILTER (WHERE cut_reason = 'exact_duplicate_message')::bigint AS duplicate_cut_messages,
     count(*) FILTER (WHERE NOT is_cut)::bigint AS final_uncut_messages,
     count(*) FILTER (WHERE raw_mime_missing)::bigint AS raw_mime_key_missing_messages
   FROM thanksgiving.message
-),
-attachment_counts AS (
+), attachment_counts AS (
   SELECT
     count(*)::bigint AS total_attachments,
     count(*) FILTER (WHERE cut_reason = 'branding_signature_image')::bigint AS branding_cut_attachments,
     count(*) FILTER (WHERE cut_reason = 'exact_duplicate_attachment')::bigint AS duplicate_cut_attachments,
     count(*) FILTER (WHERE NOT is_cut)::bigint AS final_uncut_attachments
   FROM thanksgiving.attachment
-),
-post_threads AS (
+), post_threads AS (
   SELECT DISTINCT thread_id
   FROM thanksgiving.message
   WHERE regime = 'post_2026-09-09'
     AND direction = 'inbound'
     AND NOT is_cut
-),
-thread_stats AS (
+), eligible_hms AS (
+  SELECT *
+  FROM thanksgiving.hms_reservation
+  WHERE is_active
+    AND NOT COALESCE(is_labtest, false)
+    AND (observed_at IS NULL OR created_at <= observed_at)
+), thread_stats AS (
   SELECT
     pt.thread_id,
     count(DISTINCT ck.confirmation_key) AS key_count,
-    count(DISTINCT thm.confirmation_key) AS resolved_key_count
+    count(DISTINCT eh.confirmation_key) AS resolved_key_count
   FROM post_threads pt
   LEFT JOIN thanksgiving.confirmation_key ck
     ON ck.thread_id = pt.thread_id
@@ -145,23 +185,38 @@ thread_stats AS (
     ON thm.thread_id = pt.thread_id
    AND thm.confirmation_key = ck.confirmation_key
    AND thm.is_active
+  LEFT JOIN eligible_hms eh
+    ON eh.confirmation_key = thm.confirmation_key
+   AND eh.property_code = thm.property_code
   GROUP BY pt.thread_id
-),
-thread_summary AS (
+), thread_summary AS (
   SELECT
     count(*)::bigint AS post_noncut_inbound_threads,
     count(*) FILTER (WHERE key_count > 0)::bigint AS keyed_threads,
     count(*) FILTER (WHERE resolved_key_count > 0)::bigint AS resolved_threads
   FROM thread_stats
-),
-hms_summary AS (
+), hms_summary AS (
   SELECT
     count(*)::bigint AS active_hms_reservations,
-    count(*) FILTER (WHERE source_of_business = 'E-Mail' AND created_at >= timestamptz '2026-09-09 00:00:00+00')::bigint AS post_email_hms_reservations
+    count(*) FILTER (WHERE NOT COALESCE(is_labtest, false) AND (observed_at IS NULL OR created_at <= observed_at))::bigint AS eligible_hms_reservations,
+    count(*) FILTER (WHERE COALESCE(is_labtest, false))::bigint AS labtest_hms_reservations,
+    count(*) FILTER (WHERE observed_at IS NOT NULL AND created_at > observed_at)::bigint AS future_created_hms_reservations,
+    count(*) FILTER (
+      WHERE NOT COALESCE(is_labtest, false)
+        AND (observed_at IS NULL OR created_at <= observed_at)
+        AND source_of_business = 'E-Mail'
+        AND created_at >= timestamptz '2026-09-09 00:00:00+00'
+    )::bigint AS post_email_hms_reservations,
+    count(*) FILTER (
+      WHERE NOT COALESCE(is_labtest, false)
+        AND (observed_at IS NULL OR created_at <= observed_at)
+        AND source_of_business IS NOT NULL
+        AND lower(source_of_business) NOT IN ('bcom', 'exp', 'dotw-xml', 'tbo', 'hbeds', 'hypg', 'trip', 'channel manager')
+        AND created_at >= timestamptz '2026-09-09 00:00:00+00'
+    )::bigint AS post_nonota_hms_reservations
   FROM thanksgiving.hms_reservation
   WHERE is_active
-),
-key_summary AS (
+), key_summary AS (
   SELECT
     count(*)::bigint AS active_confirmation_key_rows,
     count(DISTINCT confirmation_key)::bigint AS distinct_confirmation_keys,
@@ -181,7 +236,9 @@ SELECT
   jsonb_build_object(
     'total_messages', message_counts.total_messages,
     'domain_cut_messages', message_counts.domain_cut_messages,
+    'owner_prestay_cut_messages', message_counts.owner_prestay_cut_messages,
     'self_mail_cut_messages', message_counts.self_mail_cut_messages,
+    'guest_feedback_cut_messages', message_counts.guest_feedback_cut_messages,
     'duplicate_cut_messages', message_counts.duplicate_cut_messages,
     'final_uncut_messages', message_counts.final_uncut_messages,
     'raw_mime_key_missing_messages', message_counts.raw_mime_key_missing_messages,
@@ -196,7 +253,12 @@ SELECT
     'distinct_confirmation_keys', key_summary.distinct_confirmation_keys,
     'threads_with_keys', key_summary.threads_with_keys,
     'active_hms_reservations', hms_summary.active_hms_reservations,
-    'post_email_hms_reservations', hms_summary.post_email_hms_reservations
+    'eligible_hms_reservations', hms_summary.eligible_hms_reservations,
+    'labtest_hms_reservations', hms_summary.labtest_hms_reservations,
+    'future_created_hms_reservations', hms_summary.future_created_hms_reservations,
+    'post_email_hms_reservations', hms_summary.post_email_hms_reservations,
+    'post_nonota_hms_reservations', hms_summary.post_nonota_hms_reservations,
+    'ota_source_codes_excluded', 'BCOM, EXP, DOTW-XML, TBO, HBEDS, HYPG, TRIP, Channel Manager'
   ),
   now()
 FROM message_counts, attachment_counts, thread_summary, key_summary, hms_summary
@@ -213,35 +275,42 @@ WITH post_threads AS (
   WHERE regime = 'post_2026-09-09'
     AND direction = 'inbound'
     AND NOT is_cut
-),
-thread_keys AS (
+), eligible_hms AS (
+  SELECT confirmation_key, property_code
+  FROM thanksgiving.hms_reservation
+  WHERE is_active
+    AND NOT COALESCE(is_labtest, false)
+    AND (observed_at IS NULL OR created_at <= observed_at)
+), thread_keys AS (
   SELECT
     pt.thread_id,
     count(DISTINCT ck.confirmation_key) AS key_count,
-    count(DISTINCT ck.confirmation_key) FILTER (WHERE hr.confirmation_key IS NOT NULL) AS hms_key_count,
+    count(DISTINCT eh.confirmation_key) AS hms_key_count,
     (array_agg(DISTINCT ck.confirmation_key ORDER BY ck.confirmation_key) FILTER (WHERE ck.confirmation_key IS NOT NULL))[1:5] AS sample_keys
   FROM post_threads pt
   LEFT JOIN thanksgiving.confirmation_key ck
     ON ck.thread_id = pt.thread_id
    AND ck.is_active
-  LEFT JOIN thanksgiving.hms_reservation hr
-    ON hr.confirmation_key = ck.confirmation_key
-   AND hr.is_active
+  LEFT JOIN thanksgiving.thread_hms_match thm
+    ON thm.thread_id = pt.thread_id
+   AND thm.confirmation_key = ck.confirmation_key
+   AND thm.is_active
+  LEFT JOIN eligible_hms eh
+    ON eh.confirmation_key = thm.confirmation_key
+   AND eh.property_code = thm.property_code
   GROUP BY pt.thread_id
-),
-misses AS (
+), misses AS (
   SELECT
     thread_id,
     CASE
-      WHEN key_count = 0 THEN 'no key in thread'
-      ELSE 'key not in HMS'
+      WHEN key_count = 0 THEN 'no donated HMS-validated key in thread'
+      ELSE 'key not in clean HMS evidence'
     END AS reason,
     key_count,
     sample_keys
   FROM thread_keys
   WHERE hms_key_count = 0
-),
-numbered AS (
+), numbered AS (
   SELECT *, row_number() OVER (ORDER BY thread_id) AS rn
   FROM misses
 )
@@ -270,15 +339,15 @@ WITH hms_cohort AS (
   SELECT confirmation_key, property_code
   FROM thanksgiving.hms_reservation
   WHERE is_active
+    AND NOT COALESCE(is_labtest, false)
+    AND (observed_at IS NULL OR created_at <= observed_at)
     AND source_of_business = 'E-Mail'
     AND created_at >= timestamptz '2026-09-09 00:00:00+00'
-),
-post_threads AS (
+), post_threads AS (
   SELECT DISTINCT thread_id
   FROM thanksgiving.message
   WHERE regime = 'post_2026-09-09'
-),
-presence AS (
+), presence AS (
   SELECT
     h.confirmation_key,
     bool_or(ck.confirmation_key IS NOT NULL) AS seen_anywhere,
@@ -292,20 +361,18 @@ presence AS (
   LEFT JOIN post_threads pt
     ON pt.thread_id = ck.thread_id
   GROUP BY h.confirmation_key
-),
-misses AS (
+), misses AS (
   SELECT
     confirmation_key,
     CASE
-      WHEN NOT seen_anywhere THEN 'key not extracted from any mail thread'
+      WHEN NOT seen_anywhere THEN 'key not extracted from any donating mail thread'
       ELSE 'key seen only outside post-2026-09-09 window'
     END AS reason,
     thread_count,
     post_thread_count
   FROM presence
   WHERE NOT seen_in_post_thread
-),
-numbered AS (
+), numbered AS (
   SELECT *, row_number() OVER (ORDER BY confirmation_key) AS rn
   FROM misses
 )

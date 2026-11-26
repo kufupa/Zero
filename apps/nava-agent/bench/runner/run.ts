@@ -428,7 +428,11 @@ export function mailPayload(card: CaseCard, propertyCode?: string) {
     const linked = known.some(message => ids(message).some(id => currentIds.has(id))
       || confs(message).some(id => currentConfs.has(id))
       || (sender && message.direction !== 'outbound' && message.from?.email.toLowerCase() === sender));
-    return linked ? [{thread_id: text(link.thread_id) ?? null, messages: known}] : [];
+    return linked ? [{
+      thread_id: text(link.thread_id) ?? null,
+      note: 'Earlier mail from a different thread about the same booking, sent before the selected email. Background only: use it to identify the booking (confirmation number, guest, dates, rate, agency). Decide the workflow and the action from selected_message alone; earlier asks in this history are already handled.',
+      messages: known,
+    }] : [];
   });
   return {
     source: text(card.source?.source) ?? 'corpus',

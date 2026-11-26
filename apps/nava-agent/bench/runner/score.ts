@@ -1550,7 +1550,7 @@ export function scoreCase(input: {
     else if (isBlank(field.actual)) field_counts.blank += 1;
     else field_counts.wrong += 1;
   }
-  const staff_useful = routeOk && !sourcedWrongTarget && unitsOk
+  const staff_useful = routeOk && !sourcedWrongTarget && unitsOk && !anyHarm
     && !safety_flags.vcc_false_filing && !safety_flags.staff_reply_false_action
     && field_counts.wrong === 0
     && email_outcome !== 'not_evaluable' && email_outcome !== 'runtime_error' && email_outcome !== 'missing_prediction';
